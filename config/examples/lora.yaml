@@ -1,0 +1,30 @@
+# Example loractl training config.
+# Copy into config/ and edit; every field below can also be overridden by a
+# LORACTL_-prefixed env var (e.g. LORACTL_OPTIM__LR=5e-5) or a CLI flag
+# (e.g. `loractl train config/my.yaml --lr 5e-5 --steps 2000`).
+
+steps: 1000
+seed: 42
+
+model:
+  # Hub id or a local safetensors directory.
+  base: black-forest-labs/FLUX.1-dev
+
+lora:
+  rank: 16
+  alpha: 16
+  dropout: 0.0
+
+dataset:
+  # Folder of images + same-named .txt caption files.
+  path: ./data/my-subject
+  resolution: 512
+
+optim:
+  lr: 1.0e-4
+  weight_decay: 0.0
+
+output:
+  dir: ./output
+  name: my-lora
+  checkpoint_every: 250

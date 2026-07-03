@@ -1,0 +1,24 @@
+[package]
+name = "loractl-cli"
+description = "loractl — a terminal-native LoRA trainer CLI (CLI-first; a GUI can be layered on the same core later)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "loractl"
+path = "src/main.rs"
+
+[dependencies]
+loractl-core = { path = "../loractl-core" }
+anyhow.workspace = true
+serde.workspace = true
+tracing.workspace = true
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+figment = { version = "0.10", features = ["yaml", "env"] }
+indicatif = "0.17"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

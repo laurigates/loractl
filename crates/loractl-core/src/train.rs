@@ -1,0 +1,66 @@
+//! The training contract and a dependency-free stand-in.
+//!
+//! [`Trainer`] is the interface every backend implements. [`MockTrainer`]
+//! satisfies it with zero ML so the whole event → render pipeline can be
+//! exercised today. Milestone 2 adds a burn-backed trainer behind this same
+//! trait — the CLI won't change, it'll just get a different `impl Trainer`.
+
+use crate::config::TrainConfig;
+use crate::event::TrainEvent;
+use anyhow::Result;
+use std::path::PathBuf;
+
+/// A training backend.
+///
+/// Implementors run the job described by `config` and report progress by
+/// calling `sink` with [`TrainEvent`]s. They must not render progress or
+/// write to stdout/stderr themselves — that's the caller's job. The returned
+/// path is the final adapter written to disk.
+pub trait Trainer {
+    fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf>;
+}
+
+/// A stand-in trainer that exercises the event pipeline without any ML.
+///
+/// It runs the configured number of steps, emits a smoothly decaying
+/// synthetic loss, checkpoints on the configured cadence, and returns the
+/// final adapter path. Everything it "writes" is only reported via events —
+/// it performs no disk I/O — so it's safe to run anywhere.
+pub struct MockTrainer;
+
+impl Trainer for MockTrainer {
+    fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf> {
+        let total = config.steps.max(1);
+        sink(TrainEvent::Started { total_steps: total });
+
+        let checkpoint_every = config.output.checkpoint_every.max(1);
+        for step in 1..=total {
+            // Synthetic loss: exponential decay toward a noise floor, with a
+            // small deterministic wobble so the rendered number looks alive.
+            let progress = step as f32 / total as f32;
+            let loss = 2.0 * (-3.0 * progress).exp() + 0.02 * (step as f32 * 0.3).sin().abs();
+            sink(TrainEvent::Step {
+                step,
+                loss,
+                lr: config.optim.lr,
+            });
+
+            if step % checkpoint_every == 0 {
+                let path = config
+                    .output
+                    .dir
+                    .join(format!("checkpoint-{step}.safetensors"));
+                sink(TrainEvent::Checkpoint { step, path });
+            }
+        }
+
+        let adapter_path = config
+            .output
+            .dir
+            .join(format!("{}.safetensors", config.output.name));
+        sink(TrainEvent::Finished {
+            adapter_path: adapter_path.clone(),
+        });
+        Ok(adapter_path)
+    }
+}

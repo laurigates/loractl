@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Runtime output (checkpoints, samples, adapters)
+/output
+
+# Local, uncommitted training configs (keep config/examples/ tracked)
+/config/*.yaml
+!/config/examples/
+
+# Editor / OS
+.DS_Store
