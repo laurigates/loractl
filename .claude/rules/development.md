@@ -12,9 +12,11 @@ Follow RED → GREEN → REFACTOR:
 2. Implement the minimal code to pass.
 3. Refactor while the suite stays green.
 
-No test suite exists yet — the first tests land with the burn backend in M2
-(#1). New ML code (the LoRA `Module`, the training loop) is exactly where TDD
-earns its keep: verify numerics against a reference before scaling up.
+The first tests landed with the burn backend in M2 (#1): a deterministic
+numerics proof against a PyTorch golden (`tests/lora_reference.rs`) and a
+black-box synthetic convergence test (`tests/convergence.rs`). New ML code (the
+LoRA `Module`, the training loop) is exactly where TDD earns its keep: verify
+numerics against a reference before scaling up.
 
 ## The load-bearing invariant
 
@@ -53,6 +55,8 @@ The meaningful local gate mirrors CI:
 just fmt-check && just lint
 ```
 
-`just lint` is `cargo clippy --all-targets --all-features -- -D warnings`
-(warnings are errors). rustfmt uses default style and will reflow multi-line
-signatures onto one line — expect that.
+`just lint` is `cargo clippy --all-targets -- -D warnings` (default/offline
+features; warnings are errors). The opt-in `mnist` feature pulls a networked
+dataset downloader, so its path is linted separately via `just lint-mnist` to
+keep the default gate offline and fast. rustfmt uses default style and will
+reflow multi-line signatures onto one line — expect that.

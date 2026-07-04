@@ -26,9 +26,13 @@ user-global rules; this file records the Rust/loractl specifics.
 
 ## Coverage expectations
 
-No suite exists yet (M1 is a skeleton). The bar for new code: every `impl
-Trainer` and every config-layering change ships with tests. ML-correctness code
-is verified against a reference, not merely asserted to "run".
+The first tests landed in M2 (#1): the always-run numerics proof
+(`tests/lora_reference.rs`, vs a PyTorch golden), synthetic convergence
+(`tests/convergence.rs`), and an opt-in real-MNIST proof
+(`tests/mnist_lora.rs`, `#[ignore]`d behind `--features mnist`). The bar for new
+code: every `impl Trainer` and every config-layering change ships with tests.
+ML-correctness code is verified against a reference, not merely asserted to
+"run".
 
 ## CI parity
 
