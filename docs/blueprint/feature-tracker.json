@@ -1,0 +1,51 @@
+{
+  "$schema": "./schemas/feature-tracker.schema.json",
+  "version": "1.1.0",
+  "last_updated": "2026-07-04",
+  "project": "loractl",
+  "source_document": "README.md",
+  "current_phase": "phase-2",
+  "tasks": {
+    "in_progress": [],
+    "pending": [],
+    "completed": []
+  },
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "M1 — Skeleton",
+      "status": "complete"
+    },
+    {
+      "id": "phase-2",
+      "name": "M2 — Correctness harness (burn + LoRA module)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-3",
+      "name": "M3 — Real base model",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-4",
+      "name": "M4 — Sampling & adapter I/O",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-5",
+      "name": "M5 — API crate",
+      "status": "not_started"
+    }
+  ],
+  "features": {},
+  "prds": {},
+  "statistics": {
+    "total_features": 0,
+    "complete": 0,
+    "partial": 0,
+    "in_progress": 0,
+    "not_started": 0,
+    "blocked": 0,
+    "completion_percentage": 0
+  }
+}
