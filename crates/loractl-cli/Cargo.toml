@@ -22,3 +22,14 @@ clap_complete = "4"
 figment = { version = "0.10", features = ["yaml", "env"] }
 indicatif = "0.17"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Error/panic reporting to GlitchTip (Sentry-API compatible). DSN comes from
+# the SENTRY_DSN env var; rustls transport avoids a system OpenSSL dependency.
+sentry = { version = "0.46", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "anyhow",
+    "tracing",
+    "reqwest",
+    "rustls",
+] }

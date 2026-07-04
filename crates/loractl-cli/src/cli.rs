@@ -16,6 +16,8 @@ use figment::{
 use indicatif::{ProgressBar, ProgressStyle};
 use loractl_core::{MockTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
 
 #[derive(Parser)]
 #[command(
@@ -67,13 +69,48 @@ struct SampleCmd {
     prompt: Option<String>,
 }
 
-/// Parse arguments and dispatch. Called by `main`.
-pub fn run() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_target(false)
+/// Initialize GlitchTip telemetry (via the Sentry-compatible SDK) and tracing.
+///
+/// Returns a guard that must be held for the lifetime of the process —
+/// dropping it flushes any buffered events on exit. Telemetry is a no-op when
+/// `SENTRY_DSN` is unset, so this is always safe to call.
+///
+/// Two tracing layers are installed:
+/// - a `fmt` layer renders human-readable logs, gated by the usual `RUST_LOG`
+///   env filter (console behaviour is unchanged);
+/// - a Sentry layer forwards `INFO`-and-above tracing events to GlitchTip —
+///   `ERROR` events become issues, `WARN`/`INFO` attach as breadcrumbs for
+///   context — independent of `RUST_LOG` so telemetry doesn't hinge on log
+///   verbosity.
+pub fn init_telemetry() -> sentry::ClientInitGuard {
+    // GlitchTip speaks the Sentry ingest protocol; the DSN is read from the
+    // `SENTRY_DSN` environment variable. `release` tags events with the crate
+    // version so issues group by build.
+    let guard = sentry::init(sentry::ClientOptions {
+        release: sentry::release_name!(),
+        ..Default::default()
+    });
+
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_filter(EnvFilter::from_default_env()),
+        )
+        .with(sentry::integrations::tracing::layer().with_filter(LevelFilter::INFO))
         .init();
 
+    if guard.is_enabled() {
+        tracing::debug!("GlitchTip telemetry enabled");
+    } else {
+        tracing::debug!("GlitchTip telemetry disabled (SENTRY_DSN unset)");
+    }
+
+    guard
+}
+
+/// Parse arguments and dispatch. Called by `main`.
+pub fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Train(cmd) => train(cmd),
         Command::Sample(cmd) => sample(cmd),
