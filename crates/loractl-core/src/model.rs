@@ -17,6 +17,10 @@
 //! factors on the output layer are the low-rank readout that actually learns.
 //! This is the strongest possible base-unchanged claim: the frozen weights carry
 //! no gradient, so an optimizer leaves them byte-identical.
+//!
+//! [`LoraMlp::new`] also eagerly materializes `fc1` and `fc2.base` — see the
+//! doc comment there for why that's load-bearing for milestone 4's
+//! adapter-only persistence ([`crate::adapter`]).
 
 use crate::lora::LoraLinear;
 use burn::module::Module;
@@ -53,7 +57,33 @@ impl<B: Backend> LoraMlp<B> {
     ) -> Self {
         let fc1 = crate::lora::freeze(LinearConfig::new(d_in, hidden).with_bias(true).init(device));
         let fc2 = LoraLinear::new(hidden, out, rank, alpha, true, device);
-        Self { fc1, fc2 }
+        let model = Self { fc1, fc2 };
+
+        // Force the frozen base to materialize NOW, pinning its random
+        // initialization to happen immediately, right after `device`'s RNG was
+        // (presumably) seeded — independent of whatever the caller does
+        // afterward (e.g. drawing synthetic batch data before the first
+        // forward pass).
+        //
+        // This matters because burn's `Param` is lazily initialized: a fresh
+        // `Linear`'s weight/bias don't actually draw from the RNG until first
+        // accessed (`.val()`/deref), which by default would be the model's
+        // first `forward` call — whenever that happens to be, and after
+        // whatever else has consumed the RNG in the meantime. Milestone 4's
+        // adapter-only persistence (`crate::adapter`) depends on "reseed, then
+        // construct" alone fully determining the frozen base; forcing eager
+        // materialization here is what makes that actually true rather than
+        // an accident of caller ordering.
+        let _ = model.fc1.weight.val();
+        if let Some(bias) = &model.fc1.bias {
+            let _ = bias.val();
+        }
+        let _ = model.fc2.base.weight.val();
+        if let Some(bias) = &model.fc2.base.bias {
+            let _ = bias.val();
+        }
+
+        model
     }
 
     /// Forward pass: `fc2(relu(fc1(x)))`. Input `[batch, d_in]`, output

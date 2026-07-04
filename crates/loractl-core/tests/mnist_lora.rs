@@ -15,18 +15,14 @@
 use burn::backend::{Autodiff, NdArray};
 use burn::data::dataset::Dataset;
 use burn::data::dataset::vision::MnistDataset;
-use burn::module::Module;
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::{Device, Tensor, TensorData};
 use loractl_core::config::{DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig};
-use loractl_core::{BurnTrainer, LoraMlp, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
 type AB = Autodiff<NdArray>;
 
 const INPUT_DIM: usize = 784;
-const HIDDEN_DIM: usize = 256;
-const NUM_CLASSES: usize = 10;
 const RANK: usize = 8;
 const ALPHA: f64 = 16.0;
 
@@ -92,6 +88,7 @@ fn mnist_lora_converges() {
             dir: out_dir.clone(),
             name: "mnist-adapter".into(),
             checkpoint_every: 10_000,
+            sample_every: 0,
         },
     };
 
@@ -115,10 +112,11 @@ fn mnist_lora_converges() {
     );
 
     // Reload the written adapter (proves the checkpoint is a real, loadable
-    // record) and score accuracy on the MNIST test split.
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    let model = LoraMlp::<AB>::new(INPUT_DIM, HIDDEN_DIM, NUM_CLASSES, RANK, ALPHA, &device)
-        .load_file(adapter, &recorder, &device)
+    // safetensors + sidecar record, not just a path that happens to exist)
+    // and score accuracy on the MNIST test split. `load_adapter` derives the
+    // frozen base deterministically from the sidecar's seed/shape, so no
+    // hardcoded hidden/class-count constants are needed here.
+    let model = loractl_core::adapter::load_adapter::<AB>(&adapter, &device)
         .expect("reload trained adapter record");
 
     let (x, labels) = eval_batch(&MnistDataset::test(), &device, 2_000);

@@ -17,6 +17,14 @@ loractl-core = { path = "../loractl-core" }
 anyhow.workspace = true
 serde.workspace = true
 tracing.workspace = true
+# Inference-only backend for `loractl sample` (M4, #3): the CLI picks a plain
+# CPU backend to run one forward pass through a loaded adapter, decoupled from
+# `BurnTrainer`'s internal Autodiff-wrapped backend. No `autodiff` feature
+# needed — sampling never computes a gradient.
+burn = { version = "0.21", default-features = false, features = [
+    "std",
+    "ndarray",
+] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 figment = { version = "0.10", features = ["yaml", "env"] }

@@ -3435,6 +3435,7 @@ name = "loractl-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "burn",
  "clap",
  "clap_complete",
  "figment",

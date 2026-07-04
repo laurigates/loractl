@@ -100,6 +100,8 @@ pub struct OutputConfig {
     pub name: String,
     /// Write a checkpoint every N steps.
     pub checkpoint_every: u64,
+    /// Write a validation sample every N steps (0 = disabled).
+    pub sample_every: u64,
 }
 
 impl Default for OutputConfig {
@@ -108,6 +110,7 @@ impl Default for OutputConfig {
             dir: PathBuf::from("output"),
             name: String::from("lora"),
             checkpoint_every: 250,
+            sample_every: 0,
         }
     }
 }

@@ -35,7 +35,7 @@ enum Command {
     /// Train a LoRA adapter from a YAML config.
     Train(TrainCmd),
 
-    /// Generate a sample from a trained adapter. (not yet implemented)
+    /// Run one deterministic sample forward pass from a trained adapter.
     Sample(SampleCmd),
 
     /// Print shell completions to stdout (e.g. `loractl completions zsh`).
@@ -64,7 +64,10 @@ struct SampleCmd {
     /// Path to the trained adapter (`.safetensors`).
     adapter: PathBuf,
 
-    /// Prompt to render.
+    /// Optional text that deterministically seeds the sample's synthetic
+    /// input (the same prompt always reproduces the same output). `LoraMlp`
+    /// has no tokenizer, so this is not text generation — see `sample --help`
+    /// output / README for the honest framing.
     #[arg(short, long)]
     prompt: Option<String>,
 }
@@ -182,10 +185,31 @@ fn train(cmd: TrainCmd) -> Result<()> {
 }
 
 fn sample(cmd: SampleCmd) -> Result<()> {
-    anyhow::bail!(
-        "`sample` is not implemented yet (arrives in milestone 2). \
-         adapter={}, prompt={:?}",
-        cmd.adapter.display(),
-        cmd.prompt,
-    )
+    // Inference-only: no autodiff needed, so this is decoupled from
+    // `BurnTrainer`'s internal Autodiff-wrapped backend type.
+    type B = burn::backend::NdArray;
+    let device: burn::tensor::Device<B> = Default::default();
+
+    let model = loractl_core::adapter::load_adapter::<B>(&cmd.adapter, &device)
+        .with_context(|| format!("loading adapter from {}", cmd.adapter.display()))?;
+
+    let seed = loractl_core::sample::seed_from_prompt(cmd.prompt.as_deref());
+    let output = loractl_core::sample::run_sample(&model, seed, &device);
+
+    println!(
+        "note: LoraMlp is a synthetic classifier with no tokenizer — `--prompt` \
+         deterministically seeds this sample's synthetic input rather than generating \
+         text; real language-model sampling is future work beyond M4/M5 \
+         (see docs/adrs/0002-adapter-format-and-sample-semantics.md)."
+    );
+    println!("predicted class: {}", output.predicted_class);
+
+    let mut ranked: Vec<(usize, f32)> = output.logits.iter().copied().enumerate().collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    println!("top logits:");
+    for (class, logit) in ranked.iter().take(2) {
+        println!("  class {class}: {logit:.4}");
+    }
+
+    Ok(())
 }

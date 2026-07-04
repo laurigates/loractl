@@ -19,26 +19,38 @@
 //! on it. That path pulls a networked dataset downloader, so it is strictly
 //! opt-in and never part of the default build.
 //!
-//! **Honest I/O.** Checkpoints and the final adapter are written as real
-//! MessagePack records (`.mpk`) via [`NamedMpkFileRecorder`], available under
-//! the already-enabled `std` feature — every emitted path actually exists on
-//! disk. This is deliberately *not* the interoperable safetensors format, which
-//! is milestone 4 (#3); a distinct extension avoids over-claiming.
+//! **Honest I/O.** Checkpoints and the final adapter are written as
+//! adapter-only `.safetensors` files via [`crate::adapter::save_adapter`] —
+//! only the trainable LoRA factors are persisted; the frozen base is
+//! regenerated deterministically at load time from the run's seed. See the
+//! [`adapter`](crate::adapter) module docs for the tensor-naming scheme and
+//! why a JSON sidecar carries the reconstruction metadata. This is milestone
+//! 4 (#3): the interoperable-format adapter I/O milestone 2's `.mpk` stopgap
+//! deferred.
 //!
-//! **Invariant.** This module imports only `burn`/`anyhow`/`std`, never `clap`,
-//! and never writes to stdout/stderr — all progress flows through the
-//! `&mut dyn FnMut(TrainEvent)` sink.
+//! **Validation samples.** When `config.output.sample_every > 0`, every N
+//! steps the trainer runs one deterministic forward pass (see
+//! [`crate::sample`]) on a FIXED probe input and writes the result to
+//! `sample-{step}.json`, emitting [`TrainEvent::Sample`]. Using the same
+//! fixed probe across every periodic sample within a run is deliberate: it
+//! lets you watch one input's prediction/logits evolve as training
+//! progresses across the successive `sample-{step}.json` files.
+//!
+//! **Invariant.** This module imports only `burn`/`anyhow`/`serde_json`/`std`,
+//! never `clap`, and never writes to stdout/stderr — all progress flows
+//! through the `&mut dyn FnMut(TrainEvent)` sink.
 
+use crate::adapter;
 use crate::config::TrainConfig;
 use crate::event::TrainEvent;
 use crate::model::LoraMlp;
+use crate::sample;
 use crate::train::Trainer;
 use anyhow::{Context, Result};
 use burn::backend::{Autodiff, NdArray};
-use burn::module::{AutodiffModule, Module};
+use burn::module::AutodiffModule;
 use burn::nn::loss::CrossEntropyLossConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::backend::Backend;
 use burn::tensor::{Device, Distribution, Int, Tensor, TensorData};
 use std::path::PathBuf;
@@ -56,6 +68,15 @@ const INPUT_DIM: usize = 784;
 const HIDDEN_DIM: usize = 256;
 /// Number of classes (MNIST digits, and the synthetic demo mirrors it).
 const NUM_CLASSES: usize = 10;
+
+/// Fixed seed for every periodic validation sample within a run.
+///
+/// Deliberately NOT derived from `step`: using the SAME probe input for every
+/// sample lets you watch the model's prediction/logits on one fixed input
+/// evolve across the successive `sample-{step}.json` files as training
+/// progresses — that comparison is the actual value of a "validation
+/// sample," and it would be lost if each sample used a different input.
+const VALIDATION_SAMPLE_SEED: u64 = 0;
 
 /// A real LoRA trainer built on burn's ndarray + autodiff backend.
 ///
@@ -92,8 +113,8 @@ impl Trainer for BurnTrainer {
 
         let mut optim = AdamConfig::new().init::<AB, LoraMlp<AB>>();
         let loss_fn = CrossEntropyLossConfig::new().init(&device);
-        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         let checkpoint_every = config.output.checkpoint_every.max(1);
+        let sample_every = config.output.sample_every;
 
         for step in 1..=total {
             let (x, y) = &batches[(step as usize - 1) % batches.len()];
@@ -112,26 +133,52 @@ impl Trainer for BurnTrainer {
             // `step` consumes the module and returns a new one — must reassign.
             model = optim.step(config.optim.lr, model, grads);
 
-            if step % checkpoint_every == 0 {
-                let stem = config.output.dir.join(format!("checkpoint-{step}"));
-                model
-                    .valid()
-                    .save_file(stem.clone(), &recorder)
-                    .with_context(|| format!("writing checkpoint at step {step}"))?;
-                sink(TrainEvent::Checkpoint {
-                    step,
-                    path: stem.with_extension("mpk"),
-                });
+            let want_checkpoint = step % checkpoint_every == 0;
+            let want_sample = sample_every > 0 && step % sample_every == 0;
+            if want_checkpoint || want_sample {
+                // Compute the eval-mode snapshot once and reuse it for both
+                // writes below — `.valid()` clones the whole model.
+                let valid_model = model.valid();
+
+                if want_checkpoint {
+                    let path = config
+                        .output
+                        .dir
+                        .join(format!("checkpoint-{step}.safetensors"));
+                    adapter::save_adapter(&valid_model, &path, config.seed)
+                        .with_context(|| format!("writing checkpoint at step {step}"))?;
+                    sink(TrainEvent::Checkpoint { step, path });
+                }
+
+                if want_sample {
+                    let sample_out =
+                        sample::run_sample(&valid_model, VALIDATION_SAMPLE_SEED, &device);
+                    let sample_path = config.output.dir.join(format!("sample-{step}.json"));
+                    let report = serde_json::json!({
+                        "step": step,
+                        "predicted_class": sample_out.predicted_class,
+                        "logits": sample_out.logits,
+                    });
+                    let report_json = serde_json::to_string_pretty(&report)
+                        .context("serializing validation sample")?;
+                    std::fs::write(&sample_path, report_json)
+                        .with_context(|| format!("writing sample at step {step}"))?;
+                    sink(TrainEvent::Sample {
+                        step,
+                        path: sample_path,
+                    });
+                }
             }
         }
 
         // Write the final adapter honestly, then report the path that exists.
-        let stem = config.output.dir.join(&config.output.name);
-        model
-            .valid()
-            .save_file(stem.clone(), &recorder)
-            .with_context(|| format!("writing final adapter to {}", stem.display()))?;
-        let adapter_path = stem.with_extension("mpk");
+        let adapter_path = config
+            .output
+            .dir
+            .join(&config.output.name)
+            .with_extension("safetensors");
+        adapter::save_adapter(&model.valid(), &adapter_path, config.seed)
+            .with_context(|| format!("writing final adapter to {}", adapter_path.display()))?;
         sink(TrainEvent::Finished {
             adapter_path: adapter_path.clone(),
         });
