@@ -19,3 +19,15 @@ burn = { version = "0.21", default-features = false, features = [
     "ndarray",
     "autodiff",
 ] }
+
+[features]
+# Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
+# `MnistDataset` lives) and `burn/vision` activates its vision datasets. This
+# pulls reqwest/tokio and downloads MNIST over the network at runtime, so it is
+# NEVER in the default set — the default build/`cargo test` stays offline and
+# lean. Exercised on demand via `just test-mnist` / `just lint-mnist`.
+mnist = ["burn/dataset", "burn/vision"]
+
+[dev-dependencies]
+# Reads the checked-in PyTorch golden fixture in the always-run numerics test.
+serde_json = "1"
