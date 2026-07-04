@@ -71,15 +71,15 @@ CLI flags.** Nested keys use `__` in env vars (`LORACTL_OUTPUT__DIR=/tmp/out`).
 
 - [x] **M1 — Skeleton.** Workspace, CLI (`train`/`sample`/`completions`),
       config layering, event → progress-bar rendering, `MockTrainer`.
-- [ ] **M2 — Correctness harness.** Add burn; implement a LoRA `Module`
+- [ ] **M2 — Correctness harness** ([#1](https://github.com/laurigates/loractl/issues/1))**.** Add burn; implement a LoRA `Module`
       (freeze base, train A·B); train a LoRA on a *tiny* model (MNIST MLP)
       and verify numerics against a Python reference — **before** any large
       model. Prove the loop is right in isolation.
-- [ ] **M3 — Real base model.** Load a real base model's weights into burn
+- [ ] **M3 — Real base model** ([#2](https://github.com/laurigates/loractl/issues/2))**.** Load a real base model's weights into burn
       (the genuinely hard part: state-dict mapping), wire the forward pass.
-- [ ] **M4 — Sampling & adapter I/O.** `loractl sample`, safetensors adapter
+- [ ] **M4 — Sampling & adapter I/O** ([#3](https://github.com/laurigates/loractl/issues/3))**.** `loractl sample`, safetensors adapter
       read/write, validation samples during training.
-- [ ] **M5 — API crate.** Expose the event stream over HTTP so a GUI can be
+- [ ] **M5 — API crate** ([#4](https://github.com/laurigates/loractl/issues/4))**.** Expose the event stream over HTTP so a GUI can be
       built independently.
 
 ## License
