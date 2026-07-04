@@ -70,8 +70,10 @@ def main():
         hidden = out.hidden_states               # tuple: embed, block0, block1(=pre-ln_f input)
         after_embed = hidden[0][0]               # [seq, n_embd]
         after_block0 = hidden[1][0]
-        # ln_f applied to the last hidden state to get the pre-head normed features:
-        after_lnf = model.transformer.ln_f(hidden[-1])[0]
+        # HF's LAST output_hidden_states entry is ALREADY ln_f-applied (and
+        # `hidden[-1] @ wteᵀ` reproduces the logits exactly), so it IS the
+        # pre-head normed state — do NOT apply ln_f a second time.
+        after_lnf = hidden[-1][0]
 
     from safetensors import safe_open
     st_path = os.path.join(save_dir, "model.safetensors")

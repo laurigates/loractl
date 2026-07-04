@@ -170,29 +170,14 @@ fn tiny_gpt2_forward_matches_pytorch_golden() {
         &golden.hidden_after_block0,
         tol,
     );
-    // 3. After final LayerNorm.
-    //
-    // `trace.after_lnf` is the model's TRUE pre-head normed features — i.e. HF's
-    // last `hidden_states[-1]`, which is already `ln_f`-applied (verified: it has
-    // per-row mean 0 / std ~1, and `hidden_states[-1] @ wteᵀ` reproduces the
-    // logits exactly). The golden's `hidden_after_lnf`, however, is the
-    // reference's `model.transformer.ln_f(hidden_states[-1])` — i.e. `ln_f`
-    // applied a SECOND time to an already-normed state. So we reproduce that
-    // exact double application here (`ln_f(trace.after_lnf)`) to match the
-    // golden verbatim without perturbing the model. The authoritative `ln_f`
-    // correctness check is the logits stage below: `logits = after_lnf @ wteᵀ`
-    // against `golden.logits = hidden_states[-1] @ wteᵀ` (bit-exact in PyTorch).
-    let after_lnf_renorm = flatten(model.transformer.ln_f.forward(trace.after_lnf.clone()));
-    assert_stage(
-        "after_lnf (reference re-applies ln_f)",
-        &after_lnf_renorm,
-        &golden.hidden_after_lnf,
-        tol,
-    );
-    // Directly assert the model's own pre-head features are normalized (mean≈0),
-    // confirming `trace.after_lnf` really is the post-ln_f state, not the raw
-    // block output — the strong companion to the double-norm match above.
+    // 3. After final LayerNorm. `trace.after_lnf` is the model's pre-head normed
+    // features — HF's last `hidden_states[-1]`, which is already `ln_f`-applied
+    // (`hidden_states[-1] @ wteᵀ` reproduces the logits exactly), so the golden's
+    // `hidden_after_lnf` is that same single-`ln_f` state and we compare directly.
     let after_lnf = flatten(trace.after_lnf);
+    assert_stage("after_lnf", &after_lnf, &golden.hidden_after_lnf, tol);
+    // Companion invariant: the pre-head features are ln_f-normalized (row mean ≈ 0),
+    // confirming `trace.after_lnf` is the post-ln_f state, not the raw block output.
     let n_embd = model.config.n_embd;
     for row in after_lnf.chunks(n_embd) {
         let mean: f32 = row.iter().sum::<f32>() / n_embd as f32;
