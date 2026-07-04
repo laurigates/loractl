@@ -11,3 +11,11 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+# ML backend. `ndarray` is the portable CPU backend (no GPU/CUDA needed for the
+# MNIST correctness harness); `autodiff` wraps a backend for training. Backends
+# stay generic so a GPU backend (wgpu/cuda) can be swapped in later.
+burn = { version = "0.21", default-features = false, features = [
+    "std",
+    "ndarray",
+    "autodiff",
+] }

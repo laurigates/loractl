@@ -8,7 +8,8 @@ edition = "2024"
 license = "MIT"
 authors = ["Lauri Gates"]
 repository = "https://github.com/laurigates/loractl"
-rust-version = "1.85"
+# Bumped from 1.85 to satisfy burn 0.21's MSRV (see loractl-core dependency).
+rust-version = "1.92"
 
 [workspace.dependencies]
 anyhow = "1"
