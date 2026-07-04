@@ -67,6 +67,47 @@ A run is fully described by a YAML config (see `config/examples/lora.yaml`).
 Precedence, lowest to highest: **YAML file → `LORACTL_`-prefixed env vars →
 CLI flags.** Nested keys use `__` in env vars (`LORACTL_OUTPUT__DIR=/tmp/out`).
 
+## Observability (GlitchTip / Sentry)
+
+`loractl` reports errors and panics to a [GlitchTip](https://glitchtip.com)
+instance (GlitchTip speaks the Sentry ingest protocol, so the standard Rust
+`sentry` SDK is the client). Telemetry is **opt-in via one env var** and a
+complete no-op when it's unset — nothing GlitchTip-specific is baked into the
+repo.
+
+```sh
+# Point at the local kind-fvh-dev GlitchTip project's DSN
+export SENTRY_DSN='http://<key>@glitchtip.orb.local/<project-id>'
+loractl train config/examples/lora.yaml
+```
+
+What gets sent:
+
+| Signal | Becomes | Source |
+|---|---|---|
+| A panic | An issue | Sentry panic integration |
+| A fatal command error (non-zero exit) | An issue | `capture_anyhow` in `main` |
+| `tracing::error!` events | Issues | `sentry-tracing` layer |
+| `tracing::warn!` / `info!` events | Breadcrumbs on the next issue | `sentry-tracing` layer |
+
+Breadcrumb/issue delivery is independent of `RUST_LOG` — that variable only
+controls what the console `fmt` layer prints.
+
+### Reaching the kind-fvh-dev GlitchTip from the host
+
+The cluster exposes GlitchTip at `http://glitchtip.orb.local` (envoy gateway).
+If that name doesn't resolve on your machine (OrbStack's `*.orb.local` DNS
+doesn't always pick up newer HTTPRoutes), point it at the gateway so the SDK
+can deliver events:
+
+```sh
+echo "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=local-gateway -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')  glitchtip.orb.local" | sudo tee -a /etc/hosts
+```
+
+(As of writing the gateway IP is `192.168.97.4`; the command above reads it
+live in case it changes.) Verify: `curl -sS -o /dev/null -w '%{http_code}\n' http://glitchtip.orb.local/`
+should print a redirect/`200`.
+
 ## Roadmap
 
 - [x] **M1 — Skeleton.** Workspace, CLI (`train`/`sample`/`completions`),
