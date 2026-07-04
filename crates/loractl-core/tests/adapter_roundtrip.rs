@@ -17,6 +17,7 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Int, Tensor, TensorData, Tolerance};
 use loractl_core::LoraMlp;
 use loractl_core::adapter::{AdapterMeta, load_adapter, save_adapter};
+use loractl_core::sample::run_sample;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -118,9 +119,33 @@ fn round_trip_forward_matches_pre_save() {
     let pre_save_logits = valid_model.forward(probe.clone());
     let reloaded_logits = reloaded.forward(probe);
 
+    // `Tolerance::default()` resolves to `Tolerance::balanced()`: relative 0.5%
+    // and absolute 1e-5 (see `burn_tensor::data::compare::Tolerance`). The
+    // reconstruction is meant to be bit-identical (the same seed regenerates
+    // `fc1`/`fc2.base` deterministically, and `lora_a`/`lora_b` are the exact
+    // tensors read back off disk), but the reload deliberately runs through a
+    // FRESH backend instance/device (see above) to prove the reconstruction
+    // doesn't depend on shared state — so `default()`'s wider-than-`strict()`
+    // tolerance also absorbs any legitimate floating-point summation-order
+    // difference between the two backend instances, not just the intended
+    // zero-divergence case. Contrast with `lora_reference.rs`'s
+    // `Tolerance::absolute(1e-5)`, tuned for roundoff accumulated over 20
+    // training steps rather than a single deterministic reconstruction.
     pre_save_logits
         .into_data()
         .assert_approx_eq::<f32>(&reloaded_logits.into_data(), Tolerance::default());
+
+    // Also exercise the exact code path `loractl sample` runs
+    // (load_adapter -> run_sample, see crates/loractl-cli/src/cli.rs's
+    // `sample()`) so a regression in that glue — e.g. a shape mismatch from a
+    // future model.rs change — fails here instead of only being caught by
+    // manual testing (issue #3, acceptance criterion 2).
+    let sample_out =
+        run_sample(&reloaded, 0, &fresh_device).expect("run_sample succeeds on a reloaded adapter");
+    assert!(
+        sample_out.logits.iter().all(|l| l.is_finite()),
+        "sample logits from a freshly loaded adapter must be finite"
+    );
 }
 
 #[test]

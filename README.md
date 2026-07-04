@@ -158,10 +158,12 @@ design and its trade-offs.
   input, so the same prompt always reproduces the same output — an honest,
   reproducible effect, clearly distinct from generation, and the CLI prints
   this framing on every invocation.
-- **Periodic validation samples.** Setting `output.sample_every: N` (config or
-  `--` override) writes `sample-{step}.json` every N steps during training and
-  emits `TrainEvent::Sample`, using one **fixed** seed across the whole run so
-  the same probe input's prediction/logits can be compared across steps.
+- **Periodic validation samples.** Setting `output.sample_every: N` in the YAML
+  config writes `sample-{step}.json` every N steps during training and emits
+  `TrainEvent::Sample`, using one **fixed** seed across the whole run so the
+  same probe input's prediction/logits can be compared across steps. There is
+  no dedicated `--sample-every` CLI flag (`train` only has `--lr`/`--steps`);
+  override it via the config file or the `LORACTL_OUTPUT__SAMPLE_EVERY` env var.
 
 ```sh
 cargo run -p loractl-cli -- sample output/my-lora.safetensors --prompt "a test prompt"

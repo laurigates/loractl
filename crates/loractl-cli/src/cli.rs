@@ -194,7 +194,8 @@ fn sample(cmd: SampleCmd) -> Result<()> {
         .with_context(|| format!("loading adapter from {}", cmd.adapter.display()))?;
 
     let seed = loractl_core::sample::seed_from_prompt(cmd.prompt.as_deref());
-    let output = loractl_core::sample::run_sample(&model, seed, &device);
+    let output = loractl_core::sample::run_sample(&model, seed, &device)
+        .with_context(|| format!("sampling from adapter {}", cmd.adapter.display()))?;
 
     println!(
         "note: LoraMlp is a synthetic classifier with no tokenizer — `--prompt` \
@@ -204,8 +205,11 @@ fn sample(cmd: SampleCmd) -> Result<()> {
     );
     println!("predicted class: {}", output.predicted_class);
 
+    // `total_cmp` (never `partial_cmp(...).unwrap()`) so this can't panic even
+    // if a future change to `run_sample`'s validation is loosened — see
+    // `loractl_core::sample::run_sample` for the primary NaN/Inf guard.
     let mut ranked: Vec<(usize, f32)> = output.logits.iter().copied().enumerate().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
     println!("top logits:");
     for (class, logit) in ranked.iter().take(2) {
         println!("  class {class}: {logit:.4}");

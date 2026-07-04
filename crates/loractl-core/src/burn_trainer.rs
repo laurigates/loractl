@@ -152,7 +152,8 @@ impl Trainer for BurnTrainer {
 
                 if want_sample {
                     let sample_out =
-                        sample::run_sample(&valid_model, VALIDATION_SAMPLE_SEED, &device);
+                        sample::run_sample(&valid_model, VALIDATION_SAMPLE_SEED, &device)
+                            .with_context(|| format!("running validation sample at step {step}"))?;
                     let sample_path = config.output.dir.join(format!("sample-{step}.json"));
                     let report = serde_json::json!({
                         "step": step,

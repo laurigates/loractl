@@ -54,6 +54,7 @@
 
 use crate::model::LoraMlp;
 use anyhow::{Result, ensure};
+use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
 use burn_store::{ModuleSnapshot, PathFilter, SafetensorsStore};
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,18 @@ fn sidecar_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// `true` if every element of `tensor` is finite (not `NaN`/`±Inf`).
+///
+/// Used to guard both ends of adapter persistence: [`save_adapter`] refuses to
+/// write a NaN/Inf-poisoned adapter (e.g. from a training run that diverged
+/// under an unstable learning rate), and [`load_adapter`] refuses to hand back
+/// a model reconstructed from a corrupted/hand-edited `.safetensors` file —
+/// both fail with a clear error at the I/O boundary rather than deferring the
+/// failure to whatever later calls `model.forward(...)` (e.g. `run_sample`).
+fn all_finite<B: Backend, const D: usize>(tensor: &Tensor<B, D>) -> bool {
+    tensor.to_data().iter::<f32>().all(|v: f32| v.is_finite())
+}
+
 /// Save `model`'s trainable LoRA factors to `path` (a `.safetensors` file)
 /// plus a `<path>.json` sidecar describing how to reconstruct the frozen
 /// base.
@@ -102,6 +115,13 @@ fn sidecar_path(path: &Path) -> PathBuf {
 /// parent directory if it doesn't exist yet; overwrites an existing file at
 /// `path`.
 pub fn save_adapter<B: Backend>(model: &LoraMlp<B>, path: &Path, seed: u64) -> Result<()> {
+    ensure!(
+        all_finite(&model.fc2.lora_a.weight.val()) && all_finite(&model.fc2.lora_b.weight.val()),
+        "refusing to save adapter to {} — LoRA weights contain non-finite (NaN/Inf) \
+         values, most likely because training diverged",
+        path.display()
+    );
+
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -181,6 +201,11 @@ pub fn load_adapter<B: Backend>(path: &Path, device: &B::Device) -> Result<LoraM
         "expected exactly 2 applied LoRA tensors, got {}: {:?}",
         result.applied.len(),
         result.applied
+    );
+    ensure!(
+        all_finite(&model.fc2.lora_a.weight.val()) && all_finite(&model.fc2.lora_b.weight.val()),
+        "adapter at {} contains non-finite (NaN/Inf) LoRA weights — the file may be corrupted",
+        path.display()
     );
 
     Ok(model)

@@ -20,6 +20,7 @@
 //! such — not text generation.
 
 use crate::model::LoraMlp;
+use anyhow::{Result, ensure};
 use burn::tensor::backend::Backend;
 use burn::tensor::{Tensor, TensorData};
 
@@ -83,22 +84,39 @@ pub struct SampleOutput {
 ///
 /// The input width is read off `model.fc1` (`d_in`), so this works for any
 /// `LoraMlp` shape with no hardcoded constants.
-pub fn run_sample<B: Backend>(model: &LoraMlp<B>, seed: u64, device: &B::Device) -> SampleOutput {
+///
+/// Returns an error if the forward pass produces any non-finite (`NaN`/`Inf`)
+/// logit, instead of panicking (the former behavior of
+/// `partial_cmp(...).unwrap()`, which is `None` — and so panics — for any NaN
+/// operand) or silently picking an arbitrary "winning" class. This is
+/// reachable from a corrupted/hand-edited `.safetensors` adapter file, or an
+/// adapter saved after training diverged to `NaN`/`Inf` under an unstable
+/// learning rate.
+pub fn run_sample<B: Backend>(
+    model: &LoraMlp<B>,
+    seed: u64,
+    device: &B::Device,
+) -> Result<SampleOutput> {
     let d_in = model.fc1.weight.dims()[0];
     let data = splitmix64_vec(seed, d_in);
     let input = Tensor::<B, 2>::from_data(TensorData::new(data, [1, d_in]), device);
     let logits = model.forward(input);
     let logits: Vec<f32> = logits.into_data().convert::<f32>().into_vec().unwrap();
+    ensure!(
+        logits.iter().all(|l| l.is_finite()),
+        "model produced non-finite logits {logits:?} — the adapter may be corrupted \
+         or was saved after training diverged to NaN/Inf"
+    );
     let predicted_class = logits
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(i, _)| i)
         .unwrap_or(0);
-    SampleOutput {
+    Ok(SampleOutput {
         predicted_class,
         logits,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -123,9 +141,31 @@ mod tests {
         let device = Default::default();
         let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, &device);
 
-        let a = run_sample(&model, 42, &device);
-        let b = run_sample(&model, 42, &device);
+        let a = run_sample(&model, 42, &device).expect("run_sample succeeds");
+        let b = run_sample(&model, 42, &device).expect("run_sample succeeds");
 
         assert_eq!(a, b, "same model + seed must produce byte-identical output");
+    }
+
+    #[test]
+    fn run_sample_errors_on_non_finite_logits_instead_of_panicking() {
+        let device = Default::default();
+        let mut model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, &device);
+
+        // Simulate either a corrupted/hand-edited `.safetensors` file on disk,
+        // or an adapter saved after training diverged to NaN/Inf under an
+        // unstable learning rate — both leave a trainable LoRA weight
+        // containing a non-finite value.
+        let [rank, out] = model.fc2.lora_b.weight.dims();
+        let mut data = vec![0.0f32; rank * out];
+        data[0] = f32::NAN;
+        model.fc2.lora_b.weight =
+            burn::module::Param::from_data(TensorData::new(data, [rank, out]), &device);
+
+        let result = run_sample(&model, 42, &device);
+        assert!(
+            result.is_err(),
+            "run_sample must return an Err (not panic) when logits are non-finite"
+        );
     }
 }
