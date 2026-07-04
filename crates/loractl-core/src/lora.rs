@@ -103,7 +103,10 @@ impl<B: Backend> LoraLinear<B> {
 
 /// Return `linear` with every parameter marked as *not* requiring gradients, so
 /// autodiff produces no gradient for it and an optimizer leaves it untouched.
-fn freeze<B: Backend>(linear: Linear<B>) -> Linear<B> {
+///
+/// `pub(crate)` so [`crate::model::LoraMlp`] can freeze its dense feature layer
+/// with the same proven helper. Kept internal — not part of the public API.
+pub(crate) fn freeze<B: Backend>(linear: Linear<B>) -> Linear<B> {
     Linear {
         weight: linear.weight.set_require_grad(false),
         bias: linear.bias.map(|b| b.set_require_grad(false)),

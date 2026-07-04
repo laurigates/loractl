@@ -9,9 +9,13 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4).
 
-**Current status:** milestone 1 (skeleton). There is **no ML yet** — the
-default trainer is a dependency-free `MockTrainer` that drives the full
-pipeline with synthetic loss. burn + a real LoRA module arrive in M2 (#1).
+**Current status:** milestone 2 (correctness harness). The default trainer is a
+real, burn-backed `BurnTrainer` that trains a LoRA-adapted MLP with genuine
+autodiff, an optimizer, and cross-entropy loss. Out of the box it trains a
+**synthetic** LoRA-MLP demo (offline, fast); the LoRA numerics are pinned
+against a PyTorch reference and real MNIST is behind an opt-in `mnist` feature.
+The dependency-free `MockTrainer` is still available for pipeline testing.
+Real base-model weight loading is M3 (#2). See the roadmap in `README.md`.
 
 ## Commands
 
@@ -21,11 +25,14 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 |---|---|
 | Build the workspace | `just build` (`cargo build`) |
 | Run the CLI | `just run <args>` (`cargo run -p loractl-cli -- <args>`) |
-| Train from a config (mock trainer) | `just train [config]` — defaults to `config/examples/lora.yaml` |
+| Train from a config (synthetic demo) | `just train [config]` — defaults to `config/examples/lora.yaml` |
 | Generate shell completions | `just completions [shell]` (e.g. `just completions fish`) |
-| Lint (warnings-as-errors) | `just lint` (`cargo clippy --all-targets --all-features -- -D warnings`) |
+| Lint (warnings-as-errors) | `just lint` (`cargo clippy --all-targets -- -D warnings`, default/offline features) |
+| Lint the opt-in mnist path | `just lint-mnist` (compiles the networked dataset deps) |
 | Format / check format | `just fmt` / `just fmt-check` |
-| Tests | `just test` (`cargo test`) — no suite exists yet; M2 adds the first tests |
+| Tests (offline) | `just test` (`cargo test`) — numerics vs PyTorch golden + synthetic convergence |
+| Real-MNIST convergence proof | `just test-mnist` (opt-in, downloads MNIST) |
+| Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
 | One test by name | `cargo test -p loractl-core <test_name>` |
 
 Before committing, the meaningful gate is `just fmt-check && just lint` — CI

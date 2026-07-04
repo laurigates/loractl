@@ -14,7 +14,7 @@ use figment::{
     providers::{Env, Format, Yaml},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use loractl_core::{MockTrainer, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
@@ -156,7 +156,7 @@ fn train(cmd: TrainCmd) -> Result<()> {
         .progress_chars("=>-"),
     );
 
-    let mut trainer = MockTrainer;
+    let mut trainer = BurnTrainer;
     let adapter = trainer.train(&config, &mut |event| match event {
         TrainEvent::Started { total_steps } => bar.set_length(total_steps),
         TrainEvent::Step { step, loss, lr } => {

@@ -7,6 +7,8 @@
 //! - [`TrainEvent`] — the stream a trainer emits as it works.
 //! - [`Trainer`] — the contract a concrete backend implements.
 //! - [`LoraLinear`] — the frozen-base, low-rank adapter a real trainer learns.
+//! - [`LoraMlp`] — the tiny LoRA-adapted classifier the real trainer trains.
+//! - [`BurnTrainer`] — the real, burn-backed trainer (milestone 2).
 //!
 //! The design rule that keeps a future GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -14,12 +16,16 @@
 //! a future HTTP API would serialize the *same* events as SSE/JSON. Both are
 //! just different renderers over one pipeline.
 
+pub mod burn_trainer;
 pub mod config;
 pub mod event;
 pub mod lora;
+pub mod model;
 pub mod train;
 
+pub use burn_trainer::BurnTrainer;
 pub use config::TrainConfig;
 pub use event::TrainEvent;
 pub use lora::LoraLinear;
+pub use model::LoraMlp;
 pub use train::{MockTrainer, Trainer};
