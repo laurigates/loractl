@@ -15,18 +15,15 @@
 use burn::backend::{Autodiff, NdArray};
 use burn::data::dataset::Dataset;
 use burn::data::dataset::vision::MnistDataset;
-use burn::module::Module;
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::{Device, Tensor, TensorData};
+use loractl_core::adapter;
 use loractl_core::config::{DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig};
-use loractl_core::{BurnTrainer, LoraMlp, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
 type AB = Autodiff<NdArray>;
 
 const INPUT_DIM: usize = 784;
-const HIDDEN_DIM: usize = 256;
-const NUM_CLASSES: usize = 10;
 const RANK: usize = 8;
 const ALPHA: f64 = 16.0;
 
@@ -92,12 +89,13 @@ fn mnist_lora_converges() {
             dir: out_dir.clone(),
             name: "mnist-adapter".into(),
             checkpoint_every: 10_000,
+            sample_every: 0,
         },
     };
 
     let mut losses = Vec::new();
     let mut trainer = BurnTrainer;
-    let adapter = trainer
+    let adapter_path = trainer
         .train(&config, &mut |event| {
             if let TrainEvent::Step { loss, .. } = event {
                 losses.push(loss);
@@ -115,11 +113,10 @@ fn mnist_lora_converges() {
     );
 
     // Reload the written adapter (proves the checkpoint is a real, loadable
-    // record) and score accuracy on the MNIST test split.
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    let model = LoraMlp::<AB>::new(INPUT_DIM, HIDDEN_DIM, NUM_CLASSES, RANK, ALPHA, &device)
-        .load_file(adapter, &recorder, &device)
-        .expect("reload trained adapter record");
+    // adapter-only safetensors record — see `adapter.rs`) and score accuracy
+    // on the MNIST test split.
+    let model =
+        adapter::load_adapter::<AB>(&adapter_path, &device).expect("reload trained adapter record");
 
     let (x, labels) = eval_batch(&MnistDataset::test(), &device, 2_000);
     let preds: Vec<i64> = model

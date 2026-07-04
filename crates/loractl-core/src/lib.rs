@@ -11,6 +11,8 @@
 //! - [`BurnTrainer`] — the real, burn-backed trainer (milestone 2).
 //! - [`Gpt2`] — a hand-built GPT-2 that loads real HF safetensors weights,
 //!   with forward-pass parity vs. PyTorch (milestone 3).
+//! - [`adapter`] — adapter-only safetensors save/load (milestone 4).
+//! - [`sample`] — deterministic sampling from a trained `LoraMlp` (milestone 4).
 //!
 //! The design rule that keeps a future GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -18,12 +20,14 @@
 //! a future HTTP API would serialize the *same* events as SSE/JSON. Both are
 //! just different renderers over one pipeline.
 
+pub mod adapter;
 pub mod burn_trainer;
 pub mod config;
 pub mod event;
 pub mod gpt2;
 pub mod lora;
 pub mod model;
+pub mod sample;
 pub mod train;
 
 pub use burn_trainer::BurnTrainer;

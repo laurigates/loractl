@@ -7,6 +7,7 @@
 //! only the one line that constructs it.
 
 use anyhow::{Context, Result};
+use burn::backend::NdArray;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use figment::{
@@ -14,6 +15,7 @@ use figment::{
     providers::{Env, Format, Yaml},
 };
 use indicatif::{ProgressBar, ProgressStyle};
+use loractl_core::adapter;
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
@@ -35,7 +37,7 @@ enum Command {
     /// Train a LoRA adapter from a YAML config.
     Train(TrainCmd),
 
-    /// Generate a sample from a trained adapter. (not yet implemented)
+    /// Generate a sample from a trained adapter.
     Sample(SampleCmd),
 
     /// Print shell completions to stdout (e.g. `loractl completions zsh`).
@@ -61,10 +63,14 @@ struct TrainCmd {
 
 #[derive(Args)]
 struct SampleCmd {
-    /// Path to the trained adapter (`.safetensors`).
+    /// Path to the trained adapter (`.safetensors`; its `<path>.json`
+    /// metadata sidecar must sit alongside it).
     adapter: PathBuf,
 
-    /// Prompt to render.
+    /// Prompt to render. `LoraMlp` is a synthetic classifier, not a language
+    /// model, so this deterministically seeds the sample input rather than
+    /// generating text — see `loractl_core::sample` and
+    /// `docs/adrs/0002-adapter-format-and-sample-semantics.md`.
     #[arg(short, long)]
     prompt: Option<String>,
 }
@@ -182,10 +188,31 @@ fn train(cmd: TrainCmd) -> Result<()> {
 }
 
 fn sample(cmd: SampleCmd) -> Result<()> {
-    anyhow::bail!(
-        "`sample` is not implemented yet (arrives in milestone 2). \
-         adapter={}, prompt={:?}",
-        cmd.adapter.display(),
-        cmd.prompt,
-    )
+    // A plain (non-autodiff) CPU backend: sampling needs no gradients, and
+    // using the bare backend keeps the CLI decoupled from `BurnTrainer`'s
+    // private autodiff type alias.
+    let device: burn::tensor::Device<NdArray> = Default::default();
+    let model = adapter::load_adapter::<NdArray>(&cmd.adapter, &device).with_context(|| {
+        format!(
+            "loading adapter from {} (expects a <path>.json metadata sidecar alongside it)",
+            cmd.adapter.display()
+        )
+    })?;
+
+    // Fully-qualified (not `use`d) to avoid shadowing this function's own
+    // name, `sample`.
+    let seed = loractl_core::sample::seed_from_prompt(cmd.prompt.as_deref());
+    let output = loractl_core::sample::run_sample(&model, seed, &device);
+
+    println!(
+        "predicted_class: {}\nlogits: {:?}",
+        output.predicted_class, output.logits
+    );
+    println!(
+        "note: LoraMlp is a synthetic classifier, not a language model — \
+         --prompt deterministically seeds the sample input (seed={seed}) \
+         rather than generating text; real generative sampling awaits a \
+         future language-model milestone (see ADR-0002)."
+    );
+    Ok(())
 }

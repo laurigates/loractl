@@ -68,6 +68,10 @@ fn synthetic_training_converges() {
             // Larger than `steps` so no mid-run checkpoints — keeps the test fast
             // while still exercising the final-adapter write.
             checkpoint_every: 10_000,
+            // Validation samples are exercised by their own harness
+            // (`adapter_roundtrip.rs`); disabled here to keep this test focused
+            // on convergence.
+            sample_every: 0,
         },
     };
 
@@ -98,6 +102,13 @@ fn synthetic_training_converges() {
         adapter.exists(),
         "the final adapter record must exist on disk at {}",
         adapter.display()
+    );
+    // Regression pin for the M4 (#3) migration off the old `.mpk` full-model
+    // checkpoint format onto adapter-only `.safetensors`.
+    assert_eq!(
+        adapter.extension().and_then(|e| e.to_str()),
+        Some("safetensors"),
+        "the final adapter must be a .safetensors file, not the old .mpk format"
     );
     assert_eq!(
         losses.len(),

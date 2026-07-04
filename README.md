@@ -8,15 +8,18 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: real base model (milestone 3).** loractl now loads a **real
-> GPT-2's** safetensors weights into a hand-built [burn](https://burn.dev) module
-> tree and proves **forward-pass parity** against the PyTorch reference, then
-> attaches LoRA to the loaded model and runs a training step. The default trainer
-> remains the M2 `BurnTrainer` (a LoRA-adapted MLP with genuine autodiff, a real
-> optimizer, and cross-entropy loss, pinned against a PyTorch numerics golden);
-> the GPT-2 loading + parity harness ships as always-run offline tests plus an
-> opt-in real-`gpt2` test. The dependency-free `MockTrainer` is still available
-> for pipeline testing. See [Roadmap](#roadmap).
+> **Status: sampling & adapter I/O (milestone 4).** `loractl sample` now
+> produces real output from a saved adapter, adapters save to and load from
+> interoperable **safetensors** (adapter-only — just the trainable LoRA
+> factors, plus a JSON metadata sidecar), and training can emit optional
+> validation samples. M3 remains available: loractl loads a **real GPT-2's**
+> safetensors weights into a hand-built [burn](https://burn.dev) module tree
+> and proves **forward-pass parity** against the PyTorch reference, then
+> attaches LoRA to the loaded model and runs a training step. The default
+> trainer remains the M2 `BurnTrainer` (a LoRA-adapted MLP with genuine
+> autodiff, a real optimizer, and cross-entropy loss, pinned against a
+> PyTorch numerics golden). The dependency-free `MockTrainer` is still
+> available for pipeline testing. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -71,9 +74,12 @@ Recipes live in the `justfile` (`just` to list): `just build`, `just train`,
   synthetic classification set — no network, no dataset needed. It emits an
   honest warning that this is the M2 synthetic demo.
 - **Checkpoint format.** Checkpoints and the final adapter are written as
-  burn-native MessagePack records (`.mpk`) — every emitted path really exists on
-  disk. Interoperable **safetensors** adapter I/O is milestone 4
-  ([#3](https://github.com/laurigates/loractl/issues/3)), not yet here.
+  adapter-only **safetensors** files — only the trainable LoRA factors
+  (`fc2.lora_a.weight`, `fc2.lora_b.weight`), never the frozen base — plus a
+  `<path>.json` metadata sidecar (seed, rank, alpha, dimensions) that makes
+  the file self-describing enough to reconstruct the rest. See [Sampling &
+  adapter I/O (M4)](#sampling--adapter-io-m4) below and
+  [ADR-0002](docs/adrs/0002-adapter-format-and-sample-semantics.md).
 - **Numerics proof.** `cargo test` (a.k.a. `just test`) runs an always-on,
   offline test that reproduces a deterministic LoRA toy and asserts its trained
   factors and per-step losses against a checked-in PyTorch golden fixture
@@ -125,6 +131,57 @@ the no-transpose loading story, and the verification methodology.
 - **Regenerate goldens.** `just gpt2-tiny-reference` rebuilds the checked-in tiny
   fixture; `just gpt2-reference` produces the (uncommitted) real-gpt2 fixture.
   Both need `torch`/`transformers` via `uv`.
+
+### Sampling & adapter I/O (M4)
+
+`crates/loractl-core/src/adapter.rs` and `src/sample.rs` implement milestone 4
+([#3](https://github.com/laurigates/loractl/issues/3)). See
+[ADR-0002](docs/adrs/0002-adapter-format-and-sample-semantics.md) for the full
+decision record.
+
+- **Tensor-naming scheme.** An adapter file holds *only* the two trainable
+  LoRA factors, at their natural burn module path:
+
+  | Path | Meaning |
+  |---|---|
+  | `fc2.lora_a.weight` | Down-projection `A`, `hidden -> rank` |
+  | `fc2.lora_b.weight` | Up-projection `B`, `rank -> out` |
+
+  The frozen base (`fc1.*`, `fc2.base.*`) is never written — that's the whole
+  point of an "adapter" as distinct from a full model checkpoint. This
+  mirrors the *pattern* of community LoRA conventions (HF PEFT names its
+  factors `lora_A`/`lora_B`) without claiming literal PEFT interop —
+  `LoraMlp` is a synthetic classifier, not a downloadable public base model.
+- **The `<path>.json` metadata sidecar.** burn-store 0.21's safetensors
+  metadata is write-only (no public read-back API — verified against the
+  crate source), so `save_adapter` writes a plain JSON sidecar next to the
+  `.safetensors` file holding the training seed plus rank/alpha/dimensions.
+  `load_adapter` re-seeds the device with that seed and reconstructs the
+  model immediately, which reproduces the frozen base **bit-identically**
+  without ever persisting it — the same two-file shape as HF PEFT's
+  `adapter_model.safetensors` + `adapter_config.json`.
+- **`loractl sample`.** Loads an adapter, derives a deterministic seed from
+  `--prompt` (or `0` with no prompt), and runs the model on a synthetic input
+  built from that seed — printing the predicted class and logits.
+  **Honesty note:** `LoraMlp` is a synthetic/MNIST-shaped classifier, not a
+  language model — there is no tokenizer, so `--prompt` deterministically
+  seeds the sample input rather than generating text. Real generative
+  sampling awaits a future language-model milestone (see
+  [ADR-0001](docs/adrs/0001-first-real-target-model.md)).
+- **In-training validation samples.** Set `output.sample_every: N` (`0` =
+  disabled, the default) in the training config; every `N`th step,
+  `BurnTrainer` runs one sample against a fixed probe input and writes
+  `sample-{step}.json`, emitting `TrainEvent::Sample`. Using the same fixed
+  probe every time (not a fresh random one) is the point — it lets you watch
+  one input's prediction evolve across `sample-N.json` files as training
+  progresses.
+- **Round-trip proof.** `cargo test` (`just test`) includes
+  `tests/adapter_roundtrip.rs`: trains one real optimizer step (so the
+  adapter's `lora_b` factor is genuinely non-zero — a fresh, all-zero adapter
+  would trivially "round-trip" even through a broken load path), saves,
+  reloads on a plain backend, and asserts the forward pass is bit-identical.
+  It also asserts the safetensors file holds *exactly* the two LoRA tensors
+  and that the sidecar metadata round-trips.
 
 ## Config
 
@@ -187,8 +244,15 @@ should print a redirect/`200`.
       proven against PyTorch on a checked-in tiny GPT-2 (offline, always-run) and
       real `gpt2` (opt-in); LoRA attached to the loaded model runs a training
       step. See [ADR-0001](docs/adrs/0001-first-real-target-model.md).
-- [ ] **M4 — Sampling & adapter I/O** ([#3](https://github.com/laurigates/loractl/issues/3))**.** `loractl sample`, safetensors
-      adapter read/write, and validation samples emitted during training.
+- [x] **M4 — Sampling & adapter I/O** ([#3](https://github.com/laurigates/loractl/issues/3))**.** Adapters save to and load
+      from adapter-only safetensors (LoRA factors only, plus a JSON metadata
+      sidecar for self-describing reconstruction of the frozen base);
+      `loractl sample` produces real output from a saved adapter, with
+      `--prompt` deterministically seeding a synthetic input (honest about
+      `LoraMlp` being a classifier, not a language model); optional
+      in-training validation samples are written and reported via
+      `TrainEvent::Sample`. See
+      [ADR-0002](docs/adrs/0002-adapter-format-and-sample-semantics.md).
 - [ ] **M5 — API crate** ([#4](https://github.com/laurigates/loractl/issues/4))**.** Expose the event stream over HTTP so a GUI can be
       built independently.
 

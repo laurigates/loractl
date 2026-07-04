@@ -29,6 +29,12 @@ burn-store = { version = "0.21.0", default-features = false, features = [
     "safetensors",
     "std",
 ] }
+# Adapter-metadata sidecar (M4, #3): burn-store's safetensors `__metadata__`
+# is write-only in 0.21 (no public read-back API — see `adapter.rs`), so the
+# self-describing bits (seed, rank, alpha, dims) needed to reconstruct a
+# LoRA adapter live in a plain `<path>.json` sidecar instead. Real runtime
+# dependency, not dev-only: `adapter.rs`/`burn_trainer.rs` read/write it.
+serde_json = "1"
 
 [features]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
@@ -43,7 +49,3 @@ mnist = ["burn/dataset", "burn/vision"]
 # transformers) and the Rust test reads them from disk. Kept out of the default
 # build so `cargo test` stays offline and needs no multi-hundred-MB fixture.
 gpt2-real = []
-
-[dev-dependencies]
-# Reads the checked-in PyTorch golden fixture in the always-run numerics test.
-serde_json = "1"

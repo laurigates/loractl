@@ -17,6 +17,13 @@ loractl-core = { path = "../loractl-core" }
 anyhow.workspace = true
 serde.workspace = true
 tracing.workspace = true
+# Plain (non-autodiff) CPU backend for `sample` — no gradients needed, and
+# using the bare backend (rather than reaching into `BurnTrainer`'s private
+# autodiff type alias) keeps the CLI decoupled from the trainer's internals.
+burn = { version = "0.21", default-features = false, features = [
+    "std",
+    "ndarray",
+] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 figment = { version = "0.10", features = ["yaml", "env"] }

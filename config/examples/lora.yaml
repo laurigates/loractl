@@ -28,3 +28,6 @@ output:
   dir: ./output
   name: my-lora
   checkpoint_every: 250
+  # Write a validation sample (see `loractl_core::sample`) every N steps;
+  # 0 disables it. Samples land alongside checkpoints as `sample-N.json`.
+  sample_every: 0
