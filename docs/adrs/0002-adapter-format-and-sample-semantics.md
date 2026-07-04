@@ -194,8 +194,10 @@ actually did, always.
 **Risks & mitigations**
 
 - *Frozen-base reconstruction silently drifting* → pinned by
-  `tests/adapter_roundtrip.rs`'s bit-exact forward-output comparison after a
-  real (non-zero-`lora_b`) training step, which would fail loudly if the
+  `tests/adapter_roundtrip.rs`'s forward-output comparison (within
+  `Tolerance::default()` — burn's *balanced* preset, 0.5% relative /
+  `1e-5` absolute; **not** literally bit-for-bit) after a real
+  (non-zero-`lora_b`) training step, which would fail loudly if the
   reconstruction ever diverged.
 - *A trivial "round-trip" that doesn't actually prove the load path* →
   the round-trip test runs one real optimizer step before saving, specifically

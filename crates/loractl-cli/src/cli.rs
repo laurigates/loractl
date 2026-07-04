@@ -7,7 +7,6 @@
 //! only the one line that constructs it.
 
 use anyhow::{Context, Result};
-use burn::backend::NdArray;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use figment::{
@@ -16,7 +15,7 @@ use figment::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use loractl_core::adapter;
-use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
@@ -190,8 +189,10 @@ fn train(cmd: TrainCmd) -> Result<()> {
 fn sample(cmd: SampleCmd) -> Result<()> {
     // A plain (non-autodiff) CPU backend: sampling needs no gradients, and
     // using the bare backend keeps the CLI decoupled from `BurnTrainer`'s
-    // private autodiff type alias.
-    let device: burn::tensor::Device<NdArray> = Default::default();
+    // private autodiff type alias. `NdArray`/`Device` are re-exported from
+    // `loractl_core` so the CLI doesn't need its own direct `burn` dependency
+    // just to name them.
+    let device: Device<NdArray> = Default::default();
     let model = adapter::load_adapter::<NdArray>(&cmd.adapter, &device).with_context(|| {
         format!(
             "loading adapter from {} (expects a <path>.json metadata sidecar alongside it)",

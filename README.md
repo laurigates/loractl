@@ -135,53 +135,30 @@ the no-transpose loading story, and the verification methodology.
 ### Sampling & adapter I/O (M4)
 
 `crates/loractl-core/src/adapter.rs` and `src/sample.rs` implement milestone 4
-([#3](https://github.com/laurigates/loractl/issues/3)). See
-[ADR-0002](docs/adrs/0002-adapter-format-and-sample-semantics.md) for the full
-decision record.
+([#3](https://github.com/laurigates/loractl/issues/3)) — adapter-only
+safetensors I/O, `loractl sample`, and optional in-training validation
+samples. The tensor-naming scheme, the metadata-sidecar rationale, and the
+`--prompt`-seeds-not-generates honesty note are documented once, in
+`adapter.rs`'s and `sample.rs`'s own module docs — that's the canonical
+reference. See [ADR-0002](docs/adrs/0002-adapter-format-and-sample-semantics.md)
+for the full decision record. In short:
 
-- **Tensor-naming scheme.** An adapter file holds *only* the two trainable
-  LoRA factors, at their natural burn module path:
-
-  | Path | Meaning |
-  |---|---|
-  | `fc2.lora_a.weight` | Down-projection `A`, `hidden -> rank` |
-  | `fc2.lora_b.weight` | Up-projection `B`, `rank -> out` |
-
-  The frozen base (`fc1.*`, `fc2.base.*`) is never written — that's the whole
-  point of an "adapter" as distinct from a full model checkpoint. This
-  mirrors the *pattern* of community LoRA conventions (HF PEFT names its
-  factors `lora_A`/`lora_B`) without claiming literal PEFT interop —
-  `LoraMlp` is a synthetic classifier, not a downloadable public base model.
-- **The `<path>.json` metadata sidecar.** burn-store 0.21's safetensors
-  metadata is write-only (no public read-back API — verified against the
-  crate source), so `save_adapter` writes a plain JSON sidecar next to the
-  `.safetensors` file holding the training seed plus rank/alpha/dimensions.
-  `load_adapter` re-seeds the device with that seed and reconstructs the
-  model immediately, which reproduces the frozen base **bit-identically**
-  without ever persisting it — the same two-file shape as HF PEFT's
-  `adapter_model.safetensors` + `adapter_config.json`.
-- **`loractl sample`.** Loads an adapter, derives a deterministic seed from
-  `--prompt` (or `0` with no prompt), and runs the model on a synthetic input
-  built from that seed — printing the predicted class and logits.
-  **Honesty note:** `LoraMlp` is a synthetic/MNIST-shaped classifier, not a
-  language model — there is no tokenizer, so `--prompt` deterministically
-  seeds the sample input rather than generating text. Real generative
-  sampling awaits a future language-model milestone (see
-  [ADR-0001](docs/adrs/0001-first-real-target-model.md)).
-- **In-training validation samples.** Set `output.sample_every: N` (`0` =
-  disabled, the default) in the training config; every `N`th step,
-  `BurnTrainer` runs one sample against a fixed probe input and writes
-  `sample-{step}.json`, emitting `TrainEvent::Sample`. Using the same fixed
-  probe every time (not a fresh random one) is the point — it lets you watch
-  one input's prediction evolve across `sample-N.json` files as training
-  progresses.
-- **Round-trip proof.** `cargo test` (`just test`) includes
-  `tests/adapter_roundtrip.rs`: trains one real optimizer step (so the
-  adapter's `lora_b` factor is genuinely non-zero — a fresh, all-zero adapter
-  would trivially "round-trip" even through a broken load path), saves,
-  reloads on a plain backend, and asserts the forward pass is bit-identical.
-  It also asserts the safetensors file holds *exactly* the two LoRA tensors
-  and that the sidecar metadata round-trips.
+- Adapters save to and load from **safetensors**, holding only the two
+  trainable LoRA factors plus a `<path>.json` metadata sidecar (seed, rank,
+  alpha, dimensions) that makes the file self-describing.
+- `loractl sample <adapter> --prompt <text>` loads an adapter and prints its
+  predicted class and logits; `LoraMlp` is a classifier, not a language
+  model, so `--prompt` deterministically seeds the sample input rather than
+  generating text.
+- `output.sample_every: N` (`0` = disabled, the default) makes `BurnTrainer`
+  write a `sample-{step}.json` and emit `TrainEvent::Sample` every `N`th
+  step, sampling a fixed probe input so its prediction can be watched
+  evolving across steps.
+- `just test` includes `tests/adapter_roundtrip.rs`: a real training step,
+  save, reload, and forward-pass comparison within `Tolerance::default()`
+  (burn's *balanced* preset — 0.5% relative, `1e-5` absolute; not literally
+  bit-for-bit — see the test's module docs for why that still proves the
+  load path is correct).
 
 ## Config
 

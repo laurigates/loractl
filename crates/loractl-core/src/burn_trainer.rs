@@ -35,7 +35,7 @@ use crate::adapter;
 use crate::config::TrainConfig;
 use crate::event::TrainEvent;
 use crate::model::LoraMlp;
-use crate::sample;
+use crate::sample::{self, SampleOutput};
 use crate::train::Trainer;
 use anyhow::{Context, Result};
 use burn::backend::{Autodiff, NdArray};
@@ -44,7 +44,19 @@ use burn::nn::loss::CrossEntropyLossConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::Backend;
 use burn::tensor::{Device, Distribution, Int, Tensor, TensorData};
+use serde::Serialize;
 use std::path::PathBuf;
+
+/// The on-disk shape of `sample-{step}.json`: the run's step number plus
+/// [`SampleOutput`]'s own fields, flattened to one flat JSON object. Wrapping
+/// (rather than hand-listing `predicted_class`/`logits` again) means this
+/// can't drift from `SampleOutput`'s actual fields.
+#[derive(Serialize)]
+struct SampleReport<'a> {
+    step: u64,
+    #[serde(flatten)]
+    sample: &'a SampleOutput,
+}
 
 /// The fixed probe input for every in-training validation sample. Using the
 /// *same* input for every `TrainEvent::Sample` (rather than a fresh random
@@ -146,11 +158,14 @@ impl Trainer for BurnTrainer {
                     let sample_output =
                         sample::run_sample(&valid_model, VALIDATION_SAMPLE_SEED, &device);
                     let path = config.output.dir.join(format!("sample-{step}.json"));
-                    let report = serde_json::json!({
-                        "step": step,
-                        "predicted_class": sample_output.predicted_class,
-                        "logits": sample_output.logits,
-                    });
+                    // Flatten `SampleOutput`'s own (derived-`Serialize`)
+                    // fields alongside `step`, rather than hand-copying its
+                    // field list — a future field added to `SampleOutput`
+                    // can't silently be missed here.
+                    let report = SampleReport {
+                        step,
+                        sample: &sample_output,
+                    };
                     let report_json = serde_json::to_string_pretty(&report)
                         .context("serializing validation sample report")?;
                     std::fs::write(&path, report_json)

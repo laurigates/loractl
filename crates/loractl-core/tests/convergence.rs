@@ -13,27 +13,8 @@ use loractl_core::config::{DatasetConfig, LoraConfig, ModelConfig, OptimConfig, 
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
-/// A unique temp output dir so concurrent test runs don't collide or litter the
-/// repo. Removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("loractl-{tag}-{}-{nanos}", std::process::id()));
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::TempDir;
 
 fn mean(xs: &[f32]) -> f32 {
     xs.iter().sum::<f32>() / xs.len() as f32
@@ -68,9 +49,8 @@ fn synthetic_training_converges() {
             // Larger than `steps` so no mid-run checkpoints — keeps the test fast
             // while still exercising the final-adapter write.
             checkpoint_every: 10_000,
-            // Validation samples are exercised by their own harness
-            // (`adapter_roundtrip.rs`); disabled here to keep this test focused
-            // on convergence.
+            // Validation samples are exercised by `validation_samples_are_written_and_reported`
+            // below; disabled here to keep this test focused on convergence.
             sample_every: 0,
         },
     };
@@ -130,4 +110,93 @@ fn synthetic_training_converges() {
         last < 0.7 * first,
         "loss should trend down: first-third mean {first:.4}, last-third mean {last:.4}"
     );
+}
+
+/// Issue #3 (M4), acceptance criterion 3: in-training validation samples are
+/// gated by `output.sample_every` and reported via `TrainEvent::Sample`.
+///
+/// Drives the real `BurnTrainer` with `sample_every` set to a divisor of
+/// `steps` and asserts, as a black box: a `Sample` event fires at every
+/// multiple of `sample_every` (and only there), the `sample-{step}.json`
+/// file it names actually exists, and its contents are a parseable report
+/// naming the same step plus a predicted class and logits. This is the only
+/// automated coverage of `burn_trainer.rs`'s `sample_due` gate and
+/// `TrainEvent::Sample` wiring — `adapter_roundtrip.rs` never calls
+/// `BurnTrainer::train` at all, so it does not exercise this path.
+#[test]
+fn validation_samples_are_written_and_reported() {
+    let steps = 10u64;
+    let sample_every = 5u64;
+    let out = TempDir::new("sample");
+    let config = TrainConfig {
+        steps,
+        seed: 7,
+        model: ModelConfig {
+            base: "synthetic".into(),
+        },
+        lora: LoraConfig {
+            rank: 4,
+            alpha: 8.0,
+            dropout: 0.0,
+        },
+        dataset: DatasetConfig {
+            path: PathBuf::from("unused"),
+            resolution: 28,
+        },
+        optim: OptimConfig {
+            lr: 0.01,
+            weight_decay: 0.0,
+        },
+        output: OutputConfig {
+            dir: out.0.clone(),
+            name: "adapter".into(),
+            // No mid-run checkpoints — keep this test focused on sampling.
+            checkpoint_every: 10_000,
+            sample_every,
+        },
+    };
+
+    let mut sample_events = Vec::new();
+    let mut trainer = BurnTrainer;
+    trainer
+        .train(&config, &mut |event| {
+            if let TrainEvent::Sample { step, path } = event {
+                sample_events.push((step, path));
+            }
+        })
+        .expect("training run succeeds");
+
+    assert_eq!(
+        sample_events
+            .iter()
+            .map(|(step, _)| *step)
+            .collect::<Vec<_>>(),
+        vec![5, 10],
+        "a Sample event must fire at exactly every multiple of sample_every"
+    );
+
+    for (step, path) in &sample_events {
+        assert!(
+            path.exists(),
+            "sample-{step}.json must actually exist on disk at {}",
+            path.display()
+        );
+        let contents = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("reading validation sample report {}: {e}", path.display()));
+        let report: serde_json::Value = serde_json::from_str(&contents)
+            .unwrap_or_else(|e| panic!("parsing validation sample report {}: {e}", path.display()));
+        assert_eq!(
+            report["step"].as_u64(),
+            Some(*step),
+            "report must name its own step"
+        );
+        assert!(
+            report["predicted_class"].is_u64(),
+            "report must contain a predicted_class: {report}"
+        );
+        assert!(
+            report["logits"].as_array().is_some_and(|l| !l.is_empty()),
+            "report must contain non-empty logits: {report}"
+        );
+    }
 }

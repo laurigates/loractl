@@ -23,11 +23,17 @@
 //! [`splitmix64`]: https://prng.di.unimi.it/splitmix64.c
 
 use crate::model::LoraMlp;
-use burn::tensor::backend::Backend;
-use burn::tensor::{Tensor, TensorData};
+use burn::backend::NdArray;
+use burn::tensor::{Device, Tensor, TensorData};
+use serde::Serialize;
 
 /// The result of one deterministic sample run.
-#[derive(Debug, Clone)]
+///
+/// `Serialize` is derived (not hand-implemented at each call site) so that
+/// `burn_trainer.rs`'s in-training `sample-{step}.json` report can reuse this
+/// struct's own field names directly — a future field added here (e.g. a
+/// confidence score) can't silently be missed by a hand-copied field list.
+#[derive(Debug, Clone, Serialize)]
 pub struct SampleOutput {
     /// The argmax class over `logits`.
     pub predicted_class: usize,
@@ -71,11 +77,15 @@ fn synthetic_input(seed: u64, len: usize) -> Vec<f32> {
 /// cross-module constant — so this works unmodified whether called cold from
 /// the CLI (a freshly [`load_adapter`](crate::adapter::load_adapter)ed model)
 /// or from inside [`crate::burn_trainer`]'s in-training validation-sample
-/// path (a live model already in scope).
-pub fn run_sample<B: Backend>(model: &LoraMlp<B>, seed: u64, device: &B::Device) -> SampleOutput {
+/// path (a live model already in scope). Both call sites use the same
+/// concrete `NdArray` backend today (this crate is single-model,
+/// single-backend), so — unlike [`crate::adapter::load_adapter`], which
+/// genuinely is exercised with a second (autodiff) backend — this isn't
+/// backend-generic.
+pub fn run_sample(model: &LoraMlp<NdArray>, seed: u64, device: &Device<NdArray>) -> SampleOutput {
     let d_in = model.fc1.weight.dims()[0];
     let input = synthetic_input(seed, d_in);
-    let x = Tensor::<B, 2>::from_data(TensorData::new(input, [1, d_in]), device);
+    let x = Tensor::<NdArray, 2>::from_data(TensorData::new(input, [1, d_in]), device);
     let logits = model.forward(x);
 
     let logits: Vec<f32> = logits

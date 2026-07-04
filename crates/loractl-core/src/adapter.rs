@@ -60,6 +60,7 @@
 
 use crate::model::LoraMlp;
 use anyhow::{Context, Result};
+use burn::backend::NdArray;
 use burn::tensor::backend::Backend;
 use burn_store::{ModuleSnapshot, PathFilter, SafetensorsStore};
 use serde::{Deserialize, Serialize};
@@ -106,7 +107,13 @@ fn sidecar_path(path: &Path) -> PathBuf {
 /// why that's what makes the file self-describing). `rank`/`alpha`/the
 /// model's dimensions are derived from `model` itself — nothing here is a
 /// hardcoded constant.
-pub fn save_adapter<B: Backend>(model: &LoraMlp<B>, path: &Path, seed: u64) -> Result<()> {
+///
+/// Takes the concrete `NdArray` backend rather than `<B: Backend>`: every
+/// caller (`BurnTrainer`'s `.valid()`-snapshotted model, the round-trip
+/// test's post-training-step model) already passes a `LoraMlp<NdArray>` —
+/// unlike [`load_adapter`], which genuinely is exercised with a second
+/// (autodiff) backend, so it stays backend-generic.
+pub fn save_adapter(model: &LoraMlp<NdArray>, path: &Path, seed: u64) -> Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating adapter output dir {}", parent.display()))?;

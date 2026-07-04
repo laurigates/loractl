@@ -4,9 +4,11 @@
 //! Trains a tiny [`LoraMlp`] for one real optimizer step first — `lora_b` is
 //! zero-initialized, so saving/loading a freshly constructed adapter would
 //! trivially "round-trip" even through a broken load path (zero stays zero
-//! either way). After the step `lora_b` has genuinely moved, so a bit-exact
-//! forward match after save+reload is real evidence the load path is
-//! correct, not a coincidence of the initialization.
+//! either way). After the step `lora_b` has genuinely moved, so a forward
+//! match after save+reload — within `Tolerance::default()`, burn's
+//! *balanced* preset (0.5% relative, `1e-5` absolute; **not** literally
+//! bit-for-bit) — is real evidence the load path is correct, not a
+//! coincidence of the initialization.
 //!
 //! Also asserts (offline, always-run):
 //! - the safetensors file holds *exactly* the two trainable LoRA tensors —
@@ -28,6 +30,9 @@ use loractl_core::sample;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+mod support;
+use support::TempDir;
+
 /// Autodiff-wrapped CPU backend for the one real training step.
 type AB = Autodiff<NdArray>;
 /// The plain (non-autodiff) backend the reloaded model lives on.
@@ -39,28 +44,6 @@ const HIDDEN: usize = 6;
 const OUT: usize = 4;
 const RANK: usize = 2;
 const ALPHA: f64 = 8.0;
-
-/// A unique temp output dir so concurrent test runs don't collide or litter
-/// the repo. Removed on drop. (Mirrors `tests/convergence.rs`'s helper.)
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("loractl-{tag}-{}-{nanos}", std::process::id()));
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 fn fixed_input<B: Backend>(device: &B::Device) -> Tensor<B, 2> {
     Tensor::<B, 2>::from_data(
@@ -138,6 +121,11 @@ fn adapter_round_trips_after_a_real_training_step() {
 
     let expected = pre_save.forward(fixed_input::<TB>(&device));
     let actual = reloaded.forward(fixed_input::<TB>(&device));
+    // `Tolerance::default()` is burn's *balanced* preset (0.5% relative,
+    // `1e-5` absolute — see `burn-backend`'s `Tolerance::balanced()`): an
+    // approximate comparison, not literally bit-for-bit. Acceptance
+    // criterion 1 ("bit-for-bit OR documented tolerance") is satisfied via
+    // the documented-tolerance branch, not the bit-exact one.
     expected
         .into_data()
         .assert_approx_eq::<f32>(&actual.into_data(), Tolerance::default());
