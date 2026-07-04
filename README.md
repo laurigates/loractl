@@ -187,12 +187,15 @@ should print a redirect/`200`.
       proven against PyTorch on a checked-in tiny GPT-2 (offline, always-run) and
       real `gpt2` (opt-in); LoRA attached to the loaded model runs a training
       step. See [ADR-0001](docs/adrs/0001-first-real-target-model.md).
-- [ ] **M4 — Sampling, adapter I/O & modern arch** ([#3](https://github.com/laurigates/loractl/issues/3))**.** `loractl sample`, safetensors
-      adapter read/write, validation samples during training — and the next base
-      family, **SmolLM2-135M** (modern LLaMA-style: RoPE + RMSNorm + SwiGLU; note
-      burn's RoPE is interleaved vs HF's half-split — see ADR-0001).
+- [ ] **M4 — Sampling & adapter I/O** ([#3](https://github.com/laurigates/loractl/issues/3))**.** `loractl sample`, safetensors
+      adapter read/write, and validation samples emitted during training.
 - [ ] **M5 — API crate** ([#4](https://github.com/laurigates/loractl/issues/4))**.** Expose the event stream over HTTP so a GUI can be
       built independently.
+
+A natural next *target model* (beyond the tracked milestones) is **SmolLM2-135M**
+— a modern LLaMA-style architecture (RoPE + RMSNorm + SwiGLU) that reuses M3's
+loader and parity harness; note burn's RoPE is *interleaved* vs HF's *half-split*
+(see [ADR-0001](docs/adrs/0001-first-real-target-model.md)).
 
 ## License
 

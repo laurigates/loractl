@@ -245,14 +245,17 @@ KV-head repetition, and the SwiGLU split. The determinism goal of an authored
 model is met instead by our **checked-in tiny GPT-2 fixture** — same benefit, on
 the chosen family's exact code path.
 
-**SmolLM2-135M / Qwen2-0.5B (modern LLaMA arch, Apache-2.0) — the M4 follow-on.**
-Deferred to M4. These earn RoPE + RMSNorm + SwiGLU + GQA. burn-nn 0.21 ships the
+**SmolLM2-135M / Qwen2-0.5B (modern LLaMA arch, Apache-2.0) — the next target
+model.** A future modern-architecture increment that reuses this M3 loader +
+parity harness — distinct from the tracked M4 (sampling + adapter I/O, #3) and
+M5 (API, #4) milestones; it is a *target-model* follow-on, not a numbered
+milestone. These earn RoPE + RMSNorm + SwiGLU + GQA. burn-nn 0.21 ships the
 primitives (`RmsNorm`, `RotaryEncoding`, `SwiGlu`), so this is a follow-on, not
 a dead end — but with a **banked warning**: burn's `RotaryEncoding` uses the
 *interleaved* (adjacent-pair) rotation convention, whereas HF LLaMA/SmolLM use
 the *half-split* (`rotate_half`) convention. Loading HF RoPE weights into burn's
 default RoPE without accounting for that mismatch produces "logits almost match
-but not quite" — exactly the class GPT-2 sidesteps. M4 must pin the RoPE
+but not quite" — exactly the class GPT-2 sidesteps. That work must pin the RoPE
 convention explicitly, the way M3 pins GELU/LayerNorm here.
 
 **`burn-import` (ONNX/PyTorch codegen).** Rejected — a build-time whole-graph
@@ -280,7 +283,8 @@ won't match GPT-2's pre-LN block.
 - The checked-in tiny GPT-2 fixture keeps `cargo test` offline, fast, and
   deterministic while proving the exact architecture code path; real `gpt2`
   stays opt-in behind `--features gpt2-real` (mirrors M2's MNIST gating).
-- A clean runway to M4 (SmolLM2) once the harness is proven.
+- A clean runway to a modern-arch target (SmolLM2) once the harness is proven,
+  and to the tracked M4 (sampling + adapter I/O) / M5 (API) milestones.
 
 **Negative / costs**
 
