@@ -37,3 +37,10 @@ pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::LoraLinear;
 pub use model::LoraMlp;
 pub use train::{MockTrainer, Trainer};
+
+// Re-exported so `loractl-cli` can name the concrete inference backend/device
+// (`sample()` in `cli.rs`) without needing its own direct `burn` dependency —
+// keeping the CLI's `Cargo.toml` from having to track burn's version/features
+// a second time in lockstep with this crate's.
+pub use burn::backend::NdArray;
+pub use burn::tensor::Device;

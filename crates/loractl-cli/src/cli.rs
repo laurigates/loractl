@@ -14,7 +14,7 @@ use figment::{
     providers::{Env, Format, Yaml},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
@@ -186,9 +186,12 @@ fn train(cmd: TrainCmd) -> Result<()> {
 
 fn sample(cmd: SampleCmd) -> Result<()> {
     // Inference-only: no autodiff needed, so this is decoupled from
-    // `BurnTrainer`'s internal Autodiff-wrapped backend type.
-    type B = burn::backend::NdArray;
-    let device: burn::tensor::Device<B> = Default::default();
+    // `BurnTrainer`'s internal Autodiff-wrapped backend type. `NdArray`/
+    // `Device` are re-exported from `loractl-core` (rather than depending on
+    // `burn` directly here) so this crate's `Cargo.toml` doesn't track
+    // burn's version/features a second time in lockstep with core's.
+    type B = NdArray;
+    let device: Device<B> = Default::default();
 
     let model = loractl_core::adapter::load_adapter::<B>(&cmd.adapter, &device)
         .with_context(|| format!("loading adapter from {}", cmd.adapter.display()))?;
