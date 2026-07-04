@@ -3452,6 +3452,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "burn",
+ "burn-store",
  "serde",
  "serde_json",
 ]

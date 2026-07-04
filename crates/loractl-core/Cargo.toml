@@ -19,6 +19,16 @@ burn = { version = "0.21", default-features = false, features = [
     "ndarray",
     "autodiff",
 ] }
+# Safetensors weight loading for the real GPT-2 (M3, #2). Pinned to 0.21.0 to
+# unify `burn-core` with the `burn` umbrella above. `safetensors` gives the
+# format reader; `std` pulls memmap2 (used by `from_file`) + regex (the
+# LayerNorm key remapper). Fully offline — no HTTP client — so the always-run
+# tiny-GPT-2 parity test loads the checked-in fixture without touching the
+# network.
+burn-store = { version = "0.21.0", default-features = false, features = [
+    "safetensors",
+    "std",
+] }
 
 [features]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
@@ -27,6 +37,12 @@ burn = { version = "0.21", default-features = false, features = [
 # NEVER in the default set — the default build/`cargo test` stays offline and
 # lean. Exercised on demand via `just test-mnist` / `just lint-mnist`.
 mnist = ["burn/dataset", "burn/vision"]
+# Opt-in real pretrained-GPT-2 parity test (`tests/gpt2_real.rs`). No extra
+# crates: the real weights + golden are produced locally by the Python
+# reference (`just gpt2-reference`, which downloads openai-community/gpt2 via
+# transformers) and the Rust test reads them from disk. Kept out of the default
+# build so `cargo test` stays offline and needs no multi-hundred-MB fixture.
+gpt2-real = []
 
 [dev-dependencies]
 # Reads the checked-in PyTorch golden fixture in the always-run numerics test.

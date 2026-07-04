@@ -5,6 +5,12 @@
 # Runtime output (checkpoints, samples, adapters)
 /output
 
+# Real-GPT-2 parity fixtures (~500 MB safetensors + its golden) are generated
+# locally by `just gpt2-reference` for the opt-in `gpt2-real` test — never
+# committed. The tiny-GPT-2 fixture IS committed (see tests/fixtures/tiny-gpt2/).
+/crates/loractl-core/tests/fixtures/gpt2-real/
+/crates/loractl-core/tests/fixtures/gpt2_real_golden.json
+
 # Local, uncommitted training configs (keep config/examples/ tracked)
 /config/*.yaml
 !/config/examples/

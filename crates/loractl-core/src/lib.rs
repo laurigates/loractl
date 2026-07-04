@@ -9,6 +9,8 @@
 //! - [`LoraLinear`] — the frozen-base, low-rank adapter a real trainer learns.
 //! - [`LoraMlp`] — the tiny LoRA-adapted classifier the real trainer trains.
 //! - [`BurnTrainer`] — the real, burn-backed trainer (milestone 2).
+//! - [`Gpt2`] — a hand-built GPT-2 that loads real HF safetensors weights,
+//!   with forward-pass parity vs. PyTorch (milestone 3).
 //!
 //! The design rule that keeps a future GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -19,6 +21,7 @@
 pub mod burn_trainer;
 pub mod config;
 pub mod event;
+pub mod gpt2;
 pub mod lora;
 pub mod model;
 pub mod train;
@@ -26,6 +29,7 @@ pub mod train;
 pub use burn_trainer::BurnTrainer;
 pub use config::TrainConfig;
 pub use event::TrainEvent;
+pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::LoraLinear;
 pub use model::LoraMlp;
 pub use train::{MockTrainer, Trainer};
