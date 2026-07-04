@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(pre-commit:*)",
+      "Bash(gitleaks:*)",
+      "Bash(python3:*)",
+      "Bash(cargo:*)",
+      "Bash(rustc:*)",
+      "Bash(clippy:*)",
+      "Bash(rustfmt:*)",
+      "Bash(just:*)"
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins": {
+      "source": { "source": "github", "repo": "laurigates/claude-plugins" },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "code-quality-plugin@claude-plugins": true,
+    "configure-plugin@claude-plugins": true,
+    "git-plugin@claude-plugins": true,
+    "health-plugin@claude-plugins": true,
+    "hooks-plugin@claude-plugins": true,
+    "rust-plugin@claude-plugins": true,
+    "testing-plugin@claude-plugins": true
+  }
+}

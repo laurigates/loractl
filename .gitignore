@@ -11,3 +11,6 @@
 
 # Editor / OS
 .DS_Store
+
+# Claude Code: personal, per-machine overrides (shared config is committed)
+.claude/settings.local.json
