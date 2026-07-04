@@ -76,8 +76,9 @@ this pattern when adding new overridable flags.
 
 ## Conventions
 
-- Edition 2024, `resolver = "3"`, MSRV pinned at `rust-version = "1.85"` in the
-  workspace `Cargo.toml`. Shared deps go in `[workspace.dependencies]`.
+- Edition 2024, `resolver = "3"`, MSRV pinned at `rust-version = "1.92"` in the
+  workspace `Cargo.toml` (bumped from 1.85 to satisfy burn 0.21's MSRV). Shared
+  deps go in `[workspace.dependencies]`.
 - `Cargo.lock` **is committed** (this workspace produces a binary).
 - Roadmap milestones are tracked as issues #1–#4 and linked from the README;
   keep the two in sync when a milestone lands.
