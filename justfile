@@ -28,6 +28,10 @@ lint:
 lint-mnist:
     cargo clippy -p loractl-core --all-targets --features mnist -- -D warnings
 
+# Lint the opt-in gpt2-real feature path (compiles the ignored real-gpt2 test).
+lint-gpt2-real:
+    cargo clippy -p loractl-core --all-targets --features gpt2-real -- -D warnings
+
 # Format the workspace.
 fmt:
     cargo fmt --all
@@ -44,6 +48,18 @@ test:
 test-mnist:
     cargo test -p loractl-core --features mnist -- --ignored mnist_lora_converges
 
+# Run the opt-in real-GPT-2 forward-parity test (needs `just gpt2-reference` first).
+test-gpt2-real:
+    cargo test -p loractl-core --features gpt2-real -- --ignored real_gpt2_forward_matches_pytorch_golden
+
 # Regenerate the PyTorch golden fixture for the numerics test (needs torch via uv).
 reference:
     uv run reference/lora_reference.py > crates/loractl-core/tests/golden/lora_toy.json
+
+# Regenerate the checked-in tiny-GPT-2 parity fixture (weights + golden; torch via uv).
+gpt2-tiny-reference:
+    uv run reference/gpt2_tiny_reference.py --out crates/loractl-core/tests/fixtures
+
+# Download real gpt2 + generate its (uncommitted) golden for the opt-in parity test.
+gpt2-reference:
+    uv run reference/gpt2_reference.py --out crates/loractl-core/tests/fixtures

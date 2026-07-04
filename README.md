@@ -8,14 +8,15 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: correctness harness (milestone 2).** The default trainer is now a
-> real, [burn](https://burn.dev)-backed `BurnTrainer` that trains a LoRA-adapted
-> MLP with genuine autodiff, a real optimizer, and cross-entropy loss. Out of
-> the box it trains a **synthetic** LoRA-MLP classification demo (fully offline,
-> fast); real base-model + image ingestion is a later milestone. The LoRA
-> numerics are pinned against a PyTorch reference, and an opt-in `mnist` feature
-> trains/scores the same model on real MNIST. The dependency-free `MockTrainer`
-> is still available for pipeline testing. See [Roadmap](#roadmap).
+> **Status: real base model (milestone 3).** loractl now loads a **real
+> GPT-2's** safetensors weights into a hand-built [burn](https://burn.dev) module
+> tree and proves **forward-pass parity** against the PyTorch reference, then
+> attaches LoRA to the loaded model and runs a training step. The default trainer
+> remains the M2 `BurnTrainer` (a LoRA-adapted MLP with genuine autodiff, a real
+> optimizer, and cross-entropy loss, pinned against a PyTorch numerics golden);
+> the GPT-2 loading + parity harness ships as always-run offline tests plus an
+> opt-in real-`gpt2` test. The dependency-free `MockTrainer` is still available
+> for pipeline testing. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -33,7 +34,7 @@ Three layers, one direction of dependency:
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `loractl-core` | The pipeline: config schema, `TrainEvent` stream, `Trainer` trait, the LoRA module + `BurnTrainer`. **No CLI, no stdout.** | burn |
+| `loractl-core` | The pipeline: config schema, `TrainEvent` stream, `Trainer` trait, the LoRA module + `BurnTrainer`, the GPT-2 model + safetensors loader. **No CLI, no stdout.** | burn, burn-store |
 | `loractl-cli` | The `loractl` binary. Parses args, layers config, renders events. | `loractl-core` |
 | `loractl-api` *(future)* | HTTP server / language bindings for an optional GUI. | `loractl-core` |
 
@@ -86,6 +87,44 @@ Recipes live in the `justfile` (`just` to list): `just build`, `just train`,
   `uv`).
 - **Lint split.** `just lint` lints the default (offline) build; `just
   lint-mnist` lints the `mnist` feature path (which compiles reqwest/tokio).
+
+### Real base model — GPT-2 (M3)
+
+loractl's first real base model is the **GPT-2 family** (`openai-community/gpt2`).
+A hand-built, pre-LayerNorm GPT-2 (`crates/loractl-core/src/gpt2.rs`) loads
+**unmodified** HF safetensors via [`burn-store`](https://docs.rs/burn-store) and
+re-expresses the forward pass, so it can be checked against PyTorch for parity.
+See [ADR-0001](docs/adrs/0001-first-real-target-model.md) for why GPT-2 first,
+the no-transpose loading story, and the verification methodology.
+
+- **Loading is transpose-free.** GPT-2's `Conv1D` weights are already burn's
+  `Linear` `[d_input, d_output]` layout (and the embeddings are already burn's
+  `Embedding` layout), so every projection and embedding loads verbatim with the
+  default identity adapter. The *only* rename is LayerNorm `weight`/`bias` →
+  burn's `gamma`/`beta`. The output head is **weight-tied** to the token
+  embedding (`logits = h · wteᵀ`, computed in the forward — there is no
+  `lm_head` tensor to load). This no-transpose story is GPT-2-specific; a modern
+  `nn.Linear`-based target would need a transpose.
+- **Always-run offline parity.** `cargo test` (`just test`) loads a **checked-in
+  tiny real GPT-2** (a genuine `GPT2LMHeadModel` at minimal dims — ~81 KB of
+  safetensors) and asserts the burn forward reproduces a checked-in PyTorch
+  golden, **stage by stage** (embeddings → block 0 → final LayerNorm → logits) so
+  a mismatch localizes to a stage. Observed logits max|Δ| ≈ `9e-8` (pure f32
+  rounding), with a tolerance-free backstop (last-token top-1 exact + logits
+  cosine > 0.99999).
+- **LoRA on the loaded model.** The same test harness wraps the loaded
+  `c_attn` projection with `LoraLinear::from_base`, confirms the zero-init
+  adapter is a no-op, then runs one real training step (finite loss, gradient on
+  the adapter, none on the frozen base).
+- **Opt-in real `gpt2`.** `just test-gpt2-real` loads the **real pretrained
+  gpt2** (124M) into the same module and asserts logit parity — the pretrained-
+  weights bonus on top of the tiny proof. Its ~498 MB safetensors and golden are
+  **not** checked in; generate them first with `just gpt2-reference` (downloads
+  `openai-community/gpt2` via `transformers`). Observed: logits max|Δ| ≈ `4e-4`,
+  top-1 exact, cosine 1.0.
+- **Regenerate goldens.** `just gpt2-tiny-reference` rebuilds the checked-in tiny
+  fixture; `just gpt2-reference` produces the (uncommitted) real-gpt2 fixture.
+  Both need `torch`/`transformers` via `uv`.
 
 ## Config
 
@@ -143,10 +182,15 @@ should print a redirect/`200`.
       a PyTorch reference (offline, always-run); real MNIST convergence + accuracy
       proven behind an opt-in `mnist` feature. The loop is verified in isolation
       before any large model.
-- [ ] **M3 — Real base model** ([#2](https://github.com/laurigates/loractl/issues/2))**.** Load a real base model's weights into burn
-      (the genuinely hard part: state-dict mapping), wire the forward pass.
-- [ ] **M4 — Sampling & adapter I/O** ([#3](https://github.com/laurigates/loractl/issues/3))**.** `loractl sample`, safetensors adapter
-      read/write, validation samples during training.
+- [x] **M3 — Real base model** ([#2](https://github.com/laurigates/loractl/issues/2))**.** Hand-built GPT-2 loads real HF safetensors into
+      burn (transpose-free state-dict mapping via burn-store), forward-pass parity
+      proven against PyTorch on a checked-in tiny GPT-2 (offline, always-run) and
+      real `gpt2` (opt-in); LoRA attached to the loaded model runs a training
+      step. See [ADR-0001](docs/adrs/0001-first-real-target-model.md).
+- [ ] **M4 — Sampling, adapter I/O & modern arch** ([#3](https://github.com/laurigates/loractl/issues/3))**.** `loractl sample`, safetensors
+      adapter read/write, validation samples during training — and the next base
+      family, **SmolLM2-135M** (modern LLaMA-style: RoPE + RMSNorm + SwiGLU; note
+      burn's RoPE is interleaved vs HF's half-split — see ADR-0001).
 - [ ] **M5 — API crate** ([#4](https://github.com/laurigates/loractl/issues/4))**.** Expose the event stream over HTTP so a GUI can be
       built independently.
 
