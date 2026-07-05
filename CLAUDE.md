@@ -65,13 +65,15 @@ internals.
 Dependency direction is strictly `cli → core` and `api → core`. Core has no
 upward dependencies and no front-end has training logic.
 
-### Swapping the trainer (M2 and beyond)
+### Swapping the trainer
 
-Adding the burn backend means writing a new `impl Trainer` in core and
-changing the **one line** in `cli.rs` that constructs `MockTrainer`. If a new
-trainer forces CLI changes beyond that constructor, the event abstraction has
-leaked — fix the abstraction, not the CLI. The intended LoRA math for that
-module: freeze the base weights, train the low-rank factors, forward =
+Swapping the trainer means writing a new `impl Trainer` in core and changing
+**one constructor line per front-end**: the line in `cli.rs` that constructs
+`BurnTrainer` (`crates/loractl-cli/src/cli.rs`), and the single `BurnTrainer`
+line in `loractl-api`'s `main.rs` (its `TrainerFactory` seam). If a new
+trainer forces front-end changes beyond those constructors, the event
+abstraction has leaked — fix the abstraction, not the front-end. The LoRA
+math: freeze the base weights, train the low-rank factors, forward =
 `base(x) + (alpha/rank) · B(A(x))`.
 
 ### Config layering

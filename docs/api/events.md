@@ -10,11 +10,24 @@ GUI (or any HTTP client) builds against. Design rationale lives in
 
 | Endpoint | Request | Success | Errors |
 |---|---|---|---|
-| `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `422` invalid body (no run is created) |
+| `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `422` invalid body — plain-text diagnostic, see below (no run is created) |
 | `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `404` `{"error":"unknown run id"}` |
 
 That is the whole M5 surface. There is no run listing, no status endpoint, no
 cancellation, no auth — see ADR-0003's cut list and revive triggers.
+
+Error bodies are **not uniform**. The `404` is JSON, but the `422` comes from
+axum's `Json` extractor and is **plain text**
+(`content-type: text/plain; charset=utf-8`) describing the deserialization
+failure, e.g.:
+
+```
+Failed to deserialize the JSON body into the target type: missing field `model` at line 1 column 2
+```
+
+Do not parse `422` bodies as JSON — surface them as a human-readable
+diagnostic. (A syntactically malformed body — not even valid JSON — is `400`,
+also plain text.)
 
 ## Event shapes
 
@@ -41,7 +54,7 @@ itself (in `crates/loractl-api/src/state.rs`, not by core) when a run fails —
 whether the trainer returned an error or panicked:
 
 ```json
-{"type":"failed","error":"creating output dir output: Permission denied"}
+{"type":"failed","error":"creating output dir output: Permission denied (os error 13)"}
 ```
 
 `error` is a human-readable message (the full `anyhow` error chain for trainer
