@@ -191,9 +191,26 @@ impl Gate {
     }
 }
 
-/// Emits `Started`, parks on the gate, then emits steps + `Finished`.
+/// Opens the gate when dropped. Declared at the top of every gated test so
+/// that a panic *before* the manual `open()` still releases the parked
+/// trainer thread — otherwise the unwinding test drops the tokio `Runtime`,
+/// whose blocking-pool shutdown blocks forever on the thread stuck in
+/// `Gate::wait`, wedging the whole `cargo test` run instead of failing red.
+struct OpenOnDrop(Gate);
+
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+/// Parks on `start_gate` before emitting anything, emits `Started`, parks on
+/// `finish_gate`, then emits steps + `Finished`. The two gates let a test
+/// pin *live* tailing deterministically: a subscriber proven parked while
+/// `start_gate` is closed can only receive `Started` via the tail path.
 struct GatedTrainer {
-    gate: Gate,
+    start_gate: Gate,
+    finish_gate: Gate,
 }
 
 impl Trainer for GatedTrainer {
@@ -202,8 +219,9 @@ impl Trainer for GatedTrainer {
         config: &TrainConfig,
         sink: &mut dyn FnMut(TrainEvent),
     ) -> anyhow::Result<PathBuf> {
+        self.start_gate.wait();
         sink(TrainEvent::Started { total_steps: 2 });
-        self.gate.wait();
+        self.finish_gate.wait();
         sink(TrainEvent::Step {
             step: 1,
             loss: 1.0,
@@ -361,17 +379,26 @@ async fn late_subscriber_after_finish_replays_full_history() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Test 5 (missed-wake sentinel): a subscriber connected before the run
-/// finishes receives `started` while the trainer is still parked (live
-/// tail, sleep-free), then the rest after release — with no duplicates.
+/// Test 5 (missed-wake sentinel): the subscriber is first *proven* parked on
+/// an empty history (a short poll comes up empty while `start_gate` is still
+/// closed), so the `started` frame it then receives can only have arrived
+/// via the live tail — not connect-time replay. A mutant that replays at
+/// connect and batch-drains only at `done` fails red here, deterministically,
+/// regardless of how the connect race schedules.
 #[tokio::test(flavor = "multi_thread")]
 async fn live_tail_delivers_events_before_run_completes() {
     let dir = unique_output_dir("live-tail");
-    let gate = Gate::default();
-    let factory_gate = gate.clone();
+    let start_gate = Gate::default();
+    let finish_gate = Gate::default();
+    // Failure guards: any panic below releases the parked trainer thread.
+    let _start_guard = OpenOnDrop(start_gate.clone());
+    let _finish_guard = OpenOnDrop(finish_gate.clone());
+    let factory_start = start_gate.clone();
+    let factory_finish = finish_gate.clone();
     let factory: TrainerFactory = Arc::new(move || {
         Box::new(GatedTrainer {
-            gate: factory_gate.clone(),
+            start_gate: factory_start.clone(),
+            finish_gate: factory_finish.clone(),
         })
     });
     let app = loractl_api::app(factory);
@@ -388,12 +415,23 @@ async fn live_tail_delivers_events_before_run_completes() {
     let mut body = response.into_body();
     let mut buffer = String::new();
 
-    // Incremental reads: `started` must arrive while the trainer is gated —
-    // proof of live tailing without any sleeps.
+    // Prove the subscriber is parked on an EMPTY history: the trainer has
+    // emitted nothing yet (start gate closed — keep-alive comments are 15 s
+    // apart), so polling the body must stay pending until the timeout.
+    assert!(
+        timeout(Duration::from_millis(100), body.frame())
+            .await
+            .is_err(),
+        "no frame should arrive before the trainer is released"
+    );
+
+    // Release `Started` only — the run is still parked far from done, so the
+    // frame below is necessarily a live-tail delivery.
+    start_gate.open();
     while parse_complete_sse(&buffer).is_empty() {
         let frame = timeout(DRAIN_TIMEOUT, body.frame())
             .await
-            .expect("first frame timed out — live tail is broken")
+            .expect("started frame timed out — live tail is broken")
             .expect("stream ended before any event")
             .expect("body read failed");
         if let Some(data) = frame.data_ref() {
@@ -404,7 +442,7 @@ async fn live_tail_delivers_events_before_run_completes() {
     assert_eq!(early[0].event.as_deref(), Some("started"));
 
     // Release the trainer; the rest of the run must flow to the same stream.
-    gate.open();
+    finish_gate.open();
     loop {
         let frame = timeout(DRAIN_TIMEOUT, body.frame())
             .await
@@ -495,11 +533,17 @@ async fn panicking_trainer_emits_failed_and_app_keeps_serving() {
 #[tokio::test(flavor = "multi_thread")]
 async fn client_disconnect_does_not_kill_run() {
     let dir = unique_output_dir("disconnect");
-    let gate = Gate::default();
-    let factory_gate = gate.clone();
+    let start_gate = Gate::default();
+    let finish_gate = Gate::default();
+    // Failure guards: any panic below releases the parked trainer thread.
+    let _start_guard = OpenOnDrop(start_gate.clone());
+    let _finish_guard = OpenOnDrop(finish_gate.clone());
+    let factory_start = start_gate.clone();
+    let factory_finish = finish_gate.clone();
     let factory: TrainerFactory = Arc::new(move || {
         Box::new(GatedTrainer {
-            gate: factory_gate.clone(),
+            start_gate: factory_start.clone(),
+            finish_gate: factory_finish.clone(),
         })
     });
     let app = loractl_api::app(factory);
@@ -510,6 +554,9 @@ async fn client_disconnect_does_not_kill_run() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
+
+    // Let `Started` flow; the trainer then parks mid-run on the finish gate.
+    start_gate.open();
 
     // Connect, read one frame, then drop the body (client disconnect).
     let response = app.clone().oneshot(get_events(1)).await.unwrap();
@@ -522,7 +569,7 @@ async fn client_disconnect_does_not_kill_run() {
     drop(body);
 
     // The run still trains to completion.
-    gate.open();
+    finish_gate.open();
     let response = app.oneshot(get_events(1)).await.unwrap();
     let events = parse_sse(&body_string(response.into_body()).await);
     assert_eq!(types(&events), vec!["started", "step", "step", "finished"]);
