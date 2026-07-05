@@ -9,13 +9,15 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4).
 
-**Current status:** milestone 2 (correctness harness). The default trainer is a
-real, burn-backed `BurnTrainer` that trains a LoRA-adapted MLP with genuine
-autodiff, an optimizer, and cross-entropy loss. Out of the box it trains a
-**synthetic** LoRA-MLP demo (offline, fast); the LoRA numerics are pinned
-against a PyTorch reference and real MNIST is behind an opt-in `mnist` feature.
-The dependency-free `MockTrainer` is still available for pipeline testing.
-Real base-model weight loading is M3 (#2). See the roadmap in `README.md`.
+**Current status:** all five roadmap milestones (M1–M5, #1–#4) have landed.
+The default trainer is a real, burn-backed `BurnTrainer` that trains a
+**synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
+golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
+`MockTrainer` remains available for pipeline testing. M3 added a real GPT-2
+safetensors loader with forward-pass parity vs PyTorch; M4 added portable
+`.safetensors` adapter I/O and deterministic sampling; M5 added `loractl-api`,
+which streams the same `TrainEvent`s over HTTP/SSE (wire contract in
+`docs/api/events.md`). See the roadmap in `README.md`.
 
 ## Commands
 
@@ -26,6 +28,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Build the workspace | `just build` (`cargo build`) |
 | Run the CLI | `just run <args>` (`cargo run -p loractl-cli -- <args>`) |
 | Train from a config (synthetic demo) | `just train [config]` — defaults to `config/examples/lora.yaml` |
+| Serve the HTTP/SSE API | `just serve` (`cargo run -p loractl-api`; bind addr via `LORACTL_API_ADDR`, default `127.0.0.1:3000`) |
 | Generate shell completions | `just completions [shell]` (e.g. `just completions fish`) |
 | Lint (warnings-as-errors) | `just lint` (`cargo clippy --all-targets -- -D warnings`, default/offline features) |
 | Lint the opt-in mnist path | `just lint-mnist` (compiles the networked dataset deps) |
@@ -41,26 +44,26 @@ default style; expect it to reflow multi-line signatures onto one line.
 
 ## Architecture — the one rule that matters
 
-The workspace is two crates today, with a third planned:
+The workspace is three crates:
 
 | Crate | Role |
 |---|---|
-| `loractl-core` | The pipeline: `TrainConfig` schema, `TrainEvent` stream, `Trainer` trait, `MockTrainer`. |
+| `loractl-core` | The pipeline: `TrainConfig` schema, `TrainEvent` stream, `Trainer` trait, `MockTrainer`, the LoRA/GPT-2 modules and `BurnTrainer`. |
 | `loractl-cli` | The `loractl` binary — parses args, layers config, renders events. |
-| `loractl-api` *(M5, #4)* | Future HTTP/bindings surface for a GUI. |
+| `loractl-api` | The `loractl-api` binary — serializes the same `TrainEvent`s over HTTP/SSE for a GUI; renders nothing itself. Wire contract: `docs/api/events.md`. |
 
 **Load-bearing invariant: `loractl-core` emits events; it never renders.**
 Concretely, core must not import `clap` and must not `println!`/write to
 stdout/stderr. A `Trainer` reports progress by calling a `&mut dyn
 FnMut(TrainEvent)` sink; the *caller* decides how to surface it. The CLI
 renders `TrainEvent`s as an `indicatif` progress bar (see the match arm in
-`crates/loractl-cli/src/cli.rs`); a future API would serialize the same events
+`crates/loractl-cli/src/cli.rs`); `loractl-api` serializes the same events
 as JSON/SSE. **This is what makes "a GUI can be built separately" real — do
 not break it** by having core print or by having the CLI reach into training
 internals.
 
-Dependency direction is strictly `cli → core` (and later `api → core`). Core
-has no upward dependencies and no front-end has training logic.
+Dependency direction is strictly `cli → core` and `api → core`. Core has no
+upward dependencies and no front-end has training logic.
 
 ### Swapping the trainer (M2 and beyond)
 

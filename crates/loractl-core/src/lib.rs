@@ -14,11 +14,12 @@
 //! - [`adapter`] — safetensors adapter save/load (milestone 4).
 //! - [`sample`] — deterministic sampling from a trained adapter (milestone 4).
 //!
-//! The design rule that keeps a future GUI honest: **core emits events, the
+//! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
 //! `println!`s. The `loractl` CLI renders events as a terminal progress bar;
-//! a future HTTP API would serialize the *same* events as SSE/JSON. Both are
-//! just different renderers over one pipeline.
+//! the `loractl-api` HTTP server serializes the *same* events as SSE/JSON
+//! (milestone 5; wire contract in `docs/api/events.md`). Both are just
+//! different renderers over one pipeline.
 
 pub mod adapter;
 pub mod burn_trainer;
