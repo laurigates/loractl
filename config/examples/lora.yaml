@@ -28,3 +28,4 @@ output:
   dir: ./output
   name: my-lora
   checkpoint_every: 250
+  sample_every: 0 # write a validation sample every N steps (0 = disabled)

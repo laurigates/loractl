@@ -68,6 +68,7 @@ fn synthetic_training_converges() {
             // Larger than `steps` so no mid-run checkpoints — keeps the test fast
             // while still exercising the final-adapter write.
             checkpoint_every: 10_000,
+            sample_every: 0,
         },
     };
 

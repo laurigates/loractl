@@ -29,6 +29,10 @@ burn-store = { version = "0.21.0", default-features = false, features = [
     "safetensors",
     "std",
 ] }
+# Adapter sidecar metadata (M4, #3) and the periodic validation-sample report
+# `BurnTrainer` writes — both library code, not just tests, so this lives here
+# rather than in [dev-dependencies].
+serde_json = "1"
 
 [features]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
@@ -43,7 +47,3 @@ mnist = ["burn/dataset", "burn/vision"]
 # transformers) and the Rust test reads them from disk. Kept out of the default
 # build so `cargo test` stays offline and needs no multi-hundred-MB fixture.
 gpt2-real = []
-
-[dev-dependencies]
-# Reads the checked-in PyTorch golden fixture in the always-run numerics test.
-serde_json = "1"
