@@ -8,15 +8,15 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: sampling & adapter I/O (milestone 4).** Adapters now save to and
-> load from real, portable **`.safetensors`** files (plus a small JSON
-> sidecar) instead of milestone 2's burn-only `.mpk` stopgap, and
-> `loractl sample` produces real, reproducible output from a saved adapter.
-> The default trainer remains the M2 `BurnTrainer` (a LoRA-adapted MLP with
-> genuine autodiff, a real optimizer, and cross-entropy loss, pinned against a
-> PyTorch numerics golden); milestone 3 added a real GPT-2 loader with
-> forward-pass parity against PyTorch. The dependency-free `MockTrainer` is
-> still available for pipeline testing. See [Roadmap](#roadmap).
+> **Status: HTTP API (milestone 5).** The event stream is now exposed over
+> HTTP: `loractl-api` starts training runs via `POST /runs` and streams their
+> events as SSE from `GET /runs/{id}/events` — the same `TrainEvent`s the CLI
+> renders as a progress bar, so a GUI can be built independently. Milestone 4
+> added portable **`.safetensors`** adapter I/O and reproducible sampling;
+> milestone 3 a real GPT-2 loader with forward-pass parity against PyTorch.
+> The default trainer remains the M2 `BurnTrainer`, pinned against a PyTorch
+> numerics golden, and the dependency-free `MockTrainer` is still available
+> for pipeline testing. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -36,7 +36,7 @@ Three layers, one direction of dependency:
 |---|---|---|
 | `loractl-core` | The pipeline: config schema, `TrainEvent` stream, `Trainer` trait, the LoRA module + `BurnTrainer`, the GPT-2 model + safetensors loader. **No CLI, no stdout.** | burn, burn-store |
 | `loractl-cli` | The `loractl` binary. Parses args, layers config, renders events. | `loractl-core` |
-| `loractl-api` *(future)* | HTTP server / language bindings for an optional GUI. | `loractl-core` |
+| `loractl-api` | The HTTP/SSE server: streams the same events as JSON for an optional GUI. | `loractl-core` |
 
 The load-bearing rule: **`loractl-core` never imports `clap` and never
 prints.** A trainer reports progress by emitting [`TrainEvent`]s through a
@@ -169,6 +169,22 @@ design and its trade-offs.
 cargo run -p loractl-cli -- sample output/my-lora.safetensors --prompt "a test prompt"
 ```
 
+### HTTP API (M5)
+
+`just serve` runs `loractl-api` (bind address via `LORACTL_API_ADDR`, default
+`127.0.0.1:3000`) — the same event pipeline as the CLI, rendered as JSON over
+SSE instead of a progress bar:
+
+- `POST /runs` — start a training run from a JSON `TrainConfig` (same schema
+  as the YAML file); returns `201 {"id":1,"events_url":"/runs/1/events"}`.
+- `GET /runs/{id}/events` — SSE stream: full replay from event 0, then live
+  tail, ending with exactly one terminal event (`finished` or `failed`).
+
+The full wire contract — event shapes (pinned byte-for-byte by a golden
+test), SSE framing, lifecycle rules, and a copy-paste curl transcript — lives
+in [docs/api/events.md](docs/api/events.md); the design decisions in
+[ADR-0003](docs/adrs/0003-http-api-event-streaming.md).
+
 ## Config
 
 A run is fully described by a YAML config (see `config/examples/lora.yaml`).
@@ -235,8 +251,12 @@ should print a redirect/`200`.
       runs a deterministic, prompt-seeded forward pass, and periodic validation
       samples are written and reported during training. See
       [ADR-0002](docs/adrs/0002-adapter-format-and-sample-semantics.md).
-- [ ] **M5 — API crate** ([#4](https://github.com/laurigates/loractl/issues/4))**.** Expose the event stream over HTTP so a GUI can be
-      built independently.
+- [x] **M5 — API crate** ([#4](https://github.com/laurigates/loractl/issues/4))**.** `loractl-api` exposes the event stream over HTTP so a
+      GUI can be built independently: `POST /runs` starts a training run,
+      `GET /runs/{id}/events` streams its events as SSE (full replay from
+      event 0, then live tail), with the wire shapes pinned byte-for-byte by
+      a golden test. See
+      [ADR-0003](docs/adrs/0003-http-api-event-streaming.md).
 
 A natural next *target model* (beyond the tracked milestones) is **SmolLM2-135M**
 — a modern LLaMA-style architecture (RoPE + RMSNorm + SwiGLU) that reuses M3's

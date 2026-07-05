@@ -172,8 +172,8 @@ fn train(cmd: TrainCmd) -> Result<()> {
         TrainEvent::Sample { step, path } => {
             bar.suspend(|| tracing::info!(step, path = %path.display(), "sample"));
         }
-        TrainEvent::Warning(msg) => {
-            bar.suspend(|| tracing::warn!("{msg}"));
+        TrainEvent::Warning { message } => {
+            bar.suspend(|| tracing::warn!("{message}"));
         }
         TrainEvent::Finished { adapter_path } => {
             bar.finish_with_message(format!("done → {}", adapter_path.display()));

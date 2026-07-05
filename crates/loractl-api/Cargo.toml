@@ -1,0 +1,31 @@
+[package]
+name = "loractl-api"
+description = "HTTP/SSE server for loractl — serializes core TrainEvents over the wire; renders nothing itself."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "loractl-api"
+path = "src/main.rs"
+
+[dependencies]
+loractl-core = { path = "../loractl-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+axum.workspace = true
+tokio.workspace = true
+async-stream.workspace = true
+# Names the `Stream` trait for `state::subscribe`'s axum-free return type
+# (async-stream produces a futures-core `Stream`).
+futures-core = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

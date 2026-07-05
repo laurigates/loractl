@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/loractl-core", "crates/loractl-cli"]
+members = ["crates/loractl-core", "crates/loractl-cli", "crates/loractl-api"]
 
 [workspace.package]
 version = "0.1.0" # x-release-please-version
@@ -14,4 +14,23 @@ rust-version = "1.92"
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tracing = "0.1"
+# HTTP/SSE surface for loractl-api. Default features off: routing/SSE are
+# always available; `http1` + `tokio` enable the hyper server and
+# `axum::serve`, `json` enables the `Json` extractor.
+axum = { version = "0.8", default-features = false, features = [
+    "http1",
+    "json",
+    "tokio",
+] }
+# `time` is deliberate: axum's SSE keep-alive timer and the test timeout
+# guards both need it.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "net",
+    "time",
+] }
+async-stream = "0.3"
