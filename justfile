@@ -13,6 +13,12 @@ run *ARGS:
 train config="config/examples/lora.yaml":
     cargo run -p loractl-cli -- train {{config}}
 
+# Serve the HTTP/SSE API (bind addr via LORACTL_API_ADDR, default 127.0.0.1:3000).
+# Try: curl -sX POST localhost:3000/runs -H 'content-type: application/json' -d @run.json
+# then: curl -N localhost:3000/runs/1/events
+serve:
+    cargo run -p loractl-api
+
 # Print shell completions, e.g. `just completions fish`.
 completions shell="zsh":
     cargo run -p loractl-cli -- completions {{shell}}

@@ -32,7 +32,7 @@ burn-store = { version = "0.21.0", default-features = false, features = [
 # Adapter sidecar metadata (M4, #3) and the periodic validation-sample report
 # `BurnTrainer` writes — both library code, not just tests, so this lives here
 # rather than in [dev-dependencies].
-serde_json = "1"
+serde_json.workspace = true
 
 [features]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
