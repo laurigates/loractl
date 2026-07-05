@@ -207,19 +207,19 @@ fn select_batches(
 
     #[cfg(not(feature = "mnist"))]
     if config.model.base == "mnist" {
-        sink(TrainEvent::Warning(
-            "model.base=\"mnist\" requested but the crate was built without \
-             --features mnist; falling back to the synthetic demo."
+        sink(TrainEvent::Warning {
+            message: "model.base=\"mnist\" requested but the crate was built without \
+                      --features mnist; falling back to the synthetic demo."
                 .into(),
-        ));
+        });
     }
 
-    sink(TrainEvent::Warning(
-        "M2 BurnTrainer trains a synthetic LoRA-MLP classifier demo; real \
-         base-model + image-dataset ingestion arrives in a later milestone. \
-         Build with --features mnist and set model.base=\"mnist\" to train on MNIST."
+    sink(TrainEvent::Warning {
+        message: "M2 BurnTrainer trains a synthetic LoRA-MLP classifier demo; real \
+                  base-model + image-dataset ingestion arrives in a later milestone. \
+                  Build with --features mnist and set model.base=\"mnist\" to train on MNIST."
             .into(),
-    ));
+    });
     synthetic_batches(device, NUM_CLASSES, 2_000, 64)
 }
 
