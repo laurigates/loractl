@@ -20,6 +20,7 @@
 
 # Claude Code: personal, per-machine overrides (shared config is committed)
 .claude/settings.local.json
+.claude/worktrees/
 
 # Blueprint: work-orders are task-specific and may hold sensitive detail
 docs/blueprint/work-orders/

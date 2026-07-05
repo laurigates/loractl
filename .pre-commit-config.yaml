@@ -1,0 +1,45 @@
+# Standards v2025.1 - Rust
+# See: https://pre-commit.com for more information
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  # Base hooks for all projects
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Generated test fixtures/goldens are excluded: the generator scripts
+      # own their byte-exact content, and fixer churn would dirty every regen.
+      - id: trailing-whitespace
+        exclude: ^crates/loractl-core/tests/(fixtures|golden)/
+      - id: end-of-file-fixer
+        exclude: ^crates/loractl-core/tests/(fixtures|golden)/
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+
+  # Conventional commits
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.0.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  # Secret detection
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Rust formatting (mirrors `just fmt-check`; clippy stays in CI — too slow per-commit)
+  - repo: local
+    hooks:
+      - id: cargo-fmt-check
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
