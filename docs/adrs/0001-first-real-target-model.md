@@ -209,7 +209,11 @@ Strictly **gated behind a green base forward** (a wrong base makes a LoRA-step
    correctly with no shape juggling.
 2. **Target `c_attn`** (fused QKV) of block 0 for the M3 proof — the standard
    LoRA site. `Gpt2::forward_with_lora_c_attn` threads the adapter through the
-   full transformer without duplicating the forward math.
+   full transformer without duplicating the forward math. **(Superseded in M6
+   (#17): this single-`c_attn` attach was re-expressed through the generic
+   name-keyed mechanism — `Gpt2::forward_with_adapters(ids, &LoraAdapters)` over
+   `injectable_sites`/`build_adapters` — and `forward_with_lora_c_attn` +
+   `qkv_override` were removed. See ADR-0004 / issue #17.)**
 3. Because `B` is zero-initialized, the step-0 adapted forward is bit-identical
    to the base — the test asserts the adapted pre-step logits still match the
    base golden (a free check that attach didn't perturb the forward).
@@ -232,7 +236,7 @@ stays `cli → core`.
 |---|---|---|
 | a | Load real GPT-2 safetensors into burn | `crates/loractl-core/src/gpt2.rs` (`Gpt2::init` + `layernorm_key_remap` + `burn_store` load); asserted in both tests' `load_tiny` |
 | b | Forward-pass parity vs PyTorch | `tests/gpt2_parity.rs` (always-run, tiny, stage-localized) + `tests/gpt2_real.rs` (opt-in, real gpt2) |
-| c | Attach LoRA + one training step | `tests/gpt2_lora_step.rs` (`forward_with_lora_c_attn`, grad routing, one Adam step) |
+| c | Attach LoRA + one training step | `tests/gpt2_lora_step.rs` (grad routing, one Adam step; ported to `forward_with_adapters` in M6 (#17), which superseded the original `forward_with_lora_c_attn`) |
 | d | README documents it | `README.md` roadmap + "Real base model (GPT-2)" section |
 
 ## Alternatives Considered

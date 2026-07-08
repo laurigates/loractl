@@ -1,0 +1,51 @@
+{
+  "provenance": {
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "note": "kohya-ss export; A/B burn-layout [d_in,d_out], transposed here; regenerate with `just export-reference`"
+  },
+  "hyperparams": {
+    "d_in": 4,
+    "d_out": 6,
+    "rank": 2,
+    "alpha": 8.0,
+    "path": "transformer.h.0.attn.c_attn"
+  },
+  "kohya_keys": [
+    "lora_transformer_h_0_attn_c_attn.alpha",
+    "lora_transformer_h_0_attn_c_attn.lora_down.weight",
+    "lora_transformer_h_0_attn_c_attn.lora_up.weight"
+  ],
+  "alpha_value": 8.0,
+  "a_transposed": [
+    0.10000000149011612,
+    0.30000001192092896,
+    -0.5,
+    0.699999988079071,
+    -0.20000000298023224,
+    0.4000000059604645,
+    0.6000000238418579,
+    -0.800000011920929
+  ],
+  "a_shape": [
+    2,
+    4
+  ],
+  "b_transposed": [
+    0.009999999776482582,
+    0.07000000029802322,
+    -0.019999999552965164,
+    -0.07999999821186066,
+    0.029999999329447746,
+    0.09000000357627869,
+    -0.03999999910593033,
+    -0.10000000149011612,
+    0.05000000074505806,
+    0.10999999940395355,
+    -0.05999999865889549,
+    -0.11999999731779099
+  ],
+  "b_shape": [
+    6,
+    2
+  ]
+}

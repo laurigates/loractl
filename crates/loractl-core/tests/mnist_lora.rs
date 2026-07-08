@@ -75,6 +75,7 @@ fn mnist_lora_converges() {
             rank: RANK as u32,
             alpha: ALPHA as f32,
             dropout: 0.0,
+            targets: vec![],
         },
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),

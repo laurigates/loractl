@@ -7,6 +7,8 @@
 //! - [`TrainEvent`] — the stream a trainer emits as it works.
 //! - [`Trainer`] — the contract a concrete backend implements.
 //! - [`LoraLinear`] — the frozen-base, low-rank adapter a real trainer learns.
+//! - [`LoraAdapters`] — a name-keyed set of low-rank deltas injected across a
+//!   base module tree (milestone 6), with a kohya-ss [`export`] path.
 //! - [`LoraMlp`] — the tiny LoRA-adapted classifier the real trainer trains.
 //! - [`BurnTrainer`] — the real, burn-backed trainer (milestone 2).
 //! - [`Gpt2`] — a hand-built GPT-2 that loads real HF safetensors weights,
@@ -22,20 +24,24 @@
 //! different renderers over one pipeline.
 
 pub mod adapter;
+pub mod adapters;
 pub mod burn_trainer;
 pub mod config;
 pub mod event;
+pub mod export;
 pub mod gpt2;
 pub mod lora;
 pub mod model;
 pub mod sample;
 pub mod train;
 
+pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
 pub use config::TrainConfig;
 pub use event::TrainEvent;
+pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
-pub use lora::LoraLinear;
+pub use lora::{LoraDelta, LoraLinear};
 pub use model::LoraMlp;
 pub use train::{MockTrainer, Trainer};
 

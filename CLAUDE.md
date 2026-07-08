@@ -17,9 +17,15 @@ golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
 safetensors loader with forward-pass parity vs PyTorch; M4 added portable
 `.safetensors` adapter I/O and deterministic sampling; M5 added `loractl-api`,
 which streams the same `TrainEvent`s over HTTP/SSE (wire contract in
-`docs/api/events.md`). See the roadmap in `README.md`.
+`docs/api/events.md`). M6 (#17) generalized LoRA from wrapping one `Linear` to
+injecting a name-keyed set of adapters (`LoraAdapters`) across a module tree
+(config `targets` patterns → `build_adapters` over a model's `injectable_sites`;
+GPT-2's attach re-expressed through it) and added a kohya-ss `.safetensors`
+export (`export_adapters`, transposed `lora_down`/`lora_up` + `.alpha` scalar)
+so a LoRA loads in ComfyUI/Krea — proven offline against a golden. See the
+roadmap in `README.md`.
 
-**Next direction (M6–M14, #17–#25):** training LoRAs for **Krea 2**, an
+**Next direction (M7–M14, #18–#25):** training LoRAs for **Krea 2**, an
 open-weights ~12B rectified-flow **image** model — a different domain that
 reuses this architecture but needs a greenfield burn diffusion stack (MMDiT
 denoiser, VAE, Qwen 3 VL text encoder, flow-matching objective, GPU + QLoRA).
