@@ -258,10 +258,32 @@ should print a redirect/`200`.
       a golden test. See
       [ADR-0003](docs/adrs/0003-http-api-event-streaming.md).
 
-A natural next *target model* (beyond the tracked milestones) is **SmolLM2-135M**
-— a modern LLaMA-style architecture (RoPE + RMSNorm + SwiGLU) that reuses M3's
-loader and parity harness; note burn's RoPE is *interleaved* vs HF's *half-split*
-(see [ADR-0001](docs/adrs/0001-first-real-target-model.md)).
+### Next direction — Krea 2 image-diffusion LoRA (M6–M14)
+
+M1–M5 built a complete but **text-domain** harness. The next goal is a
+different domain entirely: training LoRA adapters for **Krea 2**, an
+open-weights (`krea/Krea-2-Raw`) ~12B rectified-flow **image** model. This
+reuses loractl's architecture (event stream, config, `burn-store` loading, the
+parity-golden methodology) but almost none of its model code — the denoiser,
+VAE, and text encoder are greenfield in burn. The strategy (why Krea 2, why
+stay on burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+
+- [ ] **M6 — Generic LoRA injection + kohya/PEFT export** ([#17](https://github.com/laurigates/loractl/issues/17))**.** Inject adapters across a module tree by name pattern; export in a kohya/diffusers-PEFT safetensors layout so a LoRA loads in ComfyUI/Krea.
+- [ ] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** wgpu/cuda backend (ndarray stays the offline test backend); CPU can't train 12B.
+- [ ] **M8 — Rectified-flow objective** ([#19](https://github.com/laurigates/loractl/issues/19))**.** Flow-matching v-param loss + logit-normal timestep sampling, proven on a synthetic latent toy (M2 methodology).
+- [ ] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Hybrid Qwen-Image/FLUX-2 AE in burn; image→latent parity (no Rust prior art).
+- [ ] **M10 — Qwen 3 VL text encoder** ([#21](https://github.com/laurigates/loractl/issues/21))**.** Caption conditioning in burn — the largest single gap, no Rust prior art.
+- [ ] **M11 — Krea 2 MMDiT denoiser** ([#22](https://github.com/laurigates/loractl/issues/22))**.** ~12B DiT (3D axial RoPE, GQA, gated-sigmoid attn, QK-Norm, RMSNorm, SwiGLU); forward parity + LoRA attach — ADR-0001 methodology at 100× scale.
+- [ ] **M12 — Image dataset pipeline** ([#23](https://github.com/laurigates/loractl/issues/23))**.** Aspect-ratio bucketing + latent/embedding caching (the shape `DatasetConfig` already models).
+- [ ] **M13 — Single-GPU 12B fit** ([#24](https://github.com/laurigates/loractl/issues/24))**.** bf16, gradient checkpointing, 8-bit Adam, QLoRA/NF4.
+- [ ] **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25))**.** A `DiffusionTrainer` trains a real Krea 2 LoRA; the output loads and applies in ComfyUI / Krea-2-Turbo.
+
+A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern
+LLaMA-style architecture (RoPE + RMSNorm + SwiGLU) that reuses M3's loader and
+parity harness and would bank the RoPE-convention work (burn's RoPE is
+*interleaved* vs HF's *half-split*, see
+[ADR-0001](docs/adrs/0001-first-real-target-model.md)) ahead of M11's 3D axial
+RoPE — but it is not on the critical path to Krea 2.
 
 ## License
 

@@ -19,6 +19,12 @@ safetensors loader with forward-pass parity vs PyTorch; M4 added portable
 which streams the same `TrainEvent`s over HTTP/SSE (wire contract in
 `docs/api/events.md`). See the roadmap in `README.md`.
 
+**Next direction (M6–M14, #17–#25):** training LoRAs for **Krea 2**, an
+open-weights ~12B rectified-flow **image** model — a different domain that
+reuses this architecture but needs a greenfield burn diffusion stack (MMDiT
+denoiser, VAE, Qwen 3 VL text encoder, flow-matching objective, GPU + QLoRA).
+Strategy and gap analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+
 ## Commands
 
 Recipes live in the `justfile` (`just` to list). Cargo directly also works.
