@@ -1,10 +1,10 @@
 {
   "$schema": "./schemas/feature-tracker.schema.json",
   "version": "1.1.0",
-  "last_updated": "2026-07-04",
+  "last_updated": "2026-07-08",
   "project": "loractl",
   "source_document": "README.md",
-  "current_phase": "phase-2",
+  "current_phase": "phase-6",
   "tasks": {
     "in_progress": [],
     "pending": [],
@@ -19,21 +19,66 @@
     {
       "id": "phase-2",
       "name": "M2 — Correctness harness (burn + LoRA module)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-3",
-      "name": "M3 — Real base model",
-      "status": "not_started"
+      "name": "M3 — Real base model (GPT-2)",
+      "status": "complete"
     },
     {
       "id": "phase-4",
       "name": "M4 — Sampling & adapter I/O",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-5",
       "name": "M5 — API crate",
+      "status": "complete"
+    },
+    {
+      "id": "phase-6",
+      "name": "M6 — Generic LoRA injection + kohya/PEFT export (#17)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-7",
+      "name": "M7 — GPU compute backend (#18)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-8",
+      "name": "M8 — Rectified-flow v-param objective (#19)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-9",
+      "name": "M9 — Krea 2 latent VAE in burn (#20)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-10",
+      "name": "M10 — Qwen 3 VL text encoder in burn (#21)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-11",
+      "name": "M11 — Krea 2 MMDiT denoiser + parity + LoRA attach (#22)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-12",
+      "name": "M12 — Image dataset pipeline: bucketing + caching (#23)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-13",
+      "name": "M13 — Single-GPU 12B fit: bf16/grad-ckpt/8-bit/QLoRA (#24)",
+      "status": "not_started"
+    },
+    {
+      "id": "phase-14",
+      "name": "M14 — End-to-end Krea 2 LoRA training + interop (#25)",
       "status": "not_started"
     }
   ],
