@@ -3500,7 +3500,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3518,7 +3518,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3534,11 +3534,13 @@ dependencies = [
 
 [[package]]
 name = "loractl-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "burn",
  "burn-store",
+ "regex",
+ "safetensors 0.7.0",
  "serde",
  "serde_json",
 ]

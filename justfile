@@ -62,6 +62,10 @@ test-gpt2-real:
 reference:
     uv run reference/lora_reference.py > crates/loractl-core/tests/golden/lora_toy.json
 
+# Regenerate the kohya-ss export golden fixture (numpy only, no torch/network).
+export-reference:
+    uv run reference/lora_export_reference.py > crates/loractl-core/tests/golden/lora_export.json
+
 # Regenerate the checked-in tiny-GPT-2 parity fixture (weights + golden; torch via uv).
 gpt2-tiny-reference:
     uv run reference/gpt2_tiny_reference.py --out crates/loractl-core/tests/fixtures

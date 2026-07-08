@@ -38,7 +38,7 @@
 //!
 //! [openai-community/gpt2]: https://huggingface.co/openai-community/gpt2
 
-use crate::lora::LoraLinear;
+use crate::adapters::{LoraAdapters, LoraSite};
 use burn::module::Module;
 use burn::nn::{
     Embedding, EmbeddingConfig, Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig,
@@ -126,9 +126,15 @@ impl<B: Backend> Attention<B> {
 
     /// Finish attention from an already-computed QKV projection `[b, s, 3e]`:
     /// split heads, scaled dot-product with the additive causal `mask`, merge,
-    /// and apply `c_proj`. Shared by [`Attention::forward`] and the LoRA-attach
-    /// path so the adapted projection reuses identical math.
-    fn attend(&self, qkv: Tensor<B, 3>, mask: Tensor<B, 4>, n_head: usize) -> Tensor<B, 3> {
+    /// and apply `c_proj` (through any injected adapter at `{prefix}.attn.c_proj`).
+    fn attend(
+        &self,
+        qkv: Tensor<B, 3>,
+        mask: Tensor<B, 4>,
+        n_head: usize,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
+    ) -> Tensor<B, 3> {
         let [b, s, e3] = qkv.dims();
         let e = e3 / 3;
         let hd = e / n_head;
@@ -151,12 +157,27 @@ impl<B: Backend> Attention<B> {
 
         // Context [b, n_head, s, head_dim] -> merged [b, s, e] -> output proj.
         let ctx = probs.matmul(v).swap_dims(1, 2).reshape([b, s, e]);
-        self.c_proj.forward(ctx)
+        site(
+            adapters,
+            &format!("{prefix}.attn.c_proj"),
+            &self.c_proj,
+            ctx,
+        )
     }
 
     /// Full self-attention on the (already LayerNorm-ed) input `x` `[b, s, e]`.
-    fn forward(&self, x: Tensor<B, 3>, mask: Tensor<B, 4>, n_head: usize) -> Tensor<B, 3> {
-        self.attend(self.c_attn.forward(x), mask, n_head)
+    /// `adapters`/`prefix` route the `c_attn`/`c_proj` projections through any
+    /// injected LoRA deltas registered for `{prefix}.attn.{c_attn,c_proj}`.
+    fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        mask: Tensor<B, 4>,
+        n_head: usize,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
+    ) -> Tensor<B, 3> {
+        let qkv = site(adapters, &format!("{prefix}.attn.c_attn"), &self.c_attn, x);
+        self.attend(qkv, mask, n_head, adapters, prefix)
     }
 }
 
@@ -178,10 +199,18 @@ impl<B: Backend> Mlp<B> {
         }
     }
 
-    fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+    /// `adapters`/`prefix` route `c_fc`/`c_proj` through any injected LoRA deltas
+    /// registered for `{prefix}.mlp.{c_fc,c_proj}`.
+    fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
+    ) -> Tensor<B, 3> {
         // `gelu_new` = tanh-approximate GELU = burn's `Gelu::new_approximate`.
-        let h = Gelu::new_approximate().forward(self.c_fc.forward(x));
-        self.c_proj.forward(h)
+        let up = site(adapters, &format!("{prefix}.mlp.c_fc"), &self.c_fc, x);
+        let h = Gelu::new_approximate().forward(up);
+        site(adapters, &format!("{prefix}.mlp.c_proj"), &self.c_proj, h)
     }
 }
 
@@ -214,23 +243,23 @@ impl<B: Backend> Block<B> {
         }
     }
 
-    /// Pre-LN residual block. `qkv_override`, when `Some`, replaces this block's
-    /// `c_attn` projection with a LoRA-adapted one (the M3 LoRA-attach path);
-    /// `None` uses the block's own loaded `c_attn`.
+    /// Pre-LN residual block. `adapters`/`prefix` thread the injected LoRA set
+    /// (if any) and this block's path prefix (`transformer.h.{i}`) down to the
+    /// four injectable projections; `None` runs the plain loaded forward.
     fn forward(
         &self,
         h: Tensor<B, 3>,
         mask: Tensor<B, 4>,
         n_head: usize,
-        qkv_override: Option<&LoraLinear<B>>,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
     ) -> Tensor<B, 3> {
         let normed = self.ln_1.forward(h.clone());
-        let attn_out = match qkv_override {
-            Some(lora) => self.attn.attend(lora.forward(normed), mask, n_head),
-            None => self.attn.forward(normed, mask, n_head),
-        };
+        let attn_out = self.attn.forward(normed, mask, n_head, adapters, prefix);
         let h = h + attn_out;
-        let mlp_out = self.mlp.forward(self.ln_2.forward(h.clone()));
+        let mlp_out = self
+            .mlp
+            .forward(self.ln_2.forward(h.clone()), adapters, prefix);
         h + mlp_out
     }
 }
@@ -316,13 +345,14 @@ impl<B: Backend> Gpt2<B> {
         ]
     }
 
-    /// Forward pass, capturing localizing intermediates. `qkv_override`, when
-    /// `Some`, replaces block 0's `c_attn` with a LoRA adapter (the M3
-    /// LoRA-attach path); `None` is the plain loaded forward.
+    /// Forward pass, capturing localizing intermediates. `adapters`, when
+    /// `Some`, injects the name-keyed LoRA set at every matching site across all
+    /// blocks (the generalized M6 attach path); `None` is the plain loaded
+    /// forward.
     fn forward_inner(
         &self,
         ids: Tensor<B, 2, Int>,
-        qkv_override: Option<&LoraLinear<B>>,
+        adapters: Option<&LoraAdapters<B>>,
     ) -> Gpt2Trace<B> {
         let [batch, seq] = ids.dims();
         let device = ids.device();
@@ -344,8 +374,8 @@ impl<B: Backend> Gpt2<B> {
 
         let mut after_block0 = after_embed.clone();
         for (i, block) in t.h.iter().enumerate() {
-            let override_here = if i == 0 { qkv_override } else { None };
-            h = block.forward(h, mask.clone(), n_head, override_here);
+            let prefix = format!("transformer.h.{i}");
+            h = block.forward(h, mask.clone(), n_head, adapters, &prefix);
             if i == 0 {
                 after_block0 = h.clone();
             }
@@ -385,17 +415,79 @@ impl<B: Backend> Gpt2<B> {
         self.forward_inner(ids, None)
     }
 
-    /// Forward pass with block 0's `c_attn` projection replaced by a LoRA
-    /// adapter — the M3 LoRA-attach entry point. Because the adapter's `B`
-    /// factor is zero-initialized, the result is bit-identical to
-    /// [`forward`](Self::forward) until training moves `B` off zero, giving a
-    /// free attach-integrity check.
-    pub fn forward_with_lora_c_attn(
+    /// Every injectable LoRA site in this model: the four per-block projections
+    /// (`attn.c_attn`, `attn.c_proj`, `mlp.c_fc`, `mlp.c_proj`) across all
+    /// `n_layer` blocks, each with the input/output widths a delta must match.
+    ///
+    /// This is the model's advertisement to [`build_adapters`]: a config's
+    /// target patterns are matched against these paths to decide which sites get
+    /// a delta. Paths mirror the HF/burn module paths threaded through
+    /// [`forward_with_adapters`], so a built [`LoraAdapters`] keys correctly.
+    ///
+    /// [`build_adapters`]: crate::adapters::build_adapters
+    pub fn injectable_sites(&self) -> Vec<LoraSite> {
+        let e = self.config.n_embd;
+        let inner = self.config.n_inner;
+        let mut sites = Vec::with_capacity(self.config.n_layer * 4);
+        for i in 0..self.config.n_layer {
+            let p = format!("transformer.h.{i}");
+            sites.push(LoraSite {
+                path: format!("{p}.attn.c_attn"),
+                d_in: e,
+                d_out: 3 * e,
+            });
+            sites.push(LoraSite {
+                path: format!("{p}.attn.c_proj"),
+                d_in: e,
+                d_out: e,
+            });
+            sites.push(LoraSite {
+                path: format!("{p}.mlp.c_fc"),
+                d_in: e,
+                d_out: inner,
+            });
+            sites.push(LoraSite {
+                path: format!("{p}.mlp.c_proj"),
+                d_in: inner,
+                d_out: e,
+            });
+        }
+        sites
+    }
+
+    /// Forward pass with the name-keyed LoRA set injected at every matching site
+    /// — the generalized M6 (#17) attach entry point, replacing the old
+    /// single-`c_attn` path. Because each delta's `B` factor is zero-initialized,
+    /// the result is bit-identical to [`forward`](Self::forward) until training
+    /// moves the deltas off zero, giving a free attach-integrity check at every
+    /// site.
+    pub fn forward_with_adapters(
         &self,
         ids: Tensor<B, 2, Int>,
-        lora: &LoraLinear<B>,
+        adapters: &LoraAdapters<B>,
     ) -> Tensor<B, 3> {
-        self.forward_inner(ids, Some(lora)).logits
+        self.forward_inner(ids, Some(adapters)).logits
+    }
+}
+
+/// Run a base `Linear` at an injectable site and add any adapter registered for
+/// `path`.
+///
+/// `lin.forward(x)` is the layer's own output; if `adapters` holds a delta for
+/// `path` the scaled low-rank update is added on top (reusing
+/// [`LoraAdapters::apply`]'s math — no forward duplication). With `adapters ==
+/// None` this is exactly `lin.forward(x)`, so the plain forward pays nothing.
+/// The input is cloned only when an adapter is present (the delta needs the same
+/// input the base saw).
+fn site<B: Backend, const D: usize>(
+    adapters: Option<&LoraAdapters<B>>,
+    path: &str,
+    lin: &Linear<B>,
+    x: Tensor<B, D>,
+) -> Tensor<B, D> {
+    match adapters {
+        Some(a) => a.apply(path, x.clone(), lin.forward(x)),
+        None => lin.forward(x),
     }
 }
 

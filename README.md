@@ -34,7 +34,7 @@ Three layers, one direction of dependency:
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `loractl-core` | The pipeline: config schema, `TrainEvent` stream, `Trainer` trait, the LoRA module + `BurnTrainer`, the GPT-2 model + safetensors loader. **No CLI, no stdout.** | burn, burn-store |
+| `loractl-core` | The pipeline: config schema, `TrainEvent` stream, `Trainer` trait, the LoRA module + `BurnTrainer`, the GPT-2 model + safetensors loader, generic name-keyed adapter injection + kohya-ss export. **No CLI, no stdout.** | burn, burn-store, regex, safetensors |
 | `loractl-cli` | The `loractl` binary. Parses args, layers config, renders events. | `loractl-core` |
 | `loractl-api` | The HTTP/SSE server: streams the same events as JSON for an optional GUI. | `loractl-core` |
 
@@ -268,7 +268,7 @@ parity-golden methodology) but almost none of its model code — the denoiser,
 VAE, and text encoder are greenfield in burn. The strategy (why Krea 2, why
 stay on burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
-- [ ] **M6 — Generic LoRA injection + kohya/PEFT export** ([#17](https://github.com/laurigates/loractl/issues/17))**.** Inject adapters across a module tree by name pattern; export in a kohya/diffusers-PEFT safetensors layout so a LoRA loads in ComfyUI/Krea.
+- [x] **M6 — Generic LoRA injection + kohya-ss export** ([#17](https://github.com/laurigates/loractl/issues/17))**.** `LoraAdapters` injects a name-keyed set of low-rank deltas across a module tree (config `targets` patterns → `build_adapters` over a model's `injectable_sites`); GPT-2's attach is re-expressed through it. `export_adapters` writes a kohya-ss `.safetensors` (transposed `lora_down`/`lora_up` + `.alpha` scalar) so a LoRA loads in ComfyUI/Krea, proven offline against a golden. A `PeftDiffusers` format is reserved behind the `AdapterNameMapper` seam.
 - [ ] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** wgpu/cuda backend (ndarray stays the offline test backend); CPU can't train 12B.
 - [ ] **M8 — Rectified-flow objective** ([#19](https://github.com/laurigates/loractl/issues/19))**.** Flow-matching v-param loss + logit-normal timestep sampling, proven on a synthetic latent toy (M2 methodology).
 - [ ] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Hybrid Qwen-Image/FLUX-2 AE in burn; image→latent parity (no Rust prior art).

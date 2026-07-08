@@ -50,6 +50,7 @@ fn periodic_validation_samples_are_emitted_and_written() {
             rank: 4,
             alpha: 8.0,
             dropout: 0.0,
+            targets: vec![],
         },
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),

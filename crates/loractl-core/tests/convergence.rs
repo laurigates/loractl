@@ -53,6 +53,7 @@ fn synthetic_training_converges() {
             rank: 8,
             alpha: 16.0,
             dropout: 0.0,
+            targets: vec![],
         },
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),

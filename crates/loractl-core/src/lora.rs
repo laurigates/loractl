@@ -71,16 +71,7 @@ impl<B: Backend> LoraLinear<B> {
         let rank = rank.max(1);
         let [d_input, d_output] = base.weight.dims();
         let base = freeze(base);
-
-        // Standard LoRA initialization: `A` gets the default (Kaiming) init and
-        // `B` is zeroed, so the adapter starts as an exact no-op.
-        let lora_a = LinearConfig::new(d_input, rank)
-            .with_bias(false)
-            .init(device);
-        let lora_b = LinearConfig::new(rank, d_output)
-            .with_bias(false)
-            .with_initializer(Initializer::Zeros)
-            .init(device);
+        let (lora_a, lora_b) = init_factors(d_input, d_output, rank, device);
 
         Self {
             base,
@@ -98,6 +89,92 @@ impl<B: Backend> LoraLinear<B> {
         let base = self.base.forward(input.clone());
         let delta = self.lora_b.forward(self.lora_a.forward(input));
         base.add(delta.mul_scalar(self.scaling))
+    }
+}
+
+/// Initialize a fresh, bias-less LoRA factor pair sized to a linear of width
+/// `d_input -> d_output` at the given `rank`.
+///
+/// `A` (`d_input -> rank`) gets burn's default (Kaiming) init; `B`
+/// (`rank -> d_output`) is zero-initialized, so any adapter built from this pair
+/// starts as an exact no-op and only departs from the base as training moves `B`
+/// off zero. This is the shared init used by both [`LoraLinear::from_base`] (the
+/// base-owning adapter) and [`LoraDelta`] (the base-free delta), so the two
+/// cannot drift in how they seed their factors. `rank` is expected pre-clamped
+/// (`>= 1`) by the caller — the caller also derives `scaling = alpha / rank`.
+pub(crate) fn init_factors<B: Backend>(
+    d_input: usize,
+    d_output: usize,
+    rank: usize,
+    device: &B::Device,
+) -> (Linear<B>, Linear<B>) {
+    let lora_a = LinearConfig::new(d_input, rank)
+        .with_bias(false)
+        .init(device);
+    let lora_b = LinearConfig::new(rank, d_output)
+        .with_bias(false)
+        .with_initializer(Initializer::Zeros)
+        .init(device);
+    (lora_a, lora_b)
+}
+
+/// A base-free low-rank update: just the trainable factors `A`/`B` and the
+/// scaling, whose forward returns **only** the scaled delta
+/// `(alpha / rank) · B(A(x))` — not `base(x) + delta`.
+///
+/// This is the injection-friendly counterpart to [`LoraLinear`]. Where
+/// `LoraLinear` owns and freezes its base, a `LoraDelta` owns no base at all:
+/// the base is whatever `Linear` already lives in the target module tree, and
+/// the delta is added to that layer's output at the injection site (see
+/// [`crate::adapters::LoraAdapters`]). Keeping the delta base-free is what lets
+/// one name-keyed set of adapters ride on top of an unmodified base model — the
+/// mechanism M6 (#17) generalizes to a diffusion DiT with dozens of targets.
+///
+/// Like [`LoraLinear`], `B` is zero-initialized, so a freshly built delta
+/// contributes exactly zero until training moves it — the no-op-at-attach
+/// invariant every injection site relies on.
+#[derive(Module, Debug)]
+pub struct LoraDelta<B: Backend> {
+    /// Down-projection `A`: `d_input -> rank`, no bias. Trainable.
+    pub lora_a: Linear<B>,
+    /// Up-projection `B`: `rank -> d_output`, no bias, zero-initialized.
+    /// Trainable.
+    pub lora_b: Linear<B>,
+    /// The LoRA scaling factor `alpha / rank`, applied to the adapter output.
+    pub scaling: f64,
+}
+
+impl<B: Backend> LoraDelta<B> {
+    /// Build a fresh delta sized `d_input -> d_output` at `rank`.
+    ///
+    /// `rank` is clamped to at least 1; the effective scale is `alpha / rank`.
+    /// `B` is zero-initialized, so the delta starts as an exact no-op.
+    pub fn new(
+        d_input: usize,
+        d_output: usize,
+        rank: usize,
+        alpha: f64,
+        device: &B::Device,
+    ) -> Self {
+        let rank = rank.max(1);
+        let (lora_a, lora_b) = init_factors(d_input, d_output, rank, device);
+        Self {
+            lora_a,
+            lora_b,
+            scaling: alpha / rank as f64,
+        }
+    }
+
+    /// The scaled low-rank delta `(alpha / rank) · B(A(x))`.
+    ///
+    /// Works for any input rank `[.., d_input]`; the output has the same rank
+    /// with the last dimension replaced by `d_output`. Unlike
+    /// [`LoraLinear::forward`], this does **not** add a base term — the caller
+    /// adds it to the target layer's own output at the injection site.
+    pub fn forward<const D: usize>(&self, input: Tensor<B, D>) -> Tensor<B, D> {
+        self.lora_b
+            .forward(self.lora_a.forward(input))
+            .mul_scalar(self.scaling)
     }
 }
 

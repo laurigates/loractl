@@ -33,6 +33,14 @@ burn-store = { version = "0.21.0", default-features = false, features = [
 # `BurnTrainer` writes — both library code, not just tests, so this lives here
 # rather than in [dev-dependencies].
 serde_json.workspace = true
+# Generic LoRA injection (M6, #17): `regex` matches config target patterns
+# against module paths; `safetensors` is the direct writer for the kohya-ss
+# adapter export (arbitrary keys + transpose + `.alpha` scalar — a shape
+# burn-store's snapshot-save can't express). Both already ride in transitively
+# via burn-store at these exact versions, so depending on them directly adds no
+# new external surface.
+regex = "1"
+safetensors = "0.7"
 
 [features]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where

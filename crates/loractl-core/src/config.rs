@@ -58,6 +58,35 @@ pub struct LoraConfig {
     /// Dropout applied to the adapter input during training.
     #[serde(default)]
     pub dropout: f32,
+
+    /// Which base-model layers to inject adapters into, as path patterns.
+    ///
+    /// Each [`TargetSpec`] regex is matched against a base model's injectable
+    /// site paths (e.g. `transformer\.h\.\d+\.attn\.c_attn`); a site matching any
+    /// pattern gets a delta, sized by that pattern's `rank`/`alpha` override or
+    /// the top-level `rank`/`alpha`. Empty by default, so an existing YAML with
+    /// no `targets:` deserializes unchanged (the single-target M2–M4 paths do not
+    /// consult it).
+    #[serde(default)]
+    pub targets: Vec<TargetSpec>,
+}
+
+/// A LoRA injection target: a module-path pattern plus optional per-target
+/// `rank`/`alpha` overrides.
+///
+/// `pattern` is a regex matched against a base model's injectable site paths.
+/// `rank`/`alpha`, when `Some`, override the top-level [`LoraConfig`] values for
+/// the sites this pattern matches; when `None` the global values apply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TargetSpec {
+    /// Regex matched against injectable site paths.
+    pub pattern: String,
+    /// Per-target rank override (falls back to [`LoraConfig::rank`]).
+    #[serde(default)]
+    pub rank: Option<u32>,
+    /// Per-target alpha override (falls back to [`LoraConfig::alpha`]).
+    #[serde(default)]
+    pub alpha: Option<f32>,
 }
 
 /// Where and how to read training data.
