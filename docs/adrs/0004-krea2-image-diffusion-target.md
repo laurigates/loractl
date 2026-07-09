@@ -50,13 +50,23 @@ why the FLUX LoRA tooling transfers.
 | Attention | **GQA + gated-sigmoid attention, QK-Norm** | GPT-2 is plain MHA |
 | Norm | **zero-centered RMSNorm** | GPT-2 is LayerNorm |
 | Positional | **3D axial RoPE** | GPT-2 is learned absolute (no RoPE footgun) |
-| Text encoder | **Qwen 3 VL** + multilayer feature aggregation | FLUX.1 uses T5-XXL + CLIP-L; loractl has neither |
-| VAE | **hybrid Qwen-Image VAE + FLUX-2 AE** | loractl has no VAE |
+| Text encoder | **Qwen 3 VL, text-only**, 12-layer feature aggregation | FLUX.1 uses T5-XXL + CLIP-L; loractl has neither |
+| VAE | **`AutoencoderKLQwenImage`**, f8 **16-channel** latents, attention-free | loractl has no VAE |
 | LoRA format | safetensors, kohya / diffusers-PEFT naming | loractl uses a bespoke `fc2.lora_a/b` scheme (M4) |
 
 The **Qwen 3 VL text encoder** and the **hybrid autoencoder** are the two
 components with **zero Rust prior art** in either burn or candle — they dominate
-the from-scratch cost.
+the from-scratch cost. Both have concrete, researched burn design targets in
+their issues ([#20](https://github.com/laurigates/loractl/issues/20),
+[#21](https://github.com/laurigates/loractl/issues/21)), with several notable
+de-riskers: the encoder runs **text-only** (drop the vision tower via a
+`visual.*` regex filter at load; its M-RoPE collapses to plain 1D RoPE, and as a
+frozen extractor it needs **no Autodiff** backend at all — a clean split from the
+DiT+LoRA that do), and the VAE is **attention-free** (pure conv/norm/act:
+`GroupNorm` + SiLU + a Qwen-Image RMSNorm, with a custom left-padded causal
+`Conv3d`). Every specific (12 aggregation layers, 28/11 enc/dec depth, 16-channel
+f8 latents) is a *target to confirm against `krea-ai/krea-2` source*, per the
+report-vs-code risk below.
 
 ## Decision
 
