@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/laurigates/loractl/compare/v0.2.0...v0.3.0) (2026-07-09)
+
+
+### Features
+
+* **core:** generalize LoRA injection + kohya-ss export (M6, [#17](https://github.com/laurigates/loractl/issues/17)) ([#28](https://github.com/laurigates/loractl/issues/28)) ([ce70295](https://github.com/laurigates/loractl/commit/ce70295da01aa81095dd1b45a9c247033378ac79))
+
 ## [0.2.0](https://github.com/laurigates/loractl/compare/v0.1.0...v0.2.0) (2026-07-05)
 
 
