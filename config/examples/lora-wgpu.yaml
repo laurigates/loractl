@@ -1,0 +1,38 @@
+# Example loractl config that trains on the wgpu GPU backend (M7).
+# Run it with the `wgpu` build feature so the GPU dispatch arm is compiled in:
+#   cargo run -p loractl-cli --features wgpu -- train config/examples/lora-wgpu.yaml
+#   # or: just run-wgpu
+# On Apple Silicon the wgpu backend runs on Metal, so this is a real GPU run
+# selected purely from config — the local evidence for M7 acceptance #1.
+#
+# Identical to lora.yaml except for the `compute:` block. Still the synthetic
+# LoRA-MLP demo (model.base is not "mnist"), so it needs no dataset or network.
+
+steps: 200
+seed: 42
+
+model:
+  base: synthetic
+
+lora:
+  rank: 16
+  alpha: 16
+  dropout: 0.0
+
+dataset:
+  path: ./data/my-subject
+  resolution: 512
+
+optim:
+  lr: 1.0e-3
+  weight_decay: 0.0
+
+output:
+  dir: ./output
+  name: lora-wgpu
+  checkpoint_every: 10000 # no mid-run checkpoints for the smoke
+  sample_every: 0
+
+compute:
+  backend: wgpu # Metal on macOS/Apple-Silicon; Vulkan/DX12 elsewhere
+  device: 0 # 0 = default/best GPU (the only verified path on a single-GPU Mac)

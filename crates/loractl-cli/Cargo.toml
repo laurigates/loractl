@@ -12,6 +12,16 @@ rust-version.workspace = true
 name = "loractl"
 path = "src/main.rs"
 
+[features]
+# Passthrough to loractl-core's GPU backends (M7, #18). None default, so the
+# stock CLI build stays offline/ndarray. `just run-wgpu` builds with `wgpu` so a
+# `compute.backend: wgpu` config actually reaches core's wgpu dispatch arm
+# (without this the flag/config is a runtime no-op that bails). cuda/tch are
+# passthrough-only and not runnable on this machine.
+wgpu = ["loractl-core/wgpu"]
+cuda = ["loractl-core/cuda"]
+tch = ["loractl-core/tch"]
+
 [dependencies]
 loractl-core = { path = "../loractl-core" }
 anyhow.workspace = true

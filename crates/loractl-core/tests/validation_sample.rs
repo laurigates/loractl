@@ -9,7 +9,9 @@
 //! `sample-{step}.json`, or an off-by-one in the `step % sample_every` gate
 //! would pass `cargo test` cleanly.
 
-use loractl_core::config::{DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig};
+use loractl_core::config::{
+    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+};
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -68,6 +70,8 @@ fn periodic_validation_samples_are_emitted_and_written() {
             checkpoint_every: 10_000,
             sample_every,
         },
+        // Default (ndarray) backend — the offline sample-path test stays on CPU.
+        compute: ComputeConfig::default(),
     };
 
     let mut sample_events: Vec<(u64, PathBuf)> = Vec::new();

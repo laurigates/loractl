@@ -38,6 +38,16 @@ lint-mnist:
 lint-gpt2-real:
     cargo clippy -p loractl-core --all-targets --features gpt2-real -- -D warnings
 
+# Lint the opt-in wgpu GPU-backend path (M7). Compiles the cubecl/wgpu/naga
+# subtree + the gated wgpu smoke test; no GPU is needed to COMPILE and nothing
+# runs. Kept out of the default `just lint` so that stays offline and fast.
+lint-wgpu:
+    cargo clippy -p loractl-core --all-targets --features wgpu -- -D warnings
+
+# NOTE: cuda/tch are intentionally NOT local recipes — burn-cuda needs the CUDA
+# toolkit/nvcc and burn-tch a linked libtorch, neither present on this Mac. They
+# are build-verifiable only on a Linux+NVIDIA / libtorch host.
+
 # Format the workspace.
 fmt:
     cargo fmt --all
@@ -57,6 +67,16 @@ test-mnist:
 # Run the opt-in real-GPT-2 forward-parity test (needs `just gpt2-reference` first).
 test-gpt2-real:
     cargo test -p loractl-core --features gpt2-real -- --ignored real_gpt2_forward_matches_pytorch_golden
+
+# Run the wgpu GPU portability smoke (M7) on a real GPU — Metal on Apple Silicon.
+# The ONLY way the double-gated `#[ignore]`d smoke runs; never fires in CI.
+test-wgpu:
+    cargo test -p loractl-core --features wgpu -- --ignored wgpu_training_smoke
+
+# End-to-end acceptance #1: train on the GPU through the real CLI, backend
+# selected purely from config (`compute.backend: wgpu`). Metal on this Mac.
+run-wgpu config="config/examples/lora-wgpu.yaml":
+    cargo run -p loractl-cli --features wgpu -- train {{config}}
 
 # Regenerate the PyTorch golden fixture for the numerics test (needs torch via uv).
 reference:

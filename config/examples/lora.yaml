@@ -29,3 +29,10 @@ output:
   name: my-lora
   checkpoint_every: 250
   sample_every: 0 # write a validation sample every N steps (0 = disabled)
+
+# Compute backend + device (M7). Optional — omitting this block runs on the
+# ndarray CPU backend, exactly as before. GPU backends need the matching build
+# feature (e.g. `cargo run -p loractl-cli --features wgpu`), else the run bails.
+# compute:
+#   backend: ndarray # ndarray (default, CPU/offline) | wgpu (GPU: Metal on macOS) | cuda | tch
+#   device: 0        # GPU ordinal; ignored by ndarray. wgpu: 0 = default/best GPU

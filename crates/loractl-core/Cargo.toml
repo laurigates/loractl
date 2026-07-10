@@ -43,6 +43,19 @@ regex = "1"
 safetensors = "0.7"
 
 [features]
+# GPU compute backends (M7, #18). None are in `default`, so `cargo build`/
+# `clippy`/`test` and CI stay offline and GPU-free on the always-available
+# ndarray+autodiff backend. Each activates a burn backend feature; the runtime
+# dispatch arm in `burn_trainer.rs` is `#[cfg]`-gated on the matching feature.
+#
+# - `wgpu`: Metal on macOS/Apple-Silicon, Vulkan/DX12 elsewhere. The ONE GPU
+#   backend runnable + verifiable on this dev machine (`just test-wgpu`).
+# - `cuda`: NVIDIA only; needs the CUDA toolkit/nvcc at build time — NOT
+#   buildable or runnable on darwin. Compile-verifiable only on a Linux+NVIDIA host.
+# - `tch`: libtorch; needs a linked libtorch binary — NOT exercised here.
+wgpu = ["burn/wgpu"]
+cuda = ["burn/cuda"]
+tch = ["burn/tch"]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
 # `MnistDataset` lives) and `burn/vision` activates its vision datasets. This
 # pulls reqwest/tokio and downloads MNIST over the network at runtime, so it is
