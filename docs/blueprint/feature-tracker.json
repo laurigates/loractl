@@ -1,10 +1,10 @@
 {
   "$schema": "./schemas/feature-tracker.schema.json",
   "version": "1.1.0",
-  "last_updated": "2026-07-08",
+  "last_updated": "2026-07-10",
   "project": "loractl",
   "source_document": "README.md",
-  "current_phase": "phase-6",
+  "current_phase": "phase-9",
   "tasks": {
     "in_progress": [],
     "pending": [],
@@ -39,17 +39,17 @@
     {
       "id": "phase-6",
       "name": "M6 — Generic LoRA injection + kohya/PEFT export (#17)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-7",
       "name": "M7 — GPU compute backend (#18)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-8",
       "name": "M8 — Rectified-flow v-param objective (#19)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-9",

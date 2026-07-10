@@ -20,6 +20,11 @@ pub struct TrainConfig {
     #[serde(default)]
     pub seed: u64,
 
+    /// Which training objective this run drives (M8, #19). Defaults to
+    /// `classification` (the M2 demo), so every pre-M8 config runs unchanged.
+    #[serde(default)]
+    pub task: TaskKind,
+
     /// The base model to adapt.
     pub model: ModelConfig,
 
@@ -41,6 +46,11 @@ pub struct TrainConfig {
     /// existing config with no `compute:` block runs exactly as before).
     #[serde(default)]
     pub compute: ComputeConfig,
+
+    /// Rectified-flow sampler settings — only consulted when
+    /// `task: flow-matching` (defaults to the SD3/kohya production values).
+    #[serde(default)]
+    pub flow: FlowConfig,
 }
 
 /// The base model being adapted.
@@ -223,6 +233,91 @@ pub struct ComputeConfig {
     /// default/best GPU (the only verified path on a single-GPU Apple-Silicon
     /// Mac).
     pub device: usize,
+}
+
+/// Which training objective a run drives (M8, #19).
+///
+/// Like [`BackendKind`], the enum and its `Deserialize` are **always
+/// compiled** and route through `FromStr`, so the YAML, env, and `--task` flag
+/// layers accept the same spellings (case-insensitive; `flow-matching`,
+/// `flow_matching`, `flowmatching`, or the short `flow` alias) and report the
+/// same clear error. The derived `Serialize` is kebab-case so `FlowMatching`
+/// round-trips as `"flow-matching"` — a plain lowercase rename would emit
+/// `"flowmatching"`, which stays accepted by the `FromStr` only as a
+/// belt-and-braces spelling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskKind {
+    /// The M2 synthetic/MNIST LoRA-MLP classifier demo — the default.
+    #[default]
+    Classification,
+    /// The M8 rectified-flow (flow-matching) v-prediction objective on a
+    /// synthetic latent toy. See [`crate::flow`] for the pinned math.
+    FlowMatching,
+}
+
+// No `clap::ValueEnum` derive here on purpose (same reasoning as
+// [`BackendKind`]): the CLI parses `--task` through this `FromStr` via clap's
+// `value_parser`, keeping the vocabulary defined once in core.
+impl FromStr for TaskKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "classification" => Ok(Self::Classification),
+            "flow-matching" | "flow_matching" | "flowmatching" | "flow" => Ok(Self::FlowMatching),
+            other => Err(format!(
+                "unknown task {other:?} (classification|flow-matching)"
+            )),
+        }
+    }
+}
+
+// Deserialize through `FromStr` (not the derive) so the YAML and env layers
+// accept exactly what the `--task` flag does — see [`BackendKind`]'s
+// `Deserialize` for the full rationale. `Serialize` stays derived (writes
+// kebab-case), so a round-trip is stable.
+impl<'de> Deserialize<'de> for TaskKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Rectified-flow / flow-matching hyperparameters (M8, #19).
+///
+/// Controls the logit-normal timestep sampler and the constant shift transform
+/// (see [`crate::flow`]). Only consulted when [`TrainConfig::task`] is
+/// [`TaskKind::FlowMatching`]. `#[serde(default)]` plus the hand-written
+/// `Default` means every existing YAML/JSON — which carries no `flow:` block —
+/// deserializes exactly as before, onto the SD3 Eq. 19 sampler defaults and
+/// the kohya/SD3-scheduler production shift.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FlowConfig {
+    /// Mean of the logit-normal timestep distribution (`u ~ N(mean, std)`,
+    /// `t = sigmoid(u)`). SD3 Eq. 19 default: `0.0`.
+    pub logit_mean: f64,
+    /// Standard deviation of the logit-normal timestep distribution. SD3
+    /// Eq. 19 default: `1.0`.
+    pub logit_std: f64,
+    /// Constant timestep shift `t' = shift·t / (1 + (shift − 1)·t)`;
+    /// `shift > 1` pushes `t` toward 1 (noise). kohya/SD3-scheduler
+    /// production default: `3.0`.
+    pub shift: f64,
+}
+
+impl Default for FlowConfig {
+    fn default() -> Self {
+        Self {
+            logit_mean: 0.0,
+            logit_std: 1.0,
+            shift: 3.0,
+        }
+    }
 }
 
 /// Field defaults that can't be expressed with `Default::default()` alone.

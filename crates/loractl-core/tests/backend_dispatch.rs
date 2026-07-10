@@ -8,7 +8,8 @@
 //! => bail!` arms in `burn_trainer.rs` cheaply, without any GPU.
 
 use loractl_core::config::{
-    BackendKind, ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    BackendKind, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, Trainer};
 use std::path::PathBuf;
@@ -19,6 +20,7 @@ fn cfg(backend: BackendKind) -> TrainConfig {
     TrainConfig {
         steps: 1,
         seed: 0,
+        task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
         },
@@ -43,6 +45,7 @@ fn cfg(backend: BackendKind) -> TrainConfig {
             sample_every: 0,
         },
         compute: ComputeConfig { backend, device: 0 },
+        flow: FlowConfig::default(),
     }
 }
 

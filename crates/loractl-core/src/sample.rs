@@ -19,10 +19,12 @@
 //! here means exactly one deterministic forward pass, honestly labeled as
 //! such — not text generation.
 
+use crate::config::TaskKind;
 use crate::model::LoraMlp;
 use anyhow::{Result, ensure};
 use burn::tensor::backend::Backend;
 use burn::tensor::{Tensor, TensorData};
+use std::path::Path;
 
 /// FNV-1a, a well-known, stable-forever 64-bit hash.
 ///
@@ -119,6 +121,32 @@ pub fn run_sample<B: Backend>(
     })
 }
 
+/// Load the adapter at `path` and run one deterministic sample forward pass —
+/// the single core-side entry point behind `loractl sample` (and any future
+/// front-end sample path).
+///
+/// **Refuses flow-matching adapters.** A `LoraMlp` trained as a velocity net
+/// (M8, #19) has no classes, so "predicted class: N" derived from it would be
+/// silent, confidently wrong output. The check lives here in core — where the
+/// sidecar's [`task`](crate::adapter::AdapterMeta::task) is read — so every
+/// front-end inherits the refusal (fail-fast rule), rather than each renderer
+/// having to remember it.
+pub fn sample_adapter<B: Backend>(
+    path: &Path,
+    seed: u64,
+    device: &B::Device,
+) -> Result<SampleOutput> {
+    let meta = crate::adapter::read_meta(path)?;
+    ensure!(
+        meta.task != TaskKind::FlowMatching,
+        "adapter at {} is a flow-matching adapter (a velocity net, not a classifier) — \
+         classifier sampling does not apply",
+        path.display()
+    );
+    let model = crate::adapter::load_adapter::<B>(path, device)?;
+    run_sample(&model, seed, device)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +195,32 @@ mod tests {
             result.is_err(),
             "run_sample must return an Err (not panic) when logits are non-finite"
         );
+    }
+
+    #[test]
+    fn sample_adapter_refuses_flow_matching_adapters() {
+        let device = Default::default();
+        let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, &device);
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "loractl-flow-refusal-{}-{nanos}",
+            std::process::id()
+        ));
+        let path = dir.join("flow-adapter.safetensors");
+        crate::adapter::save_adapter(&model, &path, 3, TaskKind::FlowMatching)
+            .expect("save a flow-task adapter");
+
+        let err = sample_adapter::<TB>(&path, 0, &device)
+            .expect_err("sample_adapter must refuse a flow-matching adapter");
+        assert!(
+            err.to_string().contains("flow"),
+            "the refusal should name the flow-matching task, got: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

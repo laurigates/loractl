@@ -11,7 +11,7 @@
 //! be caught here, rather than compiling and passing `just test` untouched.
 
 use loractl_core::adapter;
-use loractl_core::{Device, LoraMlp, NdArray};
+use loractl_core::{Device, LoraMlp, NdArray, TaskKind};
 use std::process::Command;
 
 #[test]
@@ -30,7 +30,7 @@ fn sample_subcommand_prints_real_output() {
     // `adapter_roundtrip.rs`'s job. `save_adapter` creates `dir` itself.
     let device: Device<NdArray> = Default::default();
     let model = LoraMlp::<NdArray>::new(8, 6, 4, 2, 8.0, &device);
-    adapter::save_adapter(&model, &adapter_path, 99)
+    adapter::save_adapter(&model, &adapter_path, 99, TaskKind::Classification)
         .expect("save a tiny adapter for the CLI to load");
 
     let exe = env!("CARGO_BIN_EXE_loractl");
