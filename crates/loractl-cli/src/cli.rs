@@ -14,7 +14,7 @@ use figment::{
     providers::{Env, Format, Yaml},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use loractl_core::{BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{BackendKind, BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
@@ -45,6 +45,14 @@ enum Command {
     },
 }
 
+/// Parse a `--backend` value through core's [`BackendKind`] `FromStr`, keeping
+/// the backend vocabulary defined once in `loractl-core` (a `clap::ValueEnum`
+/// derive would have to live in core and pull `clap` in, breaking the
+/// core-never-imports-clap invariant).
+fn parse_backend(s: &str) -> Result<BackendKind, String> {
+    s.parse()
+}
+
 #[derive(Args)]
 struct TrainCmd {
     /// Path to the training config (YAML).
@@ -57,6 +65,16 @@ struct TrainCmd {
     /// Override the number of steps from the config.
     #[arg(long)]
     steps: Option<u64>,
+
+    /// Override the compute backend from the config: `ndarray` (default, CPU),
+    /// `wgpu` (GPU — Metal on macOS), `cuda`, or `tch`. GPU backends require the
+    /// matching build feature (e.g. `--features wgpu`), else the run bails.
+    #[arg(long, value_parser = parse_backend)]
+    backend: Option<BackendKind>,
+
+    /// Override the compute device index (GPU ordinal; ignored by ndarray).
+    #[arg(long)]
+    device: Option<usize>,
 }
 
 #[derive(Args)]
@@ -145,6 +163,12 @@ fn train(cmd: TrainCmd) -> Result<()> {
     }
     if let Some(steps) = cmd.steps {
         config.steps = steps;
+    }
+    if let Some(backend) = cmd.backend {
+        config.compute.backend = backend;
+    }
+    if let Some(device) = cmd.device {
+        config.compute.device = device;
     }
 
     std::fs::create_dir_all(&config.output.dir)

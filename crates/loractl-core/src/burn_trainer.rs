@@ -7,6 +7,18 @@
 //! satisfies the same [`Trainer`] contract, so the CLI swaps it in by changing a
 //! single constructor line — the whole point of the event abstraction.
 //!
+//! **Compute backend (M7, #18).** The training loop is generic over
+//! `B: AutodiffBackend`; [`BurnTrainer::train`](Trainer::train) is a thin
+//! runtime dispatcher that reads [`config.compute.backend`](crate::ComputeConfig)
+//! and calls the monomorphized [`run_training`] for the selected backend. The
+//! `ndarray` (CPU) arm is always compiled and is the default, so `cargo test`
+//! and CI stay offline; the `wgpu`/`cuda`/`tch` arms are `#[cfg]`-gated on their
+//! cargo features and a `#[cfg(not(...))]` arm fails loudly when a config selects
+//! a backend this binary was not built with (never a silent CPU fallback).
+//! Because selection flows through the config *into* the trainer, the front-end
+//! trainer-construction seams do not change at all — the event abstraction is
+//! over-satisfied.
+//!
 //! **Default run — synthetic demo.** With no `mnist` feature (or any
 //! `model.base` other than `"mnist"`), the trainer fabricates a seeded,
 //! in-memory Gaussian-blob classification set and trains on it. This keeps the
@@ -41,26 +53,31 @@
 //! through the `&mut dyn FnMut(TrainEvent)` sink.
 
 use crate::adapter;
-use crate::config::TrainConfig;
+use crate::config::{BackendKind, TrainConfig};
 use crate::event::TrainEvent;
 use crate::model::LoraMlp;
 use crate::sample;
 use crate::train::Trainer;
 use anyhow::{Context, Result};
-use burn::backend::{Autodiff, NdArray};
+use burn::backend::Autodiff;
+use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::module::AutodiffModule;
 use burn::nn::loss::CrossEntropyLossConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use burn::tensor::backend::Backend;
-use burn::tensor::{Device, Distribution, Int, Tensor, TensorData};
+use burn::tensor::backend::{AutodiffBackend, Backend};
+use burn::tensor::{Distribution, ElementConversion, Int, Tensor, TensorData};
 use std::path::PathBuf;
 
-/// The autodiff-wrapped CPU backend the trainer runs on.
-type AB = Autodiff<NdArray>;
+#[cfg(feature = "cuda")]
+use burn::backend::{Cuda, cuda::CudaDevice};
+#[cfg(feature = "tch")]
+use burn::backend::{LibTorch, libtorch::LibTorchDevice};
+#[cfg(feature = "wgpu")]
+use burn::backend::{Wgpu, wgpu::WgpuDevice};
 
 /// One training batch: features `[batch, 784]` and integer class labels
-/// `[batch]`.
-type Batch = (Tensor<AB, 2>, Tensor<AB, 1, Int>);
+/// `[batch]`, on the run's selected backend `B`.
+type Batch<B> = (Tensor<B, 2>, Tensor<B, 1, Int>);
 
 /// Flattened MNIST-shaped input width (28×28).
 const INPUT_DIM: usize = 784;
@@ -78,113 +95,211 @@ const NUM_CLASSES: usize = 10;
 /// sample," and it would be lost if each sample used a different input.
 const VALIDATION_SAMPLE_SEED: u64 = 0;
 
-/// A real LoRA trainer built on burn's ndarray + autodiff backend.
+/// A real LoRA trainer built on burn's autodiff backend.
 ///
 /// Unit struct, like [`MockTrainer`](crate::MockTrainer) — constructed as
-/// `BurnTrainer` and driven through the [`Trainer`] trait.
+/// `BurnTrainer` and driven through the [`Trainer`] trait. It stays a concrete
+/// (non-generic) type so `Trainer` remains object-safe (loractl-api boxes it as
+/// `Box<dyn Trainer>`); the compute backend is selected at run time inside
+/// [`train`](Trainer::train), not baked into the type.
 pub struct BurnTrainer;
 
 impl Trainer for BurnTrainer {
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf> {
-        let device: Device<AB> = Default::default();
-        // Seed FIRST — before the model's Kaiming init of `lora_a` and before any
-        // synthetic data is drawn — so a run is fully reproducible.
-        AB::seed(&device, config.seed);
-
-        let total = config.steps.max(1);
-        sink(TrainEvent::Started { total_steps: total });
-
-        // Ensure the output dir exists so checkpoint/finish records can be
-        // written — the trainer owns its own honest I/O.
-        std::fs::create_dir_all(&config.output.dir)
-            .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
-
-        let rank = config.lora.rank.max(1) as usize;
-        let mut model = LoraMlp::<AB>::new(
-            INPUT_DIM,
-            HIDDEN_DIM,
-            NUM_CLASSES,
-            rank,
-            config.lora.alpha as f64,
-            &device,
-        );
-
-        let batches = select_batches(config, &device, sink);
-
-        let mut optim = AdamConfig::new().init::<AB, LoraMlp<AB>>();
-        let loss_fn = CrossEntropyLossConfig::new().init(&device);
-        let checkpoint_every = config.output.checkpoint_every.max(1);
-        let sample_every = config.output.sample_every;
-
-        for step in 1..=total {
-            let (x, y) = &batches[(step as usize - 1) % batches.len()];
-            let logits = model.forward(x.clone());
-            let loss = loss_fn.forward(logits, y.clone());
-            // Read the loss BEFORE `backward()` consumes the graph — this order
-            // must match the PyTorch reference's record-before-step ordering.
-            let loss_value: f32 = loss.clone().into_scalar();
-            sink(TrainEvent::Step {
-                step,
-                loss: loss_value,
-                lr: config.optim.lr,
-            });
-
-            let grads = GradientsParams::from_grads(loss.backward(), &model);
-            // `step` consumes the module and returns a new one — must reassign.
-            model = optim.step(config.optim.lr, model, grads);
-
-            let want_checkpoint = step % checkpoint_every == 0;
-            let want_sample = sample_every > 0 && step % sample_every == 0;
-            if want_checkpoint || want_sample {
-                // Compute the eval-mode snapshot once and reuse it for both
-                // writes below — `.valid()` clones the whole model.
-                let valid_model = model.valid();
-
-                if want_checkpoint {
-                    let path = config
-                        .output
-                        .dir
-                        .join(format!("checkpoint-{step}.safetensors"));
-                    adapter::save_adapter(&valid_model, &path, config.seed)
-                        .with_context(|| format!("writing checkpoint at step {step}"))?;
-                    sink(TrainEvent::Checkpoint { step, path });
-                }
-
-                if want_sample {
-                    let sample_out =
-                        sample::run_sample(&valid_model, VALIDATION_SAMPLE_SEED, &device)
-                            .with_context(|| format!("running validation sample at step {step}"))?;
-                    let sample_path = config.output.dir.join(format!("sample-{step}.json"));
-                    let report = serde_json::json!({
-                        "step": step,
-                        "predicted_class": sample_out.predicted_class,
-                        "logits": sample_out.logits,
-                    });
-                    let report_json = serde_json::to_string_pretty(&report)
-                        .context("serializing validation sample")?;
-                    std::fs::write(&sample_path, report_json)
-                        .with_context(|| format!("writing sample at step {step}"))?;
-                    sink(TrainEvent::Sample {
-                        step,
-                        path: sample_path,
+        // Runtime dispatch over the config-selected backend. The ndarray arm is
+        // always compiled; each GPU arm is `#[cfg]`-gated and paired with a
+        // `#[cfg(not(...))]` arm that bails loudly (never a silent CPU
+        // fallback) when the feature is absent.
+        match config.compute.backend {
+            BackendKind::Ndarray => {
+                if config.compute.device != 0 {
+                    sink(TrainEvent::Warning {
+                        message: format!(
+                            "ndarray (CPU) backend ignores device index {}; running on CPU",
+                            config.compute.device
+                        ),
                     });
                 }
+                let device = NdArrayDevice::default();
+                run_training::<Autodiff<NdArray>>(config, device, sink)
+            }
+            #[cfg(feature = "wgpu")]
+            BackendKind::Wgpu => {
+                let device = wgpu_device(config.compute.device);
+                run_training::<Autodiff<Wgpu>>(config, device, sink)
+            }
+            #[cfg(not(feature = "wgpu"))]
+            BackendKind::Wgpu => anyhow::bail!(
+                "config selected the 'wgpu' backend but this binary was built without it; \
+                 rebuild with `--features wgpu` (Metal on macOS, Vulkan/DX12 elsewhere)"
+            ),
+            #[cfg(feature = "cuda")]
+            BackendKind::Cuda => {
+                let device = CudaDevice::new(config.compute.device);
+                run_training::<Autodiff<Cuda>>(config, device, sink)
+            }
+            #[cfg(not(feature = "cuda"))]
+            BackendKind::Cuda => anyhow::bail!(
+                "config selected the 'cuda' backend but this binary was built without it; \
+                 rebuild with `--features cuda` on a Linux+NVIDIA host (CUDA toolkit \
+                 required). cuda is not runnable on macOS"
+            ),
+            #[cfg(feature = "tch")]
+            BackendKind::Tch => {
+                let device = tch_device(config.compute.device);
+                run_training::<Autodiff<LibTorch>>(config, device, sink)
+            }
+            #[cfg(not(feature = "tch"))]
+            BackendKind::Tch => anyhow::bail!(
+                "config selected the 'tch' backend but this binary was built without it; \
+                 rebuild with `--features tch` (a linked libtorch binary is required)"
+            ),
+        }
+    }
+}
+
+/// Build the wgpu device for `index`.
+///
+/// Index `0` maps to `WgpuDevice::default()` — the auto-selected best GPU, which
+/// on Apple Silicon is the single Metal GPU. This is the ONLY path verified on
+/// the dev machine.
+#[cfg(feature = "wgpu")]
+fn wgpu_device(index: usize) -> WgpuDevice {
+    if index == 0 {
+        WgpuDevice::default()
+    } else {
+        // NOTE (unverified on this Mac): the Apple GPU is integrated (unified
+        // memory), so `DiscreteGpu(index)` is correct only on an x86 host with
+        // discrete GPUs. A non-zero index on Apple Silicon is host-dependent and
+        // untested — index 0 (the default GPU) is the supported path.
+        WgpuDevice::DiscreteGpu(index)
+    }
+}
+
+/// Build the libtorch device for `index`.
+///
+/// UNVERIFIED on this Mac: libtorch is not linked here. `Cuda(index)` is the
+/// NVIDIA mapping; `LibTorchDevice::Mps` would be the Apple path if a
+/// libtorch-with-MPS build were linked. Validate the exact mapping on target
+/// hardware before relying on the `tch` backend.
+#[cfg(feature = "tch")]
+fn tch_device(index: usize) -> LibTorchDevice {
+    LibTorchDevice::Cuda(index)
+}
+
+/// Train a LoRA-MLP on the given backend `B` and device, driving the whole
+/// event → I/O pipeline. This is the former body of [`BurnTrainer::train`],
+/// made generic over `B: AutodiffBackend` so the same loop runs on ndarray,
+/// wgpu, cuda, or tch.
+///
+/// The seed → construct → data-generation ordering is preserved intact and is
+/// backend-independent — see `.claude/rules/burn-lazy-param-init.md`:
+/// `B::seed` runs first, then [`LoraMlp::new`] force-materializes the frozen
+/// base, then `select_batches` draws the synthetic data.
+fn run_training<B: AutodiffBackend>(
+    config: &TrainConfig,
+    device: B::Device,
+    sink: &mut dyn FnMut(TrainEvent),
+) -> Result<PathBuf> {
+    // Seed FIRST — before the model's Kaiming init of `lora_a` and before any
+    // synthetic data is drawn — so a run is fully reproducible.
+    B::seed(&device, config.seed);
+
+    let total = config.steps.max(1);
+    sink(TrainEvent::Started { total_steps: total });
+
+    // Ensure the output dir exists so checkpoint/finish records can be
+    // written — the trainer owns its own honest I/O.
+    std::fs::create_dir_all(&config.output.dir)
+        .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
+
+    let rank = config.lora.rank.max(1) as usize;
+    let mut model = LoraMlp::<B>::new(
+        INPUT_DIM,
+        HIDDEN_DIM,
+        NUM_CLASSES,
+        rank,
+        config.lora.alpha as f64,
+        &device,
+    );
+
+    let batches = select_batches::<B>(config, &device, sink);
+
+    let mut optim = AdamConfig::new().init::<B, LoraMlp<B>>();
+    let loss_fn = CrossEntropyLossConfig::new().init(&device);
+    let checkpoint_every = config.output.checkpoint_every.max(1);
+    let sample_every = config.output.sample_every;
+
+    for step in 1..=total {
+        let (x, y) = &batches[(step as usize - 1) % batches.len()];
+        let logits = model.forward(x.clone());
+        let loss = loss_fn.forward(logits, y.clone());
+        // Read the loss BEFORE `backward()` consumes the graph — this order
+        // must match the PyTorch reference's record-before-step ordering.
+        // `.elem()` converts `B::FloatElem` to `f32` so this compiles for any
+        // backend (a concrete `AB` would let `into_scalar()` yield `f32`
+        // directly, but the generic `B::FloatElem` is not provably `f32`).
+        let loss_value: f32 = loss.clone().into_scalar().elem();
+        sink(TrainEvent::Step {
+            step,
+            loss: loss_value,
+            lr: config.optim.lr,
+        });
+
+        let grads = GradientsParams::from_grads(loss.backward(), &model);
+        // `step` consumes the module and returns a new one — must reassign.
+        model = optim.step(config.optim.lr, model, grads);
+
+        let want_checkpoint = step % checkpoint_every == 0;
+        let want_sample = sample_every > 0 && step % sample_every == 0;
+        if want_checkpoint || want_sample {
+            // Compute the eval-mode snapshot once and reuse it for both
+            // writes below — `.valid()` clones the whole model.
+            let valid_model = model.valid();
+
+            if want_checkpoint {
+                let path = config
+                    .output
+                    .dir
+                    .join(format!("checkpoint-{step}.safetensors"));
+                adapter::save_adapter(&valid_model, &path, config.seed)
+                    .with_context(|| format!("writing checkpoint at step {step}"))?;
+                sink(TrainEvent::Checkpoint { step, path });
+            }
+
+            if want_sample {
+                let sample_out = sample::run_sample(&valid_model, VALIDATION_SAMPLE_SEED, &device)
+                    .with_context(|| format!("running validation sample at step {step}"))?;
+                let sample_path = config.output.dir.join(format!("sample-{step}.json"));
+                let report = serde_json::json!({
+                    "step": step,
+                    "predicted_class": sample_out.predicted_class,
+                    "logits": sample_out.logits,
+                });
+                let report_json = serde_json::to_string_pretty(&report)
+                    .context("serializing validation sample")?;
+                std::fs::write(&sample_path, report_json)
+                    .with_context(|| format!("writing sample at step {step}"))?;
+                sink(TrainEvent::Sample {
+                    step,
+                    path: sample_path,
+                });
             }
         }
-
-        // Write the final adapter honestly, then report the path that exists.
-        let adapter_path = config
-            .output
-            .dir
-            .join(&config.output.name)
-            .with_extension("safetensors");
-        adapter::save_adapter(&model.valid(), &adapter_path, config.seed)
-            .with_context(|| format!("writing final adapter to {}", adapter_path.display()))?;
-        sink(TrainEvent::Finished {
-            adapter_path: adapter_path.clone(),
-        });
-        Ok(adapter_path)
     }
+
+    // Write the final adapter honestly, then report the path that exists.
+    let adapter_path = config
+        .output
+        .dir
+        .join(&config.output.name)
+        .with_extension("safetensors");
+    adapter::save_adapter(&model.valid(), &adapter_path, config.seed)
+        .with_context(|| format!("writing final adapter to {}", adapter_path.display()))?;
+    sink(TrainEvent::Finished {
+        adapter_path: adapter_path.clone(),
+    });
+    Ok(adapter_path)
 }
 
 /// Pick the training data for this run and emit the honest [`Warning`] that
@@ -192,17 +307,19 @@ impl Trainer for BurnTrainer {
 ///
 /// Default: a seeded synthetic classification set (offline, fast). With the
 /// `mnist` feature *and* `model.base == "mnist"`: the real MNIST dataset.
+/// Generic over `B: Backend` (the weaker bound — data building needs no
+/// autodiff), instantiated with the run's autodiff backend.
 ///
 /// [`Warning`]: TrainEvent::Warning
-fn select_batches(
+fn select_batches<B: Backend>(
     config: &TrainConfig,
-    device: &Device<AB>,
+    device: &B::Device,
     sink: &mut dyn FnMut(TrainEvent),
-) -> Vec<Batch> {
+) -> Vec<Batch<B>> {
     #[cfg(feature = "mnist")]
     if config.model.base == "mnist" {
         // Cap the sample count so an opt-in run stays reasonably short.
-        return mnist_batches(device, 64, 6_000);
+        return mnist_batches::<B>(device, 64, 6_000);
     }
 
     #[cfg(not(feature = "mnist"))]
@@ -220,7 +337,7 @@ fn select_batches(
                   Build with --features mnist and set model.base=\"mnist\" to train on MNIST."
             .into(),
     });
-    synthetic_batches(device, NUM_CLASSES, 2_000, 64)
+    synthetic_batches::<B>(device, NUM_CLASSES, 2_000, 64)
 }
 
 /// Build a seeded synthetic classification set of Gaussian blobs.
@@ -229,15 +346,15 @@ fn select_batches(
 /// samples are centroid + unit Gaussian noise. Labels cycle through the classes
 /// so every batch is class-balanced. Uses burn's now-seeded RNG, so the whole
 /// set is reproducible for a given seed.
-fn synthetic_batches(
-    device: &Device<AB>,
+fn synthetic_batches<B: Backend>(
+    device: &B::Device,
     n_classes: usize,
     samples: usize,
     batch_size: usize,
-) -> Vec<Batch> {
+) -> Vec<Batch<B>> {
     // Centroids `[n_classes, INPUT_DIM]`, pushed apart by the ×3 scale so the
     // task is separable and the LoRA readout converges decisively.
-    let centroids = Tensor::<AB, 2>::random(
+    let centroids = Tensor::<B, 2>::random(
         [n_classes, INPUT_DIM],
         Distribution::Normal(0.0, 1.0),
         device,
@@ -250,9 +367,9 @@ fn synthetic_batches(
         let labels: Vec<i64> = (0..batch_size)
             .map(|j| ((b * batch_size + j) % n_classes) as i64)
             .collect();
-        let idx = Tensor::<AB, 1, Int>::from_data(TensorData::new(labels, [batch_size]), device);
+        let idx = Tensor::<B, 1, Int>::from_data(TensorData::new(labels, [batch_size]), device);
         let centers = centroids.clone().select(0, idx.clone());
-        let noise = Tensor::<AB, 2>::random(
+        let noise = Tensor::<B, 2>::random(
             [batch_size, INPUT_DIM],
             Distribution::Normal(0.0, 1.0),
             device,
@@ -269,7 +386,7 @@ fn synthetic_batches(
 /// are used so an opt-in run stays short. Requires the `mnist` feature (which
 /// pulls a networked dataset downloader).
 #[cfg(feature = "mnist")]
-fn mnist_batches(device: &Device<AB>, batch_size: usize, cap: usize) -> Vec<Batch> {
+fn mnist_batches<B: Backend>(device: &B::Device, batch_size: usize, cap: usize) -> Vec<Batch<B>> {
     use burn::data::dataset::Dataset;
 
     let dataset = burn::data::dataset::vision::MnistDataset::train();
@@ -290,8 +407,8 @@ fn mnist_batches(device: &Device<AB>, batch_size: usize, cap: usize) -> Vec<Batc
             }
             labels.push(item.label as i64);
         }
-        let x = Tensor::<AB, 2>::from_data(TensorData::new(features, [rows, INPUT_DIM]), device);
-        let y = Tensor::<AB, 1, Int>::from_data(TensorData::new(labels, [rows]), device);
+        let x = Tensor::<B, 2>::from_data(TensorData::new(features, [rows, INPUT_DIM]), device);
+        let y = Tensor::<B, 1, Int>::from_data(TensorData::new(labels, [rows]), device);
         batches.push((x, y));
         i = end;
     }

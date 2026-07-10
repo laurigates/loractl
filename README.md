@@ -191,6 +191,36 @@ A run is fully described by a YAML config (see `config/examples/lora.yaml`).
 Precedence, lowest to highest: **YAML file → `LORACTL_`-prefixed env vars →
 CLI flags.** Nested keys use `__` in env vars (`LORACTL_OUTPUT__DIR=/tmp/out`).
 
+### Compute backend (M7)
+
+An optional `compute:` block selects the backend and device at run time:
+
+```yaml
+compute:
+  backend: ndarray # ndarray (default, CPU) | wgpu (GPU) | cuda | tch
+  device: 0        # GPU ordinal; ignored by ndarray. wgpu: 0 = default/best GPU
+```
+
+- **`ndarray`** is the default and is **always** available — it needs no extra
+  build feature, so `just test` and CI stay offline and GPU-free. Omitting the
+  `compute:` block runs on ndarray, exactly as before.
+- **`wgpu`** is the GPU backend: **Metal** on macOS/Apple Silicon, Vulkan/DX12
+  elsewhere. It is opt-in behind a build feature —
+  `cargo run -p loractl-cli --features wgpu -- train …` (or `just run-wgpu`) —
+  and is the one GPU path runnable and verified on the dev machine
+  (`just test-wgpu`).
+- **`cuda`** (NVIDIA; needs the CUDA toolkit) and **`tch`** (libtorch) are
+  compile-gated behind their own features and are **not runnable on macOS** —
+  build-verifiable only on the appropriate host.
+- Selecting a GPU backend in a binary built **without** its feature fails
+  loudly (never a silent CPU fallback). Layer it like any other field:
+  `LORACTL_COMPUTE__BACKEND=wgpu` / `LORACTL_COMPUTE__DEVICE=0`, or the
+  `--backend wgpu --device 0` flags.
+
+The GPU backend is a **portability** target (the loop runs, loss decreases),
+not a bit-exact numerics one — per ADR-0001 the numerics-golden parity tests
+stay on ndarray, since GPU float-reduction order differs.
+
 ## Observability (GlitchTip / Sentry)
 
 `loractl` reports errors and panics to a [GlitchTip](https://glitchtip.com)
@@ -269,7 +299,7 @@ VAE, and text encoder are greenfield in burn. The strategy (why Krea 2, why
 stay on burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 - [x] **M6 — Generic LoRA injection + kohya-ss export** ([#17](https://github.com/laurigates/loractl/issues/17))**.** `LoraAdapters` injects a name-keyed set of low-rank deltas across a module tree (config `targets` patterns → `build_adapters` over a model's `injectable_sites`); GPT-2's attach is re-expressed through it. `export_adapters` writes a kohya-ss `.safetensors` (transposed `lora_down`/`lora_up` + `.alpha` scalar) so a LoRA loads in ComfyUI/Krea, proven offline against a golden. A `PeftDiffusers` format is reserved behind the `AdapterNameMapper` seam.
-- [ ] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** wgpu/cuda backend (ndarray stays the offline test backend); CPU can't train 12B.
+- [x] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** The training loop is generic over `B: AutodiffBackend`; `BurnTrainer` dispatches a config-selected backend (`compute.backend`) at run time — `ndarray` (CPU, always compiled, the offline/CI default), `wgpu` (GPU: Metal on Apple Silicon), and compile-gated `cuda`/`tch`. `just test` stays offline on ndarray; the GPU path is verified locally on Metal (`just test-wgpu`). See the [Config → Compute backend](#compute-backend-m7) section.
 - [ ] **M8 — Rectified-flow objective** ([#19](https://github.com/laurigates/loractl/issues/19))**.** Flow-matching v-param loss + logit-normal timestep sampling, proven on a synthetic latent toy (M2 methodology).
 - [ ] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Hybrid Qwen-Image/FLUX-2 AE in burn; image→latent parity (no Rust prior art).
 - [ ] **M10 — Qwen 3 VL text encoder** ([#21](https://github.com/laurigates/loractl/issues/21))**.** Caption conditioning in burn — the largest single gap, no Rust prior art.

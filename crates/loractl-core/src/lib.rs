@@ -22,6 +22,20 @@
 //! the `loractl-api` HTTP server serializes the *same* events as SSE/JSON
 //! (milestone 5; wire contract in `docs/api/events.md`). Both are just
 //! different renderers over one pipeline.
+//!
+//! ## Compute backend (M7)
+//!
+//! The trainer's compute backend is selected at run time from
+//! [`TrainConfig::compute`] ([`ComputeConfig`]/[`BackendKind`]). `ndarray` (CPU)
+//! is always compiled and is the default, so `cargo test` / CI stay offline;
+//! GPU backends (`wgpu`, `cuda`, `tch`) are opt-in cargo features and dispatched
+//! at run time inside [`BurnTrainer`], leaving every front-end seam untouched.
+
+// burn's cubecl/wgpu backends generate deeply-nested associated-type chains that
+// overflow the default recursion limit of 128 once the `wgpu` feature compiles.
+// Inert for the default ndarray build; bump higher if a `--features wgpu` build
+// ever reports a recursion-limit overflow.
+#![recursion_limit = "256"]
 
 pub mod adapter;
 pub mod adapters;
@@ -37,7 +51,7 @@ pub mod train;
 
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
-pub use config::TrainConfig;
+pub use config::{BackendKind, ComputeConfig, TrainConfig};
 pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};

@@ -9,7 +9,9 @@
 //! the MNIST convergence proof on *real* data is the feature-gated `#[ignore]`
 //! test in `mnist_lora.rs`.
 
-use loractl_core::config::{DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig};
+use loractl_core::config::{
+    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+};
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -71,6 +73,9 @@ fn synthetic_training_converges() {
             checkpoint_every: 10_000,
             sample_every: 0,
         },
+        // Default (ndarray) backend — this offline convergence proof must stay
+        // on CPU; it doubles as the regression pin that the default is ndarray.
+        compute: ComputeConfig::default(),
     };
 
     let mut losses = Vec::new();

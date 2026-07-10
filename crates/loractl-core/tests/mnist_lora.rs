@@ -16,7 +16,9 @@ use burn::backend::{Autodiff, NdArray};
 use burn::data::dataset::Dataset;
 use burn::data::dataset::vision::MnistDataset;
 use burn::tensor::{Device, Tensor, TensorData};
-use loractl_core::config::{DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig};
+use loractl_core::config::{
+    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+};
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -91,6 +93,8 @@ fn mnist_lora_converges() {
             checkpoint_every: 10_000,
             sample_every: 0,
         },
+        // Default (ndarray) backend — the opt-in MNIST proof stays on CPU.
+        compute: ComputeConfig::default(),
     };
 
     let mut losses = Vec::new();
