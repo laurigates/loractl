@@ -1,0 +1,18 @@
+# cargo-audit policy — mirrors what `.github/workflows/security-audit.yml` runs.
+# Read from the project root by default (see `just audit`).
+#
+# The `ignore` list holds advisories that no compatible dependency bump can
+# clear because they are transitively pinned by burn 0.21 (the latest burn
+# release — no upgrade path exists yet). Both are RustSec `unmaintained`
+# warnings, not vulnerabilities. Re-check and drop these entries when burn is
+# bumped past 0.21.
+
+[advisories]
+ignore = [
+    # bincode 2.0.1 (unmaintained) <- burn-core 0.21.0
+    # (burn-core / burn-nn / burn-optim / burn-store). Re-check when burn is bumped.
+    "RUSTSEC-2025-0141",
+    # paste 1.0.15 (unmaintained) <- burn-ndarray 0.21.0 / macerator 0.3.3.
+    # Re-check when burn is bumped.
+    "RUSTSEC-2024-0436",
+]

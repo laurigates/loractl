@@ -60,6 +60,12 @@ fmt-check:
 test:
     cargo test
 
+# RustSec advisory scan of Cargo.lock (CI parity with
+# .github/workflows/security-audit.yml). Accepted advisories are documented in
+# .cargo/audit.toml; needs cargo-audit (`cargo install cargo-audit`).
+audit:
+    cargo audit
+
 # Run the (network + heavy) MNIST LoRA convergence proof — not part of `just test`.
 test-mnist:
     cargo test -p loractl-core --features mnist -- --ignored mnist_lora_converges
