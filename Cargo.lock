@@ -847,7 +847,7 @@ dependencies = [
  "cubecl-common",
  "cubecl-zspace",
  "half",
- "indicatif 0.18.6",
+ "indicatif",
  "num-traits",
  "reqwest",
  "serde",
@@ -1253,19 +1253,6 @@ dependencies = [
 
 [[package]]
 name = "console"
-version = "0.15.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
-dependencies = [
- "encode_unicode",
- "libc",
- "once_cell",
- "unicode-width",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "console"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fe5f465a4f6fee88fad41b85d990f84c835335e85b5d9e6e63e0d06d28cba7c"
@@ -1371,9 +1358,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -3217,24 +3204,11 @@ dependencies = [
 
 [[package]]
 name = "indicatif"
-version = "0.17.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
-dependencies = [
- "console 0.15.11",
- "number_prefix",
- "portable-atomic",
- "unicode-width",
- "web-time",
-]
-
-[[package]]
-name = "indicatif"
 version = "0.18.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9433806cd6b4ec1aba79c021c7e4c58fb4c3b9977c085062e611ac929998fb0c"
 dependencies = [
- "console 0.16.4",
+ "console",
  "portable-atomic",
  "unicode-width",
  "unit-prefix",
@@ -3503,7 +3477,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3521,13 +3495,13 @@ dependencies = [
 
 [[package]]
 name = "loractl-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
  "figment",
- "indicatif 0.17.11",
+ "indicatif",
  "loractl-core",
  "sentry",
  "serde",
@@ -3537,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "burn",
@@ -3892,9 +3866,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.7"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c863e9ab5e7bf9c99ba75e1050f1e4d624ae87ed3532d6238ffbdc7b585dbbe6"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -3977,12 +3951,6 @@ dependencies = [
  "hermit-abi",
  "libc",
 ]
-
-[[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "objc2"
