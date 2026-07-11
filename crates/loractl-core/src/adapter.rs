@@ -52,6 +52,7 @@
 //! bit-identical to the original run, so the adapter file only needs to carry
 //! the two tensors that actually diverged from their initial values.
 
+use crate::config::TaskKind;
 use crate::model::LoraMlp;
 use anyhow::{Result, ensure};
 use burn::tensor::Tensor;
@@ -80,6 +81,13 @@ pub struct AdapterMeta {
     pub hidden: usize,
     /// Output width (`fc2`'s output width / number of classes).
     pub out: usize,
+    /// Which training task produced this adapter (M8, #19) — a classifier and
+    /// a flow-matching velocity net share the `LoraMlp` shape, and downstream
+    /// consumers (the `sample` refusal in [`crate::sample::sample_adapter`])
+    /// must be able to tell them apart. `#[serde(default)]` (=
+    /// `Classification`) keeps every pre-M8 sidecar parsing.
+    #[serde(default)]
+    pub task: TaskKind,
 }
 
 /// The sidecar path for a given adapter path: the whole filename with a
@@ -111,10 +119,16 @@ fn all_finite<B: Backend, const D: usize>(tensor: &Tensor<B, D>) -> bool {
 /// base.
 ///
 /// `seed` MUST be the training run's original RNG seed — [`load_adapter`]
-/// needs it to regenerate `fc1`/`fc2.base` bit-identically. Creates `path`'s
-/// parent directory if it doesn't exist yet; overwrites an existing file at
-/// `path`.
-pub fn save_adapter<B: Backend>(model: &LoraMlp<B>, path: &Path, seed: u64) -> Result<()> {
+/// needs it to regenerate `fc1`/`fc2.base` bit-identically. `task` records
+/// which training objective produced the adapter (see [`AdapterMeta::task`]).
+/// Creates `path`'s parent directory if it doesn't exist yet; overwrites an
+/// existing file at `path`.
+pub fn save_adapter<B: Backend>(
+    model: &LoraMlp<B>,
+    path: &Path,
+    seed: u64,
+    task: TaskKind,
+) -> Result<()> {
     ensure!(
         all_finite(&model.fc2.lora_a.weight.val()) && all_finite(&model.fc2.lora_b.weight.val()),
         "refusing to save adapter to {} — LoRA weights contain non-finite (NaN/Inf) \
@@ -149,6 +163,7 @@ pub fn save_adapter<B: Backend>(model: &LoraMlp<B>, path: &Path, seed: u64) -> R
         d_in: model.fc1.weight.dims()[0],
         hidden: model.fc1.weight.dims()[1],
         out: model.fc2.base.weight.dims()[1],
+        task,
     };
     let json = serde_json::to_string_pretty(&meta)
         .map_err(|e| anyhow::anyhow!("serializing adapter sidecar: {e}"))?;
@@ -159,15 +174,22 @@ pub fn save_adapter<B: Backend>(model: &LoraMlp<B>, path: &Path, seed: u64) -> R
     Ok(())
 }
 
+/// Read the JSON sidecar for the adapter at `path` (without touching the
+/// tensor file). Shared by [`load_adapter`] and the task check in
+/// [`crate::sample::sample_adapter`].
+pub(crate) fn read_meta(path: &Path) -> Result<AdapterMeta> {
+    let sidecar = sidecar_path(path);
+    let json = std::fs::read_to_string(&sidecar)
+        .map_err(|e| anyhow::anyhow!("reading adapter sidecar {}: {e}", sidecar.display()))?;
+    serde_json::from_str(&json)
+        .map_err(|e| anyhow::anyhow!("parsing adapter sidecar {}: {e}", sidecar.display()))
+}
+
 /// Load an adapter previously written by [`save_adapter`]: reconstruct the
 /// frozen base deterministically from the sidecar's seed and shape, then
 /// apply the two saved LoRA tensors on top.
 pub fn load_adapter<B: Backend>(path: &Path, device: &B::Device) -> Result<LoraMlp<B>> {
-    let sidecar = sidecar_path(path);
-    let json = std::fs::read_to_string(&sidecar)
-        .map_err(|e| anyhow::anyhow!("reading adapter sidecar {}: {e}", sidecar.display()))?;
-    let meta: AdapterMeta = serde_json::from_str(&json)
-        .map_err(|e| anyhow::anyhow!("parsing adapter sidecar {}: {e}", sidecar.display()))?;
+    let meta = read_meta(path)?;
 
     // Reseed BEFORE constructing the model so the freshly initialized
     // `fc1`/`fc2.base` come out bit-identical to the training run that

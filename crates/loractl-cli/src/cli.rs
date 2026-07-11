@@ -14,7 +14,9 @@ use figment::{
     providers::{Env, Format, Yaml},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use loractl_core::{BackendKind, BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{
+    BackendKind, BurnTrainer, Device, NdArray, TaskKind, TrainConfig, TrainEvent, Trainer,
+};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
@@ -53,6 +55,12 @@ fn parse_backend(s: &str) -> Result<BackendKind, String> {
     s.parse()
 }
 
+/// Parse a `--task` value through core's [`TaskKind`] `FromStr` — the same
+/// core-owns-the-vocabulary pattern as [`parse_backend`].
+fn parse_task(s: &str) -> Result<TaskKind, String> {
+    s.parse()
+}
+
 #[derive(Args)]
 struct TrainCmd {
     /// Path to the training config (YAML).
@@ -75,6 +83,12 @@ struct TrainCmd {
     /// Override the compute device index (GPU ordinal; ignored by ndarray).
     #[arg(long)]
     device: Option<usize>,
+
+    /// Override the training task from the config: `classification` (default,
+    /// the synthetic/MNIST demo) or `flow-matching` (the M8 rectified-flow
+    /// synthetic toy).
+    #[arg(long, value_parser = parse_task)]
+    task: Option<TaskKind>,
 }
 
 #[derive(Args)]
@@ -170,6 +184,9 @@ fn train(cmd: TrainCmd) -> Result<()> {
     if let Some(device) = cmd.device {
         config.compute.device = device;
     }
+    if let Some(task) = cmd.task {
+        config.task = task;
+    }
 
     std::fs::create_dir_all(&config.output.dir)
         .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
@@ -217,11 +234,12 @@ fn sample(cmd: SampleCmd) -> Result<()> {
     type B = NdArray;
     let device: Device<B> = Default::default();
 
-    let model = loractl_core::adapter::load_adapter::<B>(&cmd.adapter, &device)
-        .with_context(|| format!("loading adapter from {}", cmd.adapter.display()))?;
-
     let seed = loractl_core::sample::seed_from_prompt(cmd.prompt.as_deref());
-    let output = loractl_core::sample::run_sample(&model, seed, &device)
+    // One core-side call loads AND samples — `sample_adapter` reads the
+    // sidecar's task and refuses flow-matching adapters (a velocity net has
+    // no classes), so this renderer inherits the fail-fast check instead of
+    // having to remember it.
+    let output = loractl_core::sample::sample_adapter::<B>(&cmd.adapter, seed, &device)
         .with_context(|| format!("sampling from adapter {}", cmd.adapter.display()))?;
 
     println!(

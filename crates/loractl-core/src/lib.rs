@@ -15,6 +15,9 @@
 //!   with forward-pass parity vs. PyTorch (milestone 3).
 //! - [`adapter`] — safetensors adapter save/load (milestone 4).
 //! - [`sample`] — deterministic sampling from a trained adapter (milestone 4).
+//! - [`flow`] — the rectified-flow (flow-matching) objective's math: the
+//!   data↔noise interpolation, the v-prediction target, and the logit-normal
+//!   + shift timestep sampler (milestone 8).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -43,6 +46,7 @@ pub mod burn_trainer;
 pub mod config;
 pub mod event;
 pub mod export;
+pub mod flow;
 pub mod gpt2;
 pub mod lora;
 pub mod model;
@@ -51,7 +55,7 @@ pub mod train;
 
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
-pub use config::{BackendKind, ComputeConfig, TrainConfig};
+pub use config::{BackendKind, ComputeConfig, FlowConfig, TaskKind, TrainConfig};
 pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};

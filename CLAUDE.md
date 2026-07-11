@@ -9,7 +9,7 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4).
 
-**Current status:** all five roadmap milestones (M1–M5, #1–#4) have landed.
+**Current status:** milestones M1–M8 (#1–#4, #17–#19) have landed.
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
 **synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
 golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
@@ -22,10 +22,19 @@ injecting a name-keyed set of adapters (`LoraAdapters`) across a module tree
 (config `targets` patterns → `build_adapters` over a model's `injectable_sites`;
 GPT-2's attach re-expressed through it) and added a kohya-ss `.safetensors`
 export (`export_adapters`, transposed `lora_down`/`lora_up` + `.alpha` scalar)
-so a LoRA loads in ComfyUI/Krea — proven offline against a golden. See the
-roadmap in `README.md`.
+so a LoRA loads in ComfyUI/Krea — proven offline against a golden. M7 (#18)
+made the training loop generic over `B: AutodiffBackend` with a runtime,
+config-selected compute backend (`compute.backend`): ndarray (CPU, always
+compiled, the offline/CI default), wgpu (Metal on Apple Silicon), and
+compile-gated cuda/tch — selecting a backend the binary wasn't built with
+fails loudly, never a silent CPU fallback. M8 (#19) added the rectified-flow
+(flow-matching) objective: `task: flow-matching` trains a LoRA velocity net
+(v-prediction `v = ε − x₀`, SD3 time convention) with logit-normal + shifted
+timestep sampling (`src/flow.rs`) on a synthetic latent toy, pinned against a
+PyTorch golden; adapter sidecars record the producing task and `loractl
+sample` refuses flow adapters. See the roadmap in `README.md`.
 
-**Next direction (M7–M14, #18–#25):** training LoRAs for **Krea 2**, an
+**Next direction (M9–M14, #20–#25):** training LoRAs for **Krea 2**, an
 open-weights ~12B rectified-flow **image** model — a different domain that
 reuses this architecture but needs a greenfield burn diffusion stack (MMDiT
 denoiser, VAE, Qwen 3 VL text encoder, flow-matching objective, GPU + QLoRA).
@@ -48,6 +57,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Tests (offline) | `just test` (`cargo test`) — numerics vs PyTorch golden + synthetic convergence |
 | Real-MNIST convergence proof | `just test-mnist` (opt-in, downloads MNIST) |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
+| Regenerate the flow-matching golden | `just flow-reference` (needs `torch` via `uv`) |
 | One test by name | `cargo test -p loractl-core <test_name>` |
 
 Before committing, the meaningful gate is `just fmt-check && just lint` — CI

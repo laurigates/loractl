@@ -31,6 +31,17 @@
 //! on it. That path pulls a networked dataset downloader, so it is strictly
 //! opt-in and never part of the default build.
 //!
+//! **Task dispatch (M8, #19).** `config.task` selects the training objective
+//! *inside* the backend-generic [`run_training`] — never around the
+//! feature-gated backend ladder, which would double its `#[cfg]` arms.
+//! `classification` (the default) is the M2 demo above; `flow-matching` trains
+//! the same `LoraMlp` shape as a rectified-flow *velocity net* on a synthetic
+//! latent toy — input `concat[x_t, t]`, output = predicted `v`, plain MSE
+//! against `ε − x_0` — with all flow math routed through the golden-pinned
+//! [`crate::flow`] helpers (see [`flow_batches`]). Unsupported combinations
+//! (flow + `sample_every > 0`) are rejected up front in
+//! [`BurnTrainer::train`](Trainer::train), before the backend match.
+//!
 //! **Honest I/O.** Checkpoints and the final adapter are written as
 //! adapter-only `.safetensors` files via [`crate::adapter::save_adapter`] —
 //! only the trainable LoRA factors are persisted; the frozen base is
@@ -53,8 +64,9 @@
 //! through the `&mut dyn FnMut(TrainEvent)` sink.
 
 use crate::adapter;
-use crate::config::{BackendKind, TrainConfig};
+use crate::config::{BackendKind, FlowConfig, TaskKind, TrainConfig};
 use crate::event::TrainEvent;
+use crate::flow;
 use crate::model::LoraMlp;
 use crate::sample;
 use crate::train::Trainer;
@@ -79,12 +91,31 @@ use burn::backend::{Wgpu, wgpu::WgpuDevice};
 /// `[batch]`, on the run's selected backend `B`.
 type Batch<B> = (Tensor<B, 2>, Tensor<B, 1, Int>);
 
+/// One flow-matching training batch: velocity-net input
+/// `[batch, FLOW_LATENT_DIM + 1]` (`concat[x_t, t]`) and its v-prediction
+/// target `[batch, FLOW_LATENT_DIM]`.
+pub type FlowBatch<B> = (Tensor<B, 2>, Tensor<B, 2>);
+
 /// Flattened MNIST-shaped input width (28×28).
 const INPUT_DIM: usize = 784;
 /// Hidden width of the frozen random-feature projection.
 const HIDDEN_DIM: usize = 256;
 /// Number of classes (MNIST digits, and the synthetic demo mirrors it).
 const NUM_CLASSES: usize = 10;
+
+/// Latent width of the synthetic flow-matching toy (M8, #19). The velocity
+/// net's input is one column wider (`concat[x_t, t]`) and its output is this
+/// wide (the predicted velocity). Duplicated in `tests/flow_convergence.rs`
+/// with a MUST-match comment.
+const FLOW_LATENT_DIM: usize = 16;
+/// Hidden width of the flow velocity net's frozen random-feature projection.
+const FLOW_HIDDEN: usize = 64;
+/// Synthetic flow sample count and batch size — 2000/64 = 31 pre-generated
+/// batches, cycled by the training loop (mirrors the classification demo's
+/// `synthetic_batches` sizing).
+const FLOW_SAMPLES: usize = 2_000;
+/// Batch size of the synthetic flow toy.
+const FLOW_BATCH_SIZE: usize = 64;
 
 /// Fixed seed for every periodic validation sample within a run.
 ///
@@ -106,6 +137,19 @@ pub struct BurnTrainer;
 
 impl Trainer for BurnTrainer {
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf> {
+        // Config validation FIRST — deliberately BEFORE the backend match, so
+        // it is compiled once (not per backend arm) and an invalid combination
+        // fails identically on every backend: before `B::seed`, before any
+        // TrainEvent reaches the sink, before any filesystem I/O.
+        if config.task == TaskKind::FlowMatching && config.output.sample_every > 0 {
+            anyhow::bail!(
+                "validation sampling (output.sample_every = {}) is classification-specific — \
+                 the flow-matching task trains a velocity net with no classifier sample path; \
+                 set output.sample_every to 0",
+                config.output.sample_every
+            );
+        }
+
         // Runtime dispatch over the config-selected backend. The ndarray arm is
         // always compiled; each GPU arm is `#[cfg]`-gated and paired with a
         // `#[cfg(not(...))]` arm that bails loudly (never a silent CPU
@@ -187,15 +231,20 @@ fn tch_device(index: usize) -> LibTorchDevice {
     LibTorchDevice::Cuda(index)
 }
 
-/// Train a LoRA-MLP on the given backend `B` and device, driving the whole
-/// event → I/O pipeline. This is the former body of [`BurnTrainer::train`],
-/// made generic over `B: AutodiffBackend` so the same loop runs on ndarray,
-/// wgpu, cuda, or tch.
+/// Run one training job on the given backend `B` and device, driving the
+/// whole event → I/O pipeline. Generic over `B: AutodiffBackend` so the same
+/// pipeline runs on ndarray, wgpu, cuda, or tch.
+///
+/// Does the task-independent setup (seed, `Started`, output dir), then
+/// dispatches on `config.task` — the task branch lives INSIDE this generic
+/// fn, never around the feature-gated backend ladder in
+/// [`BurnTrainer::train`](Trainer::train), which would double its `#[cfg]`
+/// arms.
 ///
 /// The seed → construct → data-generation ordering is preserved intact and is
 /// backend-independent — see `.claude/rules/burn-lazy-param-init.md`:
 /// `B::seed` runs first, then [`LoraMlp::new`] force-materializes the frozen
-/// base, then `select_batches` draws the synthetic data.
+/// base, then `select_batches`/[`flow_batches`] draw the synthetic data.
 fn run_training<B: AutodiffBackend>(
     config: &TrainConfig,
     device: B::Device,
@@ -213,6 +262,20 @@ fn run_training<B: AutodiffBackend>(
     std::fs::create_dir_all(&config.output.dir)
         .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
 
+    match config.task {
+        TaskKind::Classification => run_classification::<B>(config, device, sink),
+        TaskKind::FlowMatching => run_flow_matching::<B>(config, device, sink),
+    }
+}
+
+/// Train the LoRA-MLP classifier (the M2 demo / opt-in MNIST path) — the
+/// former tail of [`run_training`], unchanged apart from the rename.
+fn run_classification<B: AutodiffBackend>(
+    config: &TrainConfig,
+    device: B::Device,
+    sink: &mut dyn FnMut(TrainEvent),
+) -> Result<PathBuf> {
+    let total = config.steps.max(1);
     let rank = config.lora.rank.max(1) as usize;
     let mut model = LoraMlp::<B>::new(
         INPUT_DIM,
@@ -262,7 +325,7 @@ fn run_training<B: AutodiffBackend>(
                     .output
                     .dir
                     .join(format!("checkpoint-{step}.safetensors"));
-                adapter::save_adapter(&valid_model, &path, config.seed)
+                adapter::save_adapter(&valid_model, &path, config.seed, config.task)
                     .with_context(|| format!("writing checkpoint at step {step}"))?;
                 sink(TrainEvent::Checkpoint { step, path });
             }
@@ -294,12 +357,169 @@ fn run_training<B: AutodiffBackend>(
         .dir
         .join(&config.output.name)
         .with_extension("safetensors");
-    adapter::save_adapter(&model.valid(), &adapter_path, config.seed)
+    adapter::save_adapter(&model.valid(), &adapter_path, config.seed, config.task)
         .with_context(|| format!("writing final adapter to {}", adapter_path.display()))?;
     sink(TrainEvent::Finished {
         adapter_path: adapter_path.clone(),
     });
     Ok(adapter_path)
+}
+
+/// Train the LoRA readout of a [`LoraMlp`] *velocity net* on the synthetic
+/// rectified-flow toy (M8, #19).
+///
+/// The velocity net IS the [`LoraMlp`] shape at flow dims — input
+/// `concat[x_t, t]` (`FLOW_LATENT_DIM + 1` wide), frozen random-feature
+/// projection, LoRA readout predicting `v ∈ ℝ^FLOW_LATENT_DIM`. ReLU is
+/// hidden-only, so the linear readout handles negative velocities, and
+/// checkpointing/adapter save-load (sidecar carries the dims and the task)
+/// plus the eager frozen-param materialization are all inherited unchanged.
+///
+/// The loss is plain MSE against [`flow::velocity_target`] with weighting
+/// ≡ 1.0: the logit-normal scheme's `t/(1−t)` emphasis is delivered by the
+/// *sampling density* ([`flow::sample_timesteps`]), and a multiplicative loss
+/// weight on top would double-count it.
+fn run_flow_matching<B: AutodiffBackend>(
+    config: &TrainConfig,
+    device: B::Device,
+    sink: &mut dyn FnMut(TrainEvent),
+) -> Result<PathBuf> {
+    sink(TrainEvent::Warning {
+        message: "M8 flow-matching trains a synthetic latent-velocity toy (rectified-flow \
+                  v-prediction); model.base and dataset.path are unused — real image-latent \
+                  ingestion arrives with the Krea 2 stack (M9–M12)."
+            .into(),
+    });
+
+    let total = config.steps.max(1);
+    let rank = config.lora.rank.max(1) as usize;
+    // Constructed BEFORE `flow_batches` so the frozen params' eager
+    // materialization stays pinned right after `B::seed` — the same RNG
+    // ordering contract as the classification path (see
+    // `.claude/rules/burn-lazy-param-init.md`).
+    let mut model = LoraMlp::<B>::new(
+        FLOW_LATENT_DIM + 1,
+        FLOW_HIDDEN,
+        FLOW_LATENT_DIM,
+        rank,
+        config.lora.alpha as f64,
+        &device,
+    );
+
+    let batches = flow_batches::<B>(
+        FLOW_SAMPLES / FLOW_BATCH_SIZE,
+        FLOW_BATCH_SIZE,
+        config.flow,
+        &device,
+    );
+
+    let mut optim = AdamConfig::new().init::<B, LoraMlp<B>>();
+    let checkpoint_every = config.output.checkpoint_every.max(1);
+
+    for step in 1..=total {
+        let (input, target) = &batches[(step as usize - 1) % batches.len()];
+        let pred = model.forward(input.clone());
+        let diff = pred - target.clone();
+        // Plain MSE, identical to the golden's ((pred - v)**2).mean().
+        let loss = diff.clone().mul(diff).mean();
+        // Read the loss BEFORE `backward()` consumes the graph — this order
+        // must match the PyTorch reference's record-before-step ordering.
+        // `.elem()` converts `B::FloatElem` to `f32` for any backend.
+        let loss_value: f32 = loss.clone().into_scalar().elem();
+        sink(TrainEvent::Step {
+            step,
+            loss: loss_value,
+            lr: config.optim.lr,
+        });
+
+        let grads = GradientsParams::from_grads(loss.backward(), &model);
+        // `step` consumes the module and returns a new one — must reassign.
+        model = optim.step(config.optim.lr, model, grads);
+
+        if step % checkpoint_every == 0 {
+            let path = config
+                .output
+                .dir
+                .join(format!("checkpoint-{step}.safetensors"));
+            adapter::save_adapter(&model.valid(), &path, config.seed, config.task)
+                .with_context(|| format!("writing checkpoint at step {step}"))?;
+            sink(TrainEvent::Checkpoint { step, path });
+        }
+    }
+
+    // Write the final adapter honestly, then report the path that exists.
+    let adapter_path = config
+        .output
+        .dir
+        .join(&config.output.name)
+        .with_extension("safetensors");
+    adapter::save_adapter(&model.valid(), &adapter_path, config.seed, config.task)
+        .with_context(|| format!("writing final adapter to {}", adapter_path.display()))?;
+    sink(TrainEvent::Finished {
+        adapter_path: adapter_path.clone(),
+    });
+    Ok(adapter_path)
+}
+
+/// Build the synthetic rectified-flow training set (M8, #19).
+///
+/// The data distribution is a point mass: `x_0 ≡ c`, a FIXED constant vector
+/// (`c[i] = ±1.5` alternating; no RNG). With `x_0` deterministic, `ε` is a
+/// function of `(x_t, t)`, so `E[v | x_t, t] = (x_t − c)/t` exactly — the
+/// irreducible conditional-variance floor is zero and any loss-ratio drop is
+/// attributable purely to learning. (The model's own representational floor —
+/// frozen random features + low-rank readout — remains nonzero, which is why
+/// the convergence gate is a loss *ratio*, never an absolute near-zero loss.)
+///
+/// Per batch: `ε ~ N(0, I)` from the seeded device RNG, `t` from
+/// [`flow::sample_timesteps`] (logit-normal + shift), then — MANDATORILY —
+/// `x_t` from [`flow::interpolate`] and the target from
+/// [`flow::velocity_target`]: routing through the golden-pinned helpers,
+/// never inline `ε − c` arithmetic, is what keeps the sign conventions from
+/// silently flipping here. The `t` column appended to the input is the SAME
+/// shifted `t` tensor fed to `interpolate`.
+///
+/// Public (not `pub(crate)`) so the sign-pinning identity test in
+/// `tests/flow_convergence.rs` can assert those conventions on real output —
+/// the toy is exactly sign-symmetric, so the convergence gate alone cannot
+/// see a flip.
+pub fn flow_batches<B: Backend>(
+    n_batches: usize,
+    batch_size: usize,
+    flow_cfg: FlowConfig,
+    device: &B::Device,
+) -> Vec<FlowBatch<B>> {
+    // x_0 ≡ c, tiled to [batch, FLOW_LATENT_DIM] — fixed and RNG-free.
+    let c: Vec<f32> = (0..FLOW_LATENT_DIM)
+        .map(|i| if i % 2 == 0 { 1.5 } else { -1.5 })
+        .collect();
+    let tiled: Vec<f32> = c
+        .iter()
+        .copied()
+        .cycle()
+        .take(batch_size * FLOW_LATENT_DIM)
+        .collect();
+    let x0 = Tensor::<B, 2>::from_data(
+        TensorData::new(tiled, [batch_size, FLOW_LATENT_DIM]),
+        device,
+    );
+
+    let n_batches = n_batches.max(1);
+    let mut batches = Vec::with_capacity(n_batches);
+    for _ in 0..n_batches {
+        let eps = Tensor::<B, 2>::random(
+            [batch_size, FLOW_LATENT_DIM],
+            Distribution::Normal(0.0, 1.0),
+            device,
+        );
+        let t = flow::sample_timesteps::<B>(batch_size, flow_cfg, device);
+        let x_t = flow::interpolate(x0.clone(), eps.clone(), t.clone());
+        let target = flow::velocity_target(x0.clone(), eps);
+        let t_col: Tensor<B, 2> = t.unsqueeze_dim(1);
+        let input = Tensor::cat(vec![x_t, t_col], 1);
+        batches.push((input, target));
+    }
+    batches
 }
 
 /// Pick the training data for this run and emit the honest [`Warning`] that

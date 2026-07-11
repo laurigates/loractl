@@ -17,6 +17,7 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Int, Tensor, TensorData, Tolerance};
 use loractl_core::LoraMlp;
 use loractl_core::adapter::{AdapterMeta, load_adapter, save_adapter};
+use loractl_core::config::TaskKind;
 use loractl_core::sample::run_sample;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -105,7 +106,8 @@ fn round_trip_forward_matches_pre_save() {
 
     let out = TempDir::new("adapter-roundtrip");
     let path = out.0.join("adapter.safetensors");
-    save_adapter(&valid_model, &path, SEED).expect("save_adapter succeeds");
+    save_adapter(&valid_model, &path, SEED, TaskKind::Classification)
+        .expect("save_adapter succeeds");
 
     // Reload with a FRESH backend instance/device — proves the reconstruction
     // doesn't rely on any state shared with `valid_model`.
@@ -158,7 +160,7 @@ fn saved_file_contains_only_the_lora_tensors() {
 
     let out = TempDir::new("adapter-keys");
     let path = out.0.join("adapter.safetensors");
-    save_adapter(&model, &path, SEED).expect("save_adapter succeeds");
+    save_adapter(&model, &path, SEED, TaskKind::Classification).expect("save_adapter succeeds");
 
     let mut store = SafetensorsStore::from_file(&path);
     let mut keys = store.keys().expect("read adapter keys");
@@ -181,7 +183,7 @@ fn sidecar_round_trips_meta() {
 
     let out = TempDir::new("adapter-sidecar");
     let path = out.0.join("adapter.safetensors");
-    save_adapter(&model, &path, SEED).expect("save_adapter succeeds");
+    save_adapter(&model, &path, SEED, TaskKind::Classification).expect("save_adapter succeeds");
 
     let mut sidecar = path.clone().into_os_string();
     sidecar.push(".json");
@@ -194,4 +196,5 @@ fn sidecar_round_trips_meta() {
     assert_eq!(meta.d_in, D_IN);
     assert_eq!(meta.hidden, HIDDEN);
     assert_eq!(meta.out, OUT);
+    assert_eq!(meta.task, TaskKind::Classification);
 }

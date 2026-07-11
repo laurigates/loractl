@@ -17,7 +17,8 @@ use burn::data::dataset::Dataset;
 use burn::data::dataset::vision::MnistDataset;
 use burn::tensor::{Device, Tensor, TensorData};
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -70,6 +71,7 @@ fn mnist_lora_converges() {
     let config = TrainConfig {
         steps,
         seed: 7,
+        task: TaskKind::Classification,
         model: ModelConfig {
             base: "mnist".into(),
         },
@@ -95,6 +97,8 @@ fn mnist_lora_converges() {
         },
         // Default (ndarray) backend — the opt-in MNIST proof stays on CPU.
         compute: ComputeConfig::default(),
+        // Unused by the classification task.
+        flow: FlowConfig::default(),
     };
 
     let mut losses = Vec::new();

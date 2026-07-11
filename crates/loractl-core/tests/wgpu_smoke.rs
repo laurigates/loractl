@@ -20,7 +20,8 @@
 
 use burn::backend::Wgpu;
 use loractl_core::config::{
-    BackendKind, ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    BackendKind, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ fn wgpu_training_smoke() {
     let config = TrainConfig {
         steps,
         seed: 42,
+        task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
         },
@@ -67,6 +69,8 @@ fn wgpu_training_smoke() {
             backend: BackendKind::Wgpu,
             device: 0,
         },
+        // Unused by the classification task.
+        flow: FlowConfig::default(),
     };
 
     let mut losses = Vec::new();

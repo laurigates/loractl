@@ -1,0 +1,50 @@
+# Example flow-matching (rectified-flow) training config — M8 (#19).
+# Trains the synthetic latent-velocity toy: v-prediction (v = ε − x₀) with
+# logit-normal + shifted timestep sampling, offline on CPU by default.
+# Run: `loractl train config/examples/flow.yaml` (or `just train config/examples/flow.yaml`).
+# Every field can also be overridden by a LORACTL_-prefixed env var
+# (e.g. LORACTL_FLOW__SHIFT=1.0) or a CLI flag (e.g. `--task flow-matching`).
+
+task: flow-matching
+
+steps: 150
+seed: 42
+
+model:
+  # Unused by the flow toy (it fabricates synthetic latents), but the field is
+  # required by the schema; real base-model ingestion arrives with M9–M12.
+  base: synthetic
+
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.0
+
+dataset:
+  # Unused by the flow toy — required by the schema, ignored by the task.
+  path: unused
+  resolution: 28
+
+optim:
+  lr: 0.01
+  weight_decay: 0.0
+
+output:
+  dir: ./output
+  name: flow-lora
+  checkpoint_every: 250
+  # MUST stay 0 for the flow task: validation sampling is classification-
+  # specific, and the trainer refuses flow-matching + sample_every > 0.
+  sample_every: 0
+
+# Rectified-flow sampler (SD3/kohya defaults shown; the block is optional).
+flow:
+  logit_mean: 0.0 # u ~ N(logit_mean, logit_std), t = sigmoid(u)
+  logit_std: 1.0
+  shift: 3.0 # t' = shift·t / (1 + (shift−1)·t); >1 pushes t toward noise
+
+# Compute backend + device (M7). Optional — omitting this block runs on the
+# ndarray CPU backend. GPU backends need the matching build feature.
+# compute:
+#   backend: ndarray # ndarray (default, CPU/offline) | wgpu (GPU: Metal on macOS) | cuda | tch
+#   device: 0        # GPU ordinal; ignored by ndarray

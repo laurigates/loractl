@@ -10,7 +10,8 @@
 //! would pass `cargo test` cleanly.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -45,6 +46,9 @@ fn periodic_validation_samples_are_emitted_and_written() {
     let config = TrainConfig {
         steps,
         seed: 1,
+        // Validation sampling is classification-specific (the flow task bails
+        // on sample_every > 0 — see flow_task.rs).
+        task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
         },
@@ -72,6 +76,8 @@ fn periodic_validation_samples_are_emitted_and_written() {
         },
         // Default (ndarray) backend — the offline sample-path test stays on CPU.
         compute: ComputeConfig::default(),
+        // Unused by the classification task.
+        flow: FlowConfig::default(),
     };
 
     let mut sample_events: Vec<(u64, PathBuf)> = Vec::new();
