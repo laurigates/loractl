@@ -1,0 +1,35 @@
+# cargo-deny policy for the loractl workspace.
+#
+# Covers licenses, bans, and sources ONLY. Security advisories are deliberately
+# NOT configured here: they live solely in `.cargo/audit.toml` (consumed by
+# `cargo audit` / `just audit` / .github/workflows/security-audit.yml). Keeping
+# advisories out of this file avoids a second, dual-maintained ignore list that
+# would silently drift from `.cargo/audit.toml`.
+#
+# Local gate: `just deny` (mirrors the `deny` job in .github/workflows/ci.yml).
+
+[licenses]
+# Allow list built empirically from `cargo deny list` — only licenses actually
+# present in the resolved tree, each required because at least one crate offers
+# no permissive alternative in its SPDX expression. The workspace crates are MIT.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",         # subtle
+    "CC0-1.0",              # tiny-keccak
+    "CDLA-Permissive-2.0",  # webpki-roots
+    "ISC",                  # untrusted, ring, rustls-webpki
+    "MPL-2.0",              # colored — weak/file-level copyleft (see PR notes)
+    "Unicode-3.0",          # unicode-ident (AND clause), icu_* data crates
+    "Zlib",                 # foldhash
+]
+
+[bans]
+# The burn 0.21 tree legitimately pulls duplicate versions of some crates
+# (getrandom, rand_core, hashbrown, windows-sys, …) — warn, do not fail.
+multiple-versions = "warn"
+
+[sources]
+# crates.io only — reject any crate from an unknown registry or a git source.
+unknown-registry = "deny"
+unknown-git = "deny"

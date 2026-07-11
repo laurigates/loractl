@@ -60,11 +60,24 @@ fmt-check:
 test:
     cargo test
 
+# Test-coverage summary via cargo-llvm-cov (default/offline features). Prints a
+# per-file table to stdout; local only, no thresholds or CI upload. For a
+# browsable report add `--html --open`; for CI add `--lcov --output-path …`.
+coverage:
+    cargo llvm-cov
+
 # RustSec advisory scan of Cargo.lock (CI parity with
 # .github/workflows/security-audit.yml). Accepted advisories are documented in
 # .cargo/audit.toml; needs cargo-audit (`cargo install cargo-audit`).
 audit:
     cargo audit
+
+# Supply-chain gate: licenses + banned/duplicate crates + crate sources, per
+# deny.toml (CI parity with the `deny` job in .github/workflows/ci.yml). Default
+# features only, matching the committed Cargo.lock; advisories live in
+# .cargo/audit.toml (see `just audit`), not deny.toml. Needs cargo-deny.
+deny:
+    cargo deny check licenses bans sources
 
 # Run the (network + heavy) MNIST LoRA convergence proof — not part of `just test`.
 test-mnist:

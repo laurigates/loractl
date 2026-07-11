@@ -31,3 +31,41 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
         run: cargo test
+
+  # Compile-only clippy over the opt-in feature paths kept out of the default
+  # `just lint` (they pull heavy/networked deps). One job with sequential steps
+  # so the shared burn tree compiles once under a single rust-cache — a matrix
+  # would rebuild burn 3x. No GPU or network is needed to lint. Commands mirror
+  # the justfile recipes `lint-mnist`, `lint-gpt2-real`, `lint-wgpu` (CI parity).
+  feature-lints:
+    name: clippy (opt-in feature paths)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (mnist)
+        run: cargo clippy -p loractl-core --all-targets --features mnist -- -D warnings
+      - name: clippy (gpt2-real)
+        run: cargo clippy -p loractl-core --all-targets --features gpt2-real -- -D warnings
+      - name: clippy (wgpu)
+        run: cargo clippy -p loractl-core --all-targets --features wgpu -- -D warnings
+
+  # Supply-chain gate: allowed licenses + banned/duplicate crates + crate
+  # sources, configured by deny.toml. Advisories are intentionally NOT here —
+  # they live in .cargo/audit.toml (see the security-audit workflow). Scoped to
+  # DEFAULT features: `arguments: ""` drops the action's default --all-features
+  # so this matches `just deny` and the committed Cargo.lock (the opt-in feature
+  # subtrees pull licenses outside deny.toml's allow list).
+  deny:
+    name: cargo-deny (licenses/bans/sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: ""
+          command: check
+          command-arguments: licenses bans sources

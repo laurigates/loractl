@@ -1,0 +1,8 @@
+# Gitignored files copied from the main checkout into new git worktrees
+# (Claude Code --worktree / subagent isolation). Uses .gitignore glob syntax;
+# only gitignored files are copied — tracked files already exist in a worktree.
+# Keep to small per-environment inputs; let setup rebuild large trees (target/).
+
+# Per-user local Claude Code settings (disabled MCP servers, etc.) so an agent
+# worktree inherits the same local session config.
+.claude/settings.local.json

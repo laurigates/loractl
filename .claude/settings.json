@@ -1,31 +1,58 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git:*)",
-      "Bash(gh:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo update:*)",
+      "Bash(cargo audit:*)",
+      "Bash(cargo deny:*)",
+      "Bash(cargo llvm-cov:*)",
+      "Bash(cargo doc:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git switch:*)",
+      "Bash(git restore:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh run:*)",
+      "Bash(gh workflow:*)",
+      "Bash(gh release:*)",
+      "Bash(just:*)",
       "Bash(pre-commit:*)",
-      "Bash(gitleaks:*)",
-      "Bash(python3:*)",
-      "Bash(cargo:*)",
-      "Bash(rustc:*)",
-      "Bash(clippy:*)",
-      "Bash(rustfmt:*)",
-      "Bash(just:*)"
+      "Bash(gitleaks:*)"
+    ],
+    "deny": [
+      "Bash(git push --force *)",
+      "Bash(git push -f *)"
     ]
   },
   "extraKnownMarketplaces": {
-    "claude-plugins": {
+    "laurigates-claude-plugins": {
       "source": { "source": "github", "repo": "laurigates/claude-plugins" },
       "autoUpdate": true
     }
   },
   "enabledPlugins": {
-    "code-quality-plugin@claude-plugins": true,
-    "configure-plugin@claude-plugins": true,
-    "git-plugin@claude-plugins": true,
-    "health-plugin@claude-plugins": true,
-    "hooks-plugin@claude-plugins": true,
-    "rust-plugin@claude-plugins": true,
-    "testing-plugin@claude-plugins": true
+    "blueprint-plugin@laurigates-claude-plugins": true,
+    "code-quality-plugin@laurigates-claude-plugins": true,
+    "configure-plugin@laurigates-claude-plugins": true,
+    "git-plugin@laurigates-claude-plugins": true,
+    "health-plugin@laurigates-claude-plugins": true,
+    "hooks-plugin@laurigates-claude-plugins": true,
+    "rust-plugin@laurigates-claude-plugins": true,
+    "testing-plugin@laurigates-claude-plugins": true
   }
 }
