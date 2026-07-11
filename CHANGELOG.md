@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/laurigates/loractl/compare/v0.3.0...v0.4.0) (2026-07-11)
+
+
+### Features
+
+* **core:** rectified-flow v-param objective + timestep sampling (M8, [#19](https://github.com/laurigates/loractl/issues/19)) ([#33](https://github.com/laurigates/loractl/issues/33)) ([d859381](https://github.com/laurigates/loractl/commit/d85938152da3155db162b628b2ce4c460eb0ea28))
+
 ## [0.3.0](https://github.com/laurigates/loractl/compare/v0.2.0...v0.3.0) (2026-07-09)
 
 
