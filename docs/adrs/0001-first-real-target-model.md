@@ -1,3 +1,9 @@
+---
+id: ADR-0001
+status: Accepted
+date: 2026-07-04
+---
+
 # 0001 — First real target model for LoRA adaptation (M3)
 
 - **Status:** Accepted

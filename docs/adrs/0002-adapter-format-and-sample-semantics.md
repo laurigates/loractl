@@ -1,3 +1,9 @@
+---
+id: ADR-0002
+status: Accepted
+date: 2026-07-04
+---
+
 # 0002 — Adapter format and sample semantics (M4)
 
 - **Status:** Accepted

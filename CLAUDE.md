@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `loractl` is a terminal-native LoRA trainer in Rust: a **CLI-first** tool where
 a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
-project — see the roadmap in `README.md` and the tracking issues (#1–#4).
+project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
 
 **Current status:** milestones M1–M8 (#1–#4, #17–#19) have landed.
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
@@ -48,21 +48,37 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 |---|---|
 | Build the workspace | `just build` (`cargo build`) |
 | Run the CLI | `just run <args>` (`cargo run -p loractl-cli -- <args>`) |
+| Run on the GPU (M7, Metal) | `just run-wgpu [config]` — end-to-end train through the CLI, backend selected from `compute.backend: wgpu`; defaults to `config/examples/lora-wgpu.yaml` |
 | Train from a config (synthetic demo) | `just train [config]` — defaults to `config/examples/lora.yaml` |
 | Serve the HTTP/SSE API | `just serve` (`cargo run -p loractl-api`; bind addr via `LORACTL_API_ADDR`, default `127.0.0.1:3000`) |
 | Generate shell completions | `just completions [shell]` (e.g. `just completions fish`) |
 | Lint (warnings-as-errors) | `just lint` (`cargo clippy --all-targets -- -D warnings`, default/offline features) |
 | Lint the opt-in mnist path | `just lint-mnist` (compiles the networked dataset deps) |
+| Lint the opt-in gpt2-real path | `just lint-gpt2-real` (compiles the real-gpt2 parity test path) |
+| Lint the opt-in wgpu path | `just lint-wgpu` (compiles the wgpu GPU backend; no GPU needed to build) |
 | Format / check format | `just fmt` / `just fmt-check` |
+| RustSec advisory scan | `just audit` (`cargo audit` over `Cargo.lock`; accepted advisories in `.cargo/audit.toml`) |
+| Supply-chain gate (licenses/bans/sources) | `just deny` (`cargo deny check licenses bans sources`, per `deny.toml`) |
+| Coverage summary | `just coverage` (`cargo llvm-cov` — per-file table; local, no thresholds) |
 | Tests (offline) | `just test` (`cargo test`) — numerics vs PyTorch golden + synthetic convergence |
 | Real-MNIST convergence proof | `just test-mnist` (opt-in, downloads MNIST) |
+| Real-GPT-2 forward-parity proof | `just test-gpt2-real` (opt-in; run `just gpt2-reference` first) |
+| GPU portability smoke (M7, Metal) | `just test-wgpu` (opt-in; runs the wgpu smoke on a real GPU) |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
+| Regenerate the kohya-ss export golden | `just export-reference` (numpy only, no torch/network) |
 | Regenerate the flow-matching golden | `just flow-reference` (needs `torch` via `uv`) |
+| Regenerate the tiny-GPT-2 fixture | `just gpt2-tiny-reference` (weights + golden; `torch` via `uv`) |
+| Regenerate the real-gpt2 golden | `just gpt2-reference` (downloads `openai-community/gpt2`; `torch`/`transformers` via `uv`) |
 | One test by name | `cargo test -p loractl-core <test_name>` |
 
 Before committing, the meaningful gate is `just fmt-check && just lint` — CI
-parity is intended (the `justfile` mirrors what CI should run). rustfmt is
-default style; expect it to reflow multi-line signatures onto one line.
+parity is intended (the `justfile` mirrors what CI should run). CI additionally
+runs the blocking `feature-lints` job (clippy over the opt-in
+mnist/gpt2-real/wgpu paths, mirroring `just lint-mnist` / `lint-gpt2-real` /
+`lint-wgpu`) and the `deny` job (`cargo deny check`, mirroring `just deny`) —
+run those locally too when a change touches a feature-gated path or the
+dependency graph. rustfmt is default style; expect it to reflow multi-line
+signatures onto one line.
 
 ## Architecture — the one rule that matters
 
@@ -114,5 +130,5 @@ this pattern when adding new overridable flags.
   workspace `Cargo.toml` (bumped from 1.85 to satisfy burn 0.21's MSRV). Shared
   deps go in `[workspace.dependencies]`.
 - `Cargo.lock` **is committed** (this workspace produces a binary).
-- Roadmap milestones are tracked as issues #1–#4 and linked from the README;
-  keep the two in sync when a milestone lands.
+- Roadmap milestones are tracked as issues #1–#4 and #17–#25 and linked from
+  the README; keep the two in sync when a milestone lands.

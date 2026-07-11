@@ -1,13 +1,16 @@
 {
   "format_version": "3.3.0",
   "created_at": "2026-07-04T04:52:01Z",
-  "updated_at": "2026-07-04T04:52:01Z",
+  "updated_at": "2026-07-11T07:07:44Z",
   "created_by": {
     "blueprint_plugin": "3.38.0"
   },
   "project": {
     "name": "loractl",
-    "detected_stack": ["rust", "cargo"]
+    "detected_stack": [
+      "rust",
+      "cargo"
+    ]
   },
   "structure": {
     "has_prds": true,
@@ -23,7 +26,7 @@
   "feature_tracker": {
     "file": "feature-tracker.json",
     "source_document": "README.md",
-    "sync_targets": ["TODO.md"]
+    "sync_targets": []
   },
   "generated": {
     "rules": {},
@@ -64,28 +67,38 @@
     "adr-validate": {
       "enabled": true,
       "auto_run": true,
-      "last_completed_at": null,
-      "last_result": null,
+      "last_completed_at": "2026-07-11T07:12:09Z",
+      "last_result": "success",
       "schedule": "weekly",
-      "stats": {},
+      "stats": {
+        "runs_total": 1,
+        "items_processed": 4
+      },
       "context": {}
     },
     "feature-tracker-sync": {
       "enabled": true,
       "auto_run": true,
-      "last_completed_at": null,
-      "last_result": null,
+      "last_completed_at": "2026-07-11T07:12:55Z",
+      "last_result": "success",
       "schedule": "daily",
-      "stats": {},
+      "stats": {
+        "runs_total": 1,
+        "items_processed": 0
+      },
       "context": {}
     },
     "sync-ids": {
       "enabled": true,
       "auto_run": true,
-      "last_completed_at": null,
-      "last_result": null,
+      "last_completed_at": "2026-07-11T07:11:32Z",
+      "last_result": "success",
       "schedule": "on-change",
-      "stats": {},
+      "stats": {
+        "runs_total": 1,
+        "items_processed": 4,
+        "items_created": 4
+      },
       "context": {}
     },
     "claude-md": {
@@ -106,5 +119,48 @@
       "stats": {},
       "context": {}
     }
+  },
+  "id_registry": {
+    "last_prd": 0,
+    "last_prp": 0,
+    "documents": {
+      "ADR-0001": {
+        "path": "docs/adrs/0001-first-real-target-model.md",
+        "title": "First real target model for LoRA adaptation (M3)",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-04"
+      },
+      "ADR-0002": {
+        "path": "docs/adrs/0002-adapter-format-and-sample-semantics.md",
+        "title": "Adapter format and sample semantics (M4)",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-04"
+      },
+      "ADR-0003": {
+        "path": "docs/adrs/0003-http-api-event-streaming.md",
+        "title": "HTTP API: event serialization, streaming, and run lifecycle (M5)",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-05"
+      },
+      "ADR-0004": {
+        "path": "docs/adrs/0004-krea2-image-diffusion-target.md",
+        "title": "Krea 2 as the image-diffusion LoRA target (M6+)",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-08"
+      }
+    },
+    "github_issues": {}
   }
 }
