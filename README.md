@@ -8,15 +8,25 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: HTTP API (milestone 5).** The event stream is now exposed over
-> HTTP: `loractl-api` starts training runs via `POST /runs` and streams their
-> events as SSE from `GET /runs/{id}/events` — the same `TrainEvent`s the CLI
-> renders as a progress bar, so a GUI can be built independently. Milestone 4
-> added portable **`.safetensors`** adapter I/O and reproducible sampling;
-> milestone 3 a real GPT-2 loader with forward-pass parity against PyTorch.
-> The default trainer remains the M2 `BurnTrainer`, pinned against a PyTorch
-> numerics golden, and the dependency-free `MockTrainer` is still available
-> for pipeline testing. See [Roadmap](#roadmap).
+> **Status: rectified-flow objective (milestone 8).** The latest milestones
+> turn toward image diffusion. M8 adds the **rectified-flow** (flow-matching)
+> training objective — v-parameterization (`v = ε − x₀`) with logit-normal +
+> shifted timestep sampling, pinned against a PyTorch golden
+> ([#19](https://github.com/laurigates/loractl/issues/19)); M7 makes the
+> training loop generic over a **config-selectable GPU compute backend**
+> (`wgpu`/Metal, with compile-gated `cuda`/`tch`)
+> ([#18](https://github.com/laurigates/loractl/issues/18)); M6 generalizes LoRA
+> from wrapping one `Linear` to a name-keyed adapter set injected across a
+> module tree, plus a **kohya-ss `.safetensors` export** that loads in
+> ComfyUI/Krea ([#17](https://github.com/laurigates/loractl/issues/17)). Earlier
+> milestones built the text-domain harness: an HTTP/SSE API (M5), portable
+> **`.safetensors`** adapter I/O and reproducible sampling (M4), and a real
+> GPT-2 loader with forward-pass parity vs PyTorch (M3), all on the M2
+> `BurnTrainer` pinned against a numerics golden (the dependency-free
+> `MockTrainer` remains for pipeline testing). Next up is **M9+** — the
+> greenfield burn diffusion stack for **Krea 2**
+> ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)). See
+> [Roadmap](#roadmap).
 
 ## Why
 
@@ -288,15 +298,18 @@ should print a redirect/`200`.
       a golden test. See
       [ADR-0003](docs/adrs/0003-http-api-event-streaming.md).
 
-### Next direction — Krea 2 image-diffusion LoRA (M6–M14)
+### Next direction — Krea 2 image-diffusion LoRA (M9–M14)
 
-M1–M5 built a complete but **text-domain** harness. The next goal is a
-different domain entirely: training LoRA adapters for **Krea 2**, an
-open-weights (`krea/Krea-2-Raw`) ~12B rectified-flow **image** model. This
-reuses loractl's architecture (event stream, config, `burn-store` loading, the
-parity-golden methodology) but almost none of its model code — the denoiser,
-VAE, and text encoder are greenfield in burn. The strategy (why Krea 2, why
-stay on burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+M1–M5 built a complete but **text-domain** harness, and M6–M8 landed the first
+pieces that turn toward the image domain: generic LoRA injection with a
+kohya-ss export (M6), a config-selectable GPU compute backend (M7), and the
+rectified-flow objective (M8). The remaining goal is a different domain
+entirely: training LoRA adapters for **Krea 2**, an open-weights
+(`krea/Krea-2-Raw`) ~12B rectified-flow **image** model. This reuses loractl's
+architecture (event stream, config, `burn-store` loading, the parity-golden
+methodology) but almost none of its model code — the denoiser, VAE, and text
+encoder are still greenfield in burn. The strategy (why Krea 2, why stay on
+burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 - [x] **M6 — Generic LoRA injection + kohya-ss export** ([#17](https://github.com/laurigates/loractl/issues/17))**.** `LoraAdapters` injects a name-keyed set of low-rank deltas across a module tree (config `targets` patterns → `build_adapters` over a model's `injectable_sites`); GPT-2's attach is re-expressed through it. `export_adapters` writes a kohya-ss `.safetensors` (transposed `lora_down`/`lora_up` + `.alpha` scalar) so a LoRA loads in ComfyUI/Krea, proven offline against a golden. A `PeftDiffusers` format is reserved behind the `AdapterNameMapper` seam.
 - [x] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** The training loop is generic over `B: AutodiffBackend`; `BurnTrainer` dispatches a config-selected backend (`compute.backend`) at run time — `ndarray` (CPU, always compiled, the offline/CI default), `wgpu` (GPU: Metal on Apple Silicon), and compile-gated `cuda`/`tch`. `just test` stays offline on ndarray; the GPU path is verified locally on Metal (`just test-wgpu`). See the [Config → Compute backend](#compute-backend-m7) section.

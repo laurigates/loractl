@@ -39,6 +39,11 @@
 // Inert for the default ndarray build; bump higher if a `--features wgpu` build
 // ever reports a recursion-limit overflow.
 #![recursion_limit = "256"]
+// Core is the pipeline's public contract, and its front-ends read these docs;
+// keep every public item documented. `just lint` runs clippy with `-D
+// warnings`, so once the existing gaps are filled this warn is effectively a
+// hard gate against undocumented additions.
+#![warn(missing_docs)]
 
 pub mod adapter;
 pub mod adapters;

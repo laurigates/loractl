@@ -1,3 +1,9 @@
+---
+id: ADR-0004
+status: Accepted
+date: 2026-07-08
+---
+
 # 0004 — Krea 2 as the image-diffusion LoRA target (M6+)
 
 - **Status:** Accepted

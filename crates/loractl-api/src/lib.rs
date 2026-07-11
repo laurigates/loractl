@@ -18,6 +18,7 @@
 //!
 //! [`TrainEvent`]: loractl_core::TrainEvent
 //! [`TrainConfig`]: loractl_core::TrainConfig
+#![warn(missing_docs)]
 
 mod routes;
 mod state;

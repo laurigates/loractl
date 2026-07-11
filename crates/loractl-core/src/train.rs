@@ -17,6 +17,10 @@ use std::path::PathBuf;
 /// write to stdout/stderr themselves — that's the caller's job. The returned
 /// path is the final adapter written to disk.
 pub trait Trainer {
+    /// Runs the job described by `config`, reporting progress by calling
+    /// `sink` with [`TrainEvent`]s, and returns the path of the final adapter
+    /// written to disk. Implementors must not render or write to
+    /// stdout/stderr — surfacing events is the caller's responsibility.
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf>;
 }
 

@@ -24,11 +24,13 @@ numerics against a reference before scaling up.
 must not `println!` / write to stdout/stderr. A `Trainer` reports progress
 through a `&mut dyn FnMut(TrainEvent)` sink; the caller decides how to surface
 it. Adding a trainer (e.g. the burn backend) means a new `impl Trainer` in core
-plus the **one** constructor line in `crates/loractl-cli/src/cli.rs` — if a new
-trainer forces CLI changes beyond that line, the event abstraction has leaked;
-fix the abstraction, not the CLI.
+plus **one constructor line per front-end**: the line in
+`crates/loractl-cli/src/cli.rs` that constructs `BurnTrainer`, and the single
+`BurnTrainer` line in `loractl-api`'s `main.rs` (its `TrainerFactory` seam). If
+a new trainer forces front-end changes beyond those constructors, the event
+abstraction has leaked; fix the abstraction, not the front-end.
 
-Dependency direction is strictly `cli → core` (and later `api → core`). Core has
+Dependency direction is strictly `cli → core` and `api → core`. Core has
 no upward dependencies.
 
 ## Config layering
@@ -44,19 +46,30 @@ overridable flags.
 Conventional commits: `type(scope): summary`. Scopes track the crates and
 subsystems: `core`, `cli`, `api`, `config`, `trainer`, `ci`, `docs`.
 `Cargo.lock` is committed (this workspace builds a binary). Roadmap milestones
-are issues #1–#4 — keep the README roadmap and the issues in sync when a
-milestone lands.
+are issues #1–#4 and #17–#25 — keep the README roadmap and the issues in sync
+when a milestone lands.
 
 ## Pre-commit gate
 
 The meaningful local gate mirrors CI:
 
 ```
-just fmt-check && just lint
+just fmt-check && just lint && just audit
 ```
 
 `just lint` is `cargo clippy --all-targets -- -D warnings` (default/offline
 features; warnings are errors). The opt-in `mnist` feature pulls a networked
 dataset downloader, so its path is linted separately via `just lint-mnist` to
-keep the default gate offline and fast. rustfmt uses default style and will
-reflow multi-line signatures onto one line — expect that.
+keep the default gate offline and fast. `just audit` is the RustSec advisory
+scan (CI's `security-audit` workflow); its sibling `just deny` is the
+supply-chain gate (licenses/bans/sources, CI's `deny` job). rustfmt uses
+default style and will reflow multi-line signatures onto one line — expect
+that.
+
+## Post-release Cargo.lock sync
+
+`release-please` bumps the version in `Cargo.toml` **only** — it does not touch
+`Cargo.lock`. After merging a release PR the committed lockfile is a version
+behind the manifest, so the next `cargo` invocation rewrites it. Run
+`cargo update --workspace` and commit the result as `chore: sync Cargo.lock`
+before starting other work, so the drift doesn't ride into an unrelated PR.

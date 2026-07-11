@@ -1,3 +1,9 @@
+---
+id: ADR-0003
+status: Accepted
+date: 2026-07-05
+---
+
 # 0003 — HTTP API: event serialization, streaming, and run lifecycle (M5)
 
 - **Status:** Accepted
