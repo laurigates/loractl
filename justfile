@@ -5,6 +5,10 @@ default:
 build:
     cargo build
 
+# Clean build artifacts.
+clean:
+    cargo clean
+
 # Run the CLI with arbitrary args, e.g. `just run train config/examples/lora.yaml`.
 run *ARGS:
     cargo run -p loractl-cli -- {{ARGS}}
