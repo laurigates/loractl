@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/laurigates/loractl/compare/v0.4.0...v0.4.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **deps:** clear security-audit advisories (crossbeam-epoch, num-bigint, indicatif 0.18) ([#35](https://github.com/laurigates/loractl/issues/35)) ([6c98774](https://github.com/laurigates/loractl/commit/6c987746188c9d43440a97e0b6d4659cf9545cfb))
+
 ## [0.4.0](https://github.com/laurigates/loractl/compare/v0.3.0...v0.4.0) (2026-07-11)
 
 
