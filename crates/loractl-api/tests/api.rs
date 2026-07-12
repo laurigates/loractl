@@ -26,40 +26,92 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A unique per-test output dir under the system temp dir, so the server's
-/// `create_dir_all` side effect never lands in the repo.
-fn unique_output_dir(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+/// The relative output dir a test config asks for. Client-supplied `output.dir`
+/// is confined under the server's base (#37), so tests name a *relative* path
+/// and the run lands at `base/RUN_DIR`.
+const RUN_DIR: &str = "out";
+
+/// A unique per-test output **base** under the system temp dir, created and
+/// canonicalized (as the server does), so the server's `create_dir_all` side
+/// effect never lands in the repo and every containment assertion compares
+/// symlink-free absolute paths.
+fn test_base(tag: &str) -> PathBuf {
+    let base = std::env::temp_dir().join(format!(
         "loractl-api-test-{tag}-{}-{}",
         std::process::id(),
         DIR_SEQ.fetch_add(1, Ordering::Relaxed)
-    ))
+    ));
+    std::fs::create_dir_all(&base).expect("create test output base");
+    base.canonicalize().expect("canonicalize test output base")
 }
 
-/// An app on the default server config (retention 32 — nothing evicts in a
-/// test that starts a handful of runs).
-fn app_with(factory: TrainerFactory) -> Router {
-    loractl_api::app(factory, ApiConfig::default())
+fn config_for(base: &std::path::Path) -> ApiConfig {
+    ApiConfig {
+        output_base: base.to_path_buf(),
+        ..ApiConfig::default()
+    }
+}
+
+/// An app on the default server config (retention 32, 4 concurrent runs —
+/// neither binds in a test that starts a handful of runs).
+fn app_with(factory: TrainerFactory, base: &std::path::Path) -> Router {
+    loractl_api::app(factory, config_for(base)).expect("app builds")
 }
 
 /// An app whose registry retains only `run_retention` completed runs.
-fn app_retaining(factory: TrainerFactory, run_retention: usize) -> Router {
-    loractl_api::app(factory, ApiConfig { run_retention })
+fn app_retaining(factory: TrainerFactory, base: &std::path::Path, run_retention: usize) -> Router {
+    loractl_api::app(
+        factory,
+        ApiConfig {
+            run_retention,
+            ..config_for(base)
+        },
+    )
+    .expect("app builds")
 }
 
-fn mock_app() -> Router {
+/// An app that admits at most `max_concurrent_runs` simultaneous runs.
+fn app_limited(
+    factory: TrainerFactory,
+    base: &std::path::Path,
+    max_concurrent_runs: usize,
+) -> Router {
+    loractl_api::app(
+        factory,
+        ApiConfig {
+            max_concurrent_runs,
+            ..config_for(base)
+        },
+    )
+    .expect("app builds")
+}
+
+fn mock_app(base: &std::path::Path) -> Router {
     let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
-    app_with(factory)
+    app_with(factory, base)
 }
 
-/// A minimal valid config as JSON (same schema as the YAML file).
-fn config_json(dir: &std::path::Path, steps: u64, checkpoint_every: u64) -> serde_json::Value {
+/// A minimal valid config as JSON (same schema as the YAML file). `dir` is
+/// relative to the server's output base.
+fn config_json(dir: &str, steps: u64, checkpoint_every: u64) -> serde_json::Value {
     serde_json::json!({
         "steps": steps,
         "model": { "base": "test-base" },
         "lora": {},
         "dataset": { "path": "unused-dataset" },
         "output": { "dir": dir, "checkpoint_every": checkpoint_every }
+    })
+}
+
+/// A config naming an explicit `output.dir` / `output.name` — the two fields
+/// the confinement check (#37) governs.
+fn config_json_output(dir: &str, name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "steps": 1,
+        "model": { "base": "test-base" },
+        "lora": {},
+        "dataset": { "path": "unused-dataset" },
+        "output": { "dir": dir, "name": name, "checkpoint_every": 100 }
     })
 }
 
@@ -291,12 +343,12 @@ impl Trainer for GatedTrainer {
 /// Test 2: POST contract — 201 with id + events_url; ids are sequential.
 #[tokio::test(flavor = "multi_thread")]
 async fn post_runs_returns_id_and_events_url() {
-    let dir = unique_output_dir("post-contract");
-    let app = mock_app();
+    let base = test_base("post-contract");
+    let app = mock_app(&base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 1, 1).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -304,26 +356,26 @@ async fn post_runs_returns_id_and_events_url() {
     assert_eq!(body, r#"{"id":1,"events_url":"/runs/1/events"}"#);
 
     let response = app
-        .oneshot(post_runs(config_json(&dir, 1, 1).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = body_string(response.into_body()).await;
     assert_eq!(body, r#"{"id":2,"events_url":"/runs/2/events"}"#);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 3 (AC1 e2e): the full mock run streams started → steps/checkpoints
 /// → finished, with consecutive `id:`s and `event:` matching the JSON type.
 #[tokio::test(flavor = "multi_thread")]
 async fn sse_streams_started_through_finished_for_mock_run() {
-    let dir = unique_output_dir("e2e");
-    let app = mock_app();
+    let base = test_base("e2e");
+    let app = mock_app(&base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 5, 2).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 5, 2).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -377,13 +429,18 @@ async fn sse_streams_started_through_finished_for_mock_run() {
         .collect();
     assert_eq!(checkpoints, vec![2, 4]);
 
-    // Last event is finished with the configured adapter path.
+    // Last event is finished with the adapter path RESOLVED under the output
+    // base — the request asked for the relative `RUN_DIR`, and what the trainer
+    // (and therefore the wire) sees is the confined absolute path.
     let last = events.last().unwrap();
     assert_eq!(last.event.as_deref(), Some("finished"));
     let finished: serde_json::Value = serde_json::from_str(&last.data).unwrap();
     assert_eq!(
         finished["adapter_path"].as_str().unwrap(),
-        dir.join("lora.safetensors").to_str().unwrap()
+        base.join(RUN_DIR)
+            .join("lora.safetensors")
+            .to_str()
+            .unwrap()
     );
 
     // SSE ids are 0..n consecutive; event names match the JSON type.
@@ -393,18 +450,18 @@ async fn sse_streams_started_through_finished_for_mock_run() {
         assert_eq!(event.event.as_deref(), value["type"].as_str());
     }
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 4: replaying a finished run is byte-for-byte deterministic.
 #[tokio::test(flavor = "multi_thread")]
 async fn late_subscriber_after_finish_replays_full_history() {
-    let dir = unique_output_dir("replay");
-    let app = mock_app();
+    let base = test_base("replay");
+    let app = mock_app(&base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 3, 2).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 3, 2).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -420,7 +477,7 @@ async fn late_subscriber_after_finish_replays_full_history() {
     let second_body = body_string(second.into_body()).await;
     assert_eq!(first_body, second_body);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 5 (missed-wake sentinel): the subscriber is first *proven* parked on
@@ -431,7 +488,7 @@ async fn late_subscriber_after_finish_replays_full_history() {
 /// regardless of how the connect race schedules.
 #[tokio::test(flavor = "multi_thread")]
 async fn live_tail_delivers_events_before_run_completes() {
-    let dir = unique_output_dir("live-tail");
+    let base = test_base("live-tail");
     let start_gate = Gate::default();
     let finish_gate = Gate::default();
     // Failure guards: any panic below releases the parked trainer thread.
@@ -445,11 +502,11 @@ async fn live_tail_delivers_events_before_run_completes() {
             finish_gate: factory_finish.clone(),
         })
     });
-    let app = app_with(factory);
+    let app = app_with(factory, &base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 2, 100).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 2, 100).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -505,19 +562,19 @@ async fn live_tail_delivers_events_before_run_completes() {
     let events = parse_sse(&buffer);
     assert_eq!(types(&events), vec!["started", "step", "step", "finished"]);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 6: a failing trainer yields exactly [started, failed], then closes.
 #[tokio::test(flavor = "multi_thread")]
 async fn failing_trainer_emits_failed_event_then_closes() {
-    let dir = unique_output_dir("failing");
+    let base = test_base("failing");
     let factory: TrainerFactory = Arc::new(|| Box::new(FailingTrainer));
-    let app = app_with(factory);
+    let app = app_with(factory, &base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 1, 1).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -532,20 +589,20 @@ async fn failing_trainer_emits_failed_event_then_closes() {
         events[1].data
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 7: a panicking trainer is contained — the stream ends with a
 /// `failed` event mentioning the panic, and the app keeps serving.
 #[tokio::test(flavor = "multi_thread")]
 async fn panicking_trainer_emits_failed_and_app_keeps_serving() {
-    let dir = unique_output_dir("panicking");
+    let base = test_base("panicking");
     let factory: TrainerFactory = Arc::new(|| Box::new(PanickingTrainer));
-    let app = app_with(factory);
+    let app = app_with(factory, &base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 1, 1).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -563,20 +620,20 @@ async fn panicking_trainer_emits_failed_and_app_keeps_serving() {
 
     // Panic containment: a follow-up POST on the same app still works.
     let response = app
-        .oneshot(post_runs(config_json(&dir, 1, 1).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = body_string(response.into_body()).await;
     assert!(body.contains(r#""id":2"#));
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 8: a client disconnecting mid-stream does not kill the run.
 #[tokio::test(flavor = "multi_thread")]
 async fn client_disconnect_does_not_kill_run() {
-    let dir = unique_output_dir("disconnect");
+    let base = test_base("disconnect");
     let start_gate = Gate::default();
     let finish_gate = Gate::default();
     // Failure guards: any panic below releases the parked trainer thread.
@@ -590,11 +647,11 @@ async fn client_disconnect_does_not_kill_run() {
             finish_gate: factory_finish.clone(),
         })
     });
-    let app = app_with(factory);
+    let app = app_with(factory, &base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 2, 100).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 2, 100).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -618,26 +675,26 @@ async fn client_disconnect_does_not_kill_run() {
     let events = parse_sse(&body_string(response.into_body()).await);
     assert_eq!(types(&events), vec!["started", "step", "step", "finished"]);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 9: concurrent runs are independent — distinct ids, own sequences.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_runs_are_independent() {
-    let dir_a = unique_output_dir("concurrent-a");
-    let dir_b = unique_output_dir("concurrent-b");
-    let app = mock_app();
+    let base = test_base("concurrent");
+
+    let app = mock_app(&base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir_a, 3, 100).to_string()))
+        .oneshot(post_runs(config_json("a", 3, 100).to_string()))
         .await
         .unwrap();
     let body = body_string(response.into_body()).await;
     assert!(body.contains(r#""id":1"#));
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir_b, 5, 100).to_string()))
+        .oneshot(post_runs(config_json("b", 5, 100).to_string()))
         .await
         .unwrap();
     let body = body_string(response.into_body()).await;
@@ -670,21 +727,20 @@ async fn concurrent_runs_are_independent() {
         Some("finished")
     );
 
-    let _ = std::fs::remove_dir_all(&dir_a);
-    let _ = std::fs::remove_dir_all(&dir_b);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 10: a trainer that returns Ok without emitting Finished still gets
 /// its stream closed (no terminal event) instead of hanging subscribers.
 #[tokio::test(flavor = "multi_thread")]
 async fn trainer_ok_without_finished_still_closes_stream() {
-    let dir = unique_output_dir("silent");
+    let base = test_base("silent");
     let factory: TrainerFactory = Arc::new(|| Box::new(SilentTrainer));
-    let app = app_with(factory);
+    let app = app_with(factory, &base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 1, 1).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -695,22 +751,26 @@ async fn trainer_ok_without_finished_still_closes_stream() {
     let events = parse_sse(&body_string(response.into_body()).await);
     assert!(events.is_empty(), "expected no events, got: {events:?}");
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 11: unknown run id → 404 with a JSON error body.
 #[tokio::test(flavor = "multi_thread")]
 async fn events_for_unknown_run_is_404() {
-    let response = mock_app().oneshot(get_events(999)).await.unwrap();
+    let base = test_base("unknown-run");
+    let response = mock_app(&base).oneshot(get_events(999)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = body_string(response.into_body()).await;
     assert_eq!(body, r#"{"error":"unknown run id"}"#);
+
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 12: an invalid config is 422 and creates no run.
 #[tokio::test(flavor = "multi_thread")]
 async fn post_invalid_config_is_422_and_creates_no_run() {
-    let app = mock_app();
+    let base = test_base("invalid-config");
+    let app = mock_app(&base);
 
     let response = app
         .clone()
@@ -721,6 +781,8 @@ async fn post_invalid_config_is_422_and_creates_no_run() {
 
     let response = app.oneshot(get_events(1)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// Test 13 (burst contract — regression guard for #45): a large, tight burst
@@ -740,13 +802,13 @@ async fn post_invalid_config_is_422_and_creates_no_run() {
 #[tokio::test(flavor = "multi_thread")]
 async fn burst_of_events_is_delivered_without_loss_and_closes() {
     const N: u64 = 512;
-    let dir = unique_output_dir("burst");
+    let base = test_base("burst");
     let factory: TrainerFactory = Arc::new(|| Box::new(BurstTrainer { steps: N }));
-    let app = app_with(factory);
+    let app = app_with(factory, &base);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, N, 10_000).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, N, 10_000).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -792,7 +854,7 @@ async fn burst_of_events_is_delivered_without_loss_and_closes() {
         .collect();
     assert_eq!(step_nums, (1..=N).collect::<Vec<_>>());
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 // ---------------------------------------------------------------------------
@@ -802,10 +864,10 @@ async fn burst_of_events_is_delivered_without_loss_and_closes() {
 /// Drives a mock run to completion by draining its SSE stream. Because the
 /// supervisor evicts *before* the terminal wake, a closed stream is proof the
 /// registry has already been reconciled — no sleeps, no polling.
-async fn run_to_completion(app: &Router, dir: &std::path::Path, id: u64) {
+async fn run_to_completion(app: &Router, id: u64) {
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(dir, 1, 100).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 100).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -833,12 +895,12 @@ async fn events_status(app: &Router, id: u64) -> StatusCode {
 /// Reverting the eviction makes run 1 a live 200 here, so this fails red.
 #[tokio::test(flavor = "multi_thread")]
 async fn completed_runs_are_evicted_beyond_retention() {
-    let dir = unique_output_dir("evict");
+    let base = test_base("evict");
     let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
-    let app = app_retaining(factory, 2);
+    let app = app_retaining(factory, &base, 2);
 
-    run_to_completion(&app, &dir, 1).await;
-    run_to_completion(&app, &dir, 2).await;
+    run_to_completion(&app, 1).await;
+    run_to_completion(&app, 2).await;
 
     // Two completed runs, retention 2: nothing evicted yet.
     assert_eq!(events_status(&app, 1).await, StatusCode::OK);
@@ -846,7 +908,7 @@ async fn completed_runs_are_evicted_beyond_retention() {
 
     // The third completion pushes the queue over the cap: run 1 (the
     // oldest-completed) is evicted, the two newest survive.
-    run_to_completion(&app, &dir, 3).await;
+    run_to_completion(&app, 3).await;
     assert_eq!(
         events_status(&app, 1).await,
         StatusCode::NOT_FOUND,
@@ -855,7 +917,7 @@ async fn completed_runs_are_evicted_beyond_retention() {
     assert_eq!(events_status(&app, 2).await, StatusCode::OK);
     assert_eq!(events_status(&app, 3).await, StatusCode::OK);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// #36: an **in-flight** run is never evicted, however tight the retention.
@@ -866,7 +928,7 @@ async fn completed_runs_are_evicted_beyond_retention() {
 /// would kill the live run and fail this test red.
 #[tokio::test(flavor = "multi_thread")]
 async fn in_flight_runs_are_never_evicted() {
-    let dir = unique_output_dir("evict-in-flight");
+    let base = test_base("evict-in-flight");
     let start_gate = Gate::default();
     let finish_gate = Gate::default();
     // Failure guards: any panic below releases the parked trainer thread.
@@ -887,19 +949,19 @@ async fn in_flight_runs_are_never_evicted() {
             Box::new(MockTrainer)
         }
     });
-    let app = app_retaining(factory, 0);
+    let app = app_retaining(factory, &base, 0);
 
     let response = app
         .clone()
-        .oneshot(post_runs(config_json(&dir, 2, 100).to_string()))
+        .oneshot(post_runs(config_json(RUN_DIR, 2, 100).to_string()))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     start_gate.open(); // let it emit `started`, then park on the finish gate
 
     // Two runs complete and are evicted immediately (retention 0)...
-    run_to_completion(&app, &dir, 2).await;
-    run_to_completion(&app, &dir, 3).await;
+    run_to_completion(&app, 2).await;
+    run_to_completion(&app, 3).await;
     assert_eq!(events_status(&app, 2).await, StatusCode::NOT_FOUND);
     assert_eq!(events_status(&app, 3).await, StatusCode::NOT_FOUND);
 
@@ -921,5 +983,166 @@ async fn in_flight_runs_are_never_evicted() {
         "a run becomes evictable the moment it completes"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+// ---------------------------------------------------------------------------
+// Output-path confinement and the concurrency cap (#37)
+// ---------------------------------------------------------------------------
+
+/// Posts a config and returns `(status, body)`.
+async fn post_config(app: &Router, config: serde_json::Value) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(post_runs(config.to_string()))
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, body_string(response.into_body()).await)
+}
+
+/// #37: a traversal, an absolute path, or an escaping `output.name` is a `400`
+/// — and, crucially, **nothing is written outside the base**.
+///
+/// Before the fix each of these reached `create_dir_all` verbatim, so a client
+/// could materialize directories (and later `.safetensors`/`.json` files)
+/// anywhere the process could reach. The filesystem assertion is what pins the
+/// actual vulnerability; the status code alone would still pass if the path
+/// were rejected *after* the directory had been created.
+#[tokio::test(flavor = "multi_thread")]
+async fn output_paths_escaping_the_base_are_rejected() {
+    let base = test_base("confine");
+    let app = mock_app(&base);
+    let outside = base.parent().expect("temp dir").join("loractl-escaped");
+    let _ = std::fs::remove_dir_all(&outside);
+
+    // Traversal out of the base, absolute path, and an escaping name — the
+    // three shapes issue #37 calls out.
+    let rejected = [
+        config_json_output("../loractl-escaped", "lora"),
+        config_json_output("../../..", "lora"),
+        config_json_output("/tmp/loractl-escaped-abs", "lora"),
+        config_json_output(".", "../loractl-escaped/evil"),
+        config_json_output("out", "/tmp/loractl-escaped-abs"),
+    ];
+    for config in rejected {
+        let (status, body) = post_config(&app, config.clone()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "must reject {config}, got body: {body}"
+        );
+        let error: serde_json::Value = serde_json::from_str(&body).expect("JSON error body");
+        assert!(
+            error["error"].is_string(),
+            "400 must carry a clear error message, got: {body}"
+        );
+    }
+
+    // No run was ever registered for a rejected request (no id burned, no
+    // stream to attach to), and nothing landed on disk outside the base.
+    let response = app.clone().oneshot(get_events(1)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        !outside.exists(),
+        "a rejected request must not create {} — that is the vulnerability",
+        outside.display()
+    );
+    assert!(!std::path::Path::new("/tmp/loractl-escaped-abs").exists());
+
+    // Positive control: the same shape of request, confined, is accepted and
+    // resolves under the base.
+    let (status, body) = post_config(&app, config_json_output("nested/deep", "lora")).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "confined path must be accepted"
+    );
+    assert!(
+        body.contains(r#""id":1"#),
+        "the first id is not burned by rejections"
+    );
+
+    let response = app.oneshot(get_events(1)).await.unwrap();
+    let events = parse_sse(&body_string(response.into_body()).await);
+    let finished: serde_json::Value =
+        serde_json::from_str(&events.last().expect("terminal event").data).unwrap();
+    let adapter = std::path::Path::new(finished["adapter_path"].as_str().expect("adapter_path"));
+    assert!(
+        adapter.starts_with(&base),
+        "the run must write under the base, got {}",
+        adapter.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// #37: `POST /runs` is unauthenticated and each run occupies a real compute
+/// thread, so the number of *simultaneous* runs is capped — past it the server
+/// says `429` instead of accepting unbounded work.
+///
+/// Removing the cap makes the second POST a 201 here, so this fails red.
+#[tokio::test(flavor = "multi_thread")]
+async fn saturated_concurrency_cap_returns_429() {
+    let base = test_base("cap");
+    let start_gate = Gate::default();
+    let finish_gate = Gate::default();
+    // Failure guards: any panic below releases the parked trainer thread.
+    let _start_guard = OpenOnDrop(start_gate.clone());
+    let _finish_guard = OpenOnDrop(finish_gate.clone());
+
+    // Run 1 parks mid-training and holds the only slot; later runs are mocks.
+    let spawned = AtomicU64::new(0);
+    let factory_start = start_gate.clone();
+    let factory_finish = finish_gate.clone();
+    let factory: TrainerFactory = Arc::new(move || {
+        if spawned.fetch_add(1, Ordering::Relaxed) == 0 {
+            Box::new(GatedTrainer {
+                start_gate: factory_start.clone(),
+                finish_gate: factory_finish.clone(),
+            })
+        } else {
+            Box::new(MockTrainer)
+        }
+    });
+    let app = app_limited(factory, &base, 1);
+
+    let (status, _) = post_config(&app, config_json(RUN_DIR, 2, 100)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    start_gate.open(); // run 1 is now genuinely in flight, holding the slot
+
+    let (status, body) = post_config(&app, config_json(RUN_DIR, 2, 100)).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a saturated server must refuse, not queue"
+    );
+    let error: serde_json::Value = serde_json::from_str(&body).expect("JSON error body");
+    assert!(
+        error["error"]
+            .as_str()
+            .expect("error message")
+            .contains("concurrent"),
+        "429 must explain itself, got: {body}"
+    );
+
+    // The refused request registered nothing: no id was burned.
+    assert_eq!(events_status(&app, 2).await, StatusCode::NOT_FOUND);
+
+    // Finishing run 1 frees the slot (the supervisor retires it before the
+    // terminal wake, so a drained stream proves the slot is back).
+    finish_gate.open();
+    let response = app.clone().oneshot(get_events(1)).await.unwrap();
+    let events = parse_sse(&body_string(response.into_body()).await);
+    assert_eq!(types(&events), vec!["started", "step", "step", "finished"]);
+
+    let (status, body) = post_config(&app, config_json(RUN_DIR, 1, 100)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a completed run must release its slot, got: {body}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
 }

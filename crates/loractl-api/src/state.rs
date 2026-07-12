@@ -12,6 +12,7 @@ use crate::{ApiConfig, TrainerFactory};
 use loractl_core::{TrainConfig, TrainEvent};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -74,6 +75,10 @@ struct Registry {
     /// eviction queue: a run is only a candidate once it lands here, which is
     /// exactly what makes in-flight runs un-evictable (#36).
     completed: VecDeque<u64>,
+    /// Runs registered but not yet retired by the supervisor. Bounded by
+    /// `ApiConfig::max_concurrent_runs` (#37) — each in-flight run owns a real
+    /// compute thread on the blocking pool.
+    in_flight: usize,
 }
 
 /// Shared application state: the run registry, the server config, and the
@@ -83,28 +88,45 @@ pub struct AppState {
     next_id: AtomicU64,
     pub factory: TrainerFactory,
     pub config: ApiConfig,
+    /// The canonical directory every run's output is confined under (#37).
+    /// Canonicalized once at startup so containment checks compare two
+    /// symlink-free absolute paths.
+    pub output_base: PathBuf,
 }
 
 impl AppState {
-    pub fn new(factory: TrainerFactory, config: ApiConfig) -> Self {
-        Self {
+    pub fn new(factory: TrainerFactory, config: ApiConfig) -> anyhow::Result<Self> {
+        let output_base = crate::paths::canonical_base(&config.output_base)?;
+        Ok(Self {
             runs: Mutex::new(Registry::default()),
             next_id: AtomicU64::new(1),
             factory,
             config,
-        }
+            output_base,
+        })
     }
 
-    /// Registers a new run and returns `(id, run)`. Ids are sequential from 1
-    /// and process-local (not stable across restarts — documented contract).
-    pub fn register_run(&self) -> (u64, Arc<Run>) {
+    /// Registers a new run and returns `(id, run)`, or `None` when the
+    /// concurrent-run cap is saturated (the handler renders that as `429`).
+    ///
+    /// The cap check and the insert happen under **one** lock acquisition, so
+    /// N simultaneous `POST /runs` cannot all observe a free slot and all take
+    /// it. Ids are sequential from 1 and process-local (not stable across
+    /// restarts — documented contract).
+    pub fn register_run(&self) -> Option<(u64, Arc<Run>)> {
+        let mut registry = self.runs.lock().unwrap();
+        if registry.in_flight >= self.config.max_concurrent_runs {
+            return None;
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let run = Arc::new(Run::new());
-        self.runs.lock().unwrap().runs.insert(id, Arc::clone(&run));
-        (id, run)
+        registry.runs.insert(id, Arc::clone(&run));
+        registry.in_flight += 1;
+        Some((id, run))
     }
 
-    /// Marks a run finished and enforces the completed-run cap (#36).
+    /// Marks a run finished: frees its concurrency slot and enforces the
+    /// completed-run cap (#36).
     ///
     /// Called exactly once per run, by the supervisor, **before** the terminal
     /// wake — so a subscriber whose stream has closed is guaranteed to observe
@@ -115,6 +137,7 @@ impl AppState {
     /// streaming an evicted run holds its own `Arc` and finishes undisturbed.
     pub fn complete_run(&self, id: u64) {
         let mut registry = self.runs.lock().unwrap();
+        registry.in_flight = registry.in_flight.saturating_sub(1);
         registry.completed.push_back(id);
         while registry.completed.len() > self.config.run_retention {
             let Some(evicted) = registry.completed.pop_front() else {

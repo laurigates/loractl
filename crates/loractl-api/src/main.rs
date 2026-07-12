@@ -20,11 +20,16 @@ async fn main() -> anyhow::Result<()> {
 
     let config = ApiConfig::from_env()?;
     let addr = std::env::var("LORACTL_API_ADDR").unwrap_or_else(|_| String::from("127.0.0.1:3000"));
+    // Built before the listener: a bad output base must fail on boot, not on
+    // the first request against an already-listening socket.
+    let app = loractl_api::app(factory, config.clone())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(
         run_retention = config.run_retention,
+        max_concurrent_runs = config.max_concurrent_runs,
+        output_base = %config.output_base.display(),
         "loractl-api listening on http://{addr}"
     );
-    axum::serve(listener, loractl_api::app(factory, config)).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
