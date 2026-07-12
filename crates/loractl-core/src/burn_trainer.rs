@@ -283,6 +283,7 @@ fn run_classification<B: AutodiffBackend>(
         NUM_CLASSES,
         rank,
         config.lora.alpha as f64,
+        config.lora.dropout as f64,
         &device,
     );
 
@@ -409,6 +410,7 @@ fn run_flow_matching<B: AutodiffBackend>(
         FLOW_LATENT_DIM,
         rank,
         config.lora.alpha as f64,
+        config.lora.dropout as f64,
         &device,
     );
 

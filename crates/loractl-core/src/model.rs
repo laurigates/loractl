@@ -46,17 +46,19 @@ impl<B: Backend> LoraMlp<B> {
     ///
     /// `fc1` is a freshly initialized dense layer, immediately frozen with the
     /// same helper [`LoraLinear`] uses. `fc2` is a [`LoraLinear`] whose base is
-    /// frozen inside `from_base`; `rank`/`alpha` come from the run's LoRA config.
+    /// frozen inside `from_base`; `rank`/`alpha`/`dropout_prob` come from the
+    /// run's LoRA config.
     pub fn new(
         d_in: usize,
         hidden: usize,
         out: usize,
         rank: usize,
         alpha: f64,
+        dropout_prob: f64,
         device: &B::Device,
     ) -> Self {
         let fc1 = crate::lora::freeze(LinearConfig::new(d_in, hidden).with_bias(true).init(device));
-        let fc2 = LoraLinear::new(hidden, out, rank, alpha, true, device);
+        let fc2 = LoraLinear::new(hidden, out, rank, alpha, true, dropout_prob, device);
         let model = Self { fc1, fc2 };
 
         // Force the frozen base to materialize NOW, pinning its random

@@ -17,7 +17,7 @@
 
 use burn::backend::{Autodiff, NdArray};
 use burn::module::Param;
-use burn::nn::Linear;
+use burn::nn::{DropoutConfig, Linear};
 use burn::optim::{GradientsParams, Optimizer, SgdConfig};
 use burn::tensor::{Tensor, TensorData, Tolerance};
 use loractl_core::LoraLinear;
@@ -73,6 +73,7 @@ fn matches_pytorch_reference() {
         lora_a,
         lora_b,
         scaling: 1.0, // alpha/rank = 2/2
+        dropout: DropoutConfig::new(0.0).init(),
     };
 
     let x = Tensor::<AB, 2>::from_data(TensorData::new(X.to_vec(), [5, 4]), &device);

@@ -202,6 +202,10 @@ pub fn load_adapter<B: Backend>(path: &Path, device: &B::Device) -> Result<LoraM
         meta.out,
         meta.rank as usize,
         meta.alpha as f64,
+        // Dropout is identity at inference (non-autodiff backend), and dropout
+        // prob is not persisted in the sidecar, so reload with 0.0. A reloaded
+        // adapter is used for sampling; continued training is not yet wired.
+        0.0,
         device,
     );
 

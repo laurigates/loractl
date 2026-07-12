@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn run_sample_is_deterministic() {
         let device = Default::default();
-        let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, &device);
+        let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, 0.0, &device);
 
         let a = run_sample(&model, 42, &device).expect("run_sample succeeds");
         let b = run_sample(&model, 42, &device).expect("run_sample succeeds");
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn run_sample_errors_on_non_finite_logits_instead_of_panicking() {
         let device = Default::default();
-        let mut model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, &device);
+        let mut model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, 0.0, &device);
 
         // Simulate either a corrupted/hand-edited `.safetensors` file on disk,
         // or an adapter saved after training diverged to NaN/Inf under an
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn sample_adapter_refuses_flow_matching_adapters() {
         let device = Default::default();
-        let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, &device);
+        let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, 0.0, &device);
 
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

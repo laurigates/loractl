@@ -29,7 +29,7 @@ fn sample_subcommand_prints_real_output() {
     // producing a "real" trained adapter — that round-trip is
     // `adapter_roundtrip.rs`'s job. `save_adapter` creates `dir` itself.
     let device: Device<NdArray> = Default::default();
-    let model = LoraMlp::<NdArray>::new(8, 6, 4, 2, 8.0, &device);
+    let model = LoraMlp::<NdArray>::new(8, 6, 4, 2, 8.0, 0.0, &device);
     adapter::save_adapter(&model, &adapter_path, 99, TaskKind::Classification)
         .expect("save a tiny adapter for the CLI to load");
 
