@@ -21,7 +21,7 @@
 //! freeze, and autodiff in isolation before a real base model is involved.
 
 use burn::module::{Initializer, Module};
-use burn::nn::{Linear, LinearConfig};
+use burn::nn::{Dropout, DropoutConfig, Linear, LinearConfig};
 use burn::tensor::{Tensor, backend::Backend};
 
 /// A [`Linear`] layer adapted with a low-rank (LoRA) update.
@@ -41,6 +41,11 @@ pub struct LoraLinear<B: Backend> {
     pub lora_b: Linear<B>,
     /// The LoRA scaling factor `alpha / rank`, applied to the adapter output.
     pub scaling: f64,
+    /// Dropout applied to the adapter's input before the down-projection `A`
+    /// (only the low-rank path; the base is never dropped). burn's `Dropout` is
+    /// identity at `prob = 0.0` and on a non-autodiff backend, so it is a no-op
+    /// at inference/sampling and draws no RNG when disabled.
+    pub dropout: Dropout,
 }
 
 impl<B: Backend> LoraLinear<B> {
@@ -48,18 +53,20 @@ impl<B: Backend> LoraLinear<B> {
     ///
     /// `rank` is clamped to at least 1. `alpha` is the LoRA scaling numerator;
     /// the effective scale applied to the adapter is `alpha / rank`.
+    /// `dropout_prob` is the adapter-input dropout applied during training.
     pub fn new(
         d_input: usize,
         d_output: usize,
         rank: usize,
         alpha: f64,
         bias: bool,
+        dropout_prob: f64,
         device: &B::Device,
     ) -> Self {
         let base = LinearConfig::new(d_input, d_output)
             .with_bias(bias)
             .init(device);
-        Self::from_base(base, rank, alpha, device)
+        Self::from_base(base, rank, alpha, dropout_prob, device)
     }
 
     /// Adapt an existing base [`Linear`], freezing it and attaching a fresh
@@ -67,7 +74,13 @@ impl<B: Backend> LoraLinear<B> {
     ///
     /// This is the entry point milestone 3 (#2) uses once a real base model's
     /// weights have been loaded into a [`Linear`].
-    pub fn from_base(base: Linear<B>, rank: usize, alpha: f64, device: &B::Device) -> Self {
+    pub fn from_base(
+        base: Linear<B>,
+        rank: usize,
+        alpha: f64,
+        dropout_prob: f64,
+        device: &B::Device,
+    ) -> Self {
         let rank = rank.max(1);
         let [d_input, d_output] = base.weight.dims();
         let base = freeze(base);
@@ -78,16 +91,21 @@ impl<B: Backend> LoraLinear<B> {
             lora_a,
             lora_b,
             scaling: alpha / rank as f64,
+            dropout: DropoutConfig::new(dropout_prob).init(),
         }
     }
 
-    /// The adapted forward pass: `base(x) + (alpha / rank) · B(A(x))`.
+    /// The adapted forward pass: `base(x) + (alpha / rank) · B(A(dropout(x)))`.
     ///
-    /// Works for any input rank `[.., d_input]`; the output has the same rank
-    /// with the last dimension replaced by `d_output`.
+    /// Dropout is applied only to the low-rank path's input (never the base),
+    /// and only during training — it is identity at inference and at
+    /// `dropout_prob = 0.0`. Works for any input rank `[.., d_input]`; the
+    /// output has the same rank with the last dimension replaced by `d_output`.
     pub fn forward<const D: usize>(&self, input: Tensor<B, D>) -> Tensor<B, D> {
         let base = self.base.forward(input.clone());
-        let delta = self.lora_b.forward(self.lora_a.forward(input));
+        let delta = self
+            .lora_b
+            .forward(self.lora_a.forward(self.dropout.forward(input)));
         base.add(delta.mul_scalar(self.scaling))
     }
 }
@@ -142,6 +160,9 @@ pub struct LoraDelta<B: Backend> {
     pub lora_b: Linear<B>,
     /// The LoRA scaling factor `alpha / rank`, applied to the adapter output.
     pub scaling: f64,
+    /// Dropout applied to the delta's input before the down-projection `A`,
+    /// during training only (identity at inference and at `prob = 0.0`).
+    pub dropout: Dropout,
 }
 
 impl<B: Backend> LoraDelta<B> {
@@ -149,11 +170,13 @@ impl<B: Backend> LoraDelta<B> {
     ///
     /// `rank` is clamped to at least 1; the effective scale is `alpha / rank`.
     /// `B` is zero-initialized, so the delta starts as an exact no-op.
+    /// `dropout_prob` is the delta-input dropout applied during training.
     pub fn new(
         d_input: usize,
         d_output: usize,
         rank: usize,
         alpha: f64,
+        dropout_prob: f64,
         device: &B::Device,
     ) -> Self {
         let rank = rank.max(1);
@@ -162,18 +185,20 @@ impl<B: Backend> LoraDelta<B> {
             lora_a,
             lora_b,
             scaling: alpha / rank as f64,
+            dropout: DropoutConfig::new(dropout_prob).init(),
         }
     }
 
-    /// The scaled low-rank delta `(alpha / rank) · B(A(x))`.
+    /// The scaled low-rank delta `(alpha / rank) · B(A(dropout(x)))`.
     ///
-    /// Works for any input rank `[.., d_input]`; the output has the same rank
-    /// with the last dimension replaced by `d_output`. Unlike
+    /// Dropout is applied only during training (identity at inference and at
+    /// `prob = 0.0`). Works for any input rank `[.., d_input]`; the output has
+    /// the same rank with the last dimension replaced by `d_output`. Unlike
     /// [`LoraLinear::forward`], this does **not** add a base term — the caller
     /// adds it to the target layer's own output at the injection site.
     pub fn forward<const D: usize>(&self, input: Tensor<B, D>) -> Tensor<B, D> {
         self.lora_b
-            .forward(self.lora_a.forward(input))
+            .forward(self.lora_a.forward(self.dropout.forward(input)))
             .mul_scalar(self.scaling)
     }
 }
@@ -204,7 +229,7 @@ mod tests {
     #[test]
     fn constructs_with_expected_shapes() {
         let device = Default::default();
-        let lora = LoraLinear::<TB>::new(4, 3, 2, 8.0, true, &device);
+        let lora = LoraLinear::<TB>::new(4, 3, 2, 8.0, true, 0.0, &device);
 
         assert_eq!(lora.base.weight.dims(), [4, 3]);
         assert_eq!(lora.lora_a.weight.dims(), [4, 2]);
@@ -215,7 +240,7 @@ mod tests {
     #[test]
     fn rank_is_clamped_to_at_least_one() {
         let device = Default::default();
-        let lora = LoraLinear::<TB>::new(4, 3, 0, 8.0, false, &device);
+        let lora = LoraLinear::<TB>::new(4, 3, 0, 8.0, false, 0.0, &device);
 
         assert_eq!(lora.lora_a.weight.dims(), [4, 1]);
         assert_eq!(lora.lora_b.weight.dims(), [1, 3]);
@@ -226,7 +251,7 @@ mod tests {
     #[test]
     fn forward_preserves_output_shape() {
         let device = Default::default();
-        let lora = LoraLinear::<TB>::new(4, 3, 2, 8.0, false, &device);
+        let lora = LoraLinear::<TB>::new(4, 3, 2, 8.0, false, 0.0, &device);
 
         let x = Tensor::<TB, 2>::random([5, 4], Distribution::Default, &device);
         let y = lora.forward(x);
@@ -239,7 +264,7 @@ mod tests {
         // `B` is zero-initialized, so the adapter contributes nothing at step 0:
         // the LoRA forward must equal the frozen base's forward exactly.
         let device = Default::default();
-        let lora = LoraLinear::<TB>::new(6, 4, 3, 16.0, true, &device);
+        let lora = LoraLinear::<TB>::new(6, 4, 3, 16.0, true, 0.0, &device);
 
         let x = Tensor::<TB, 2>::random([8, 6], Distribution::Default, &device);
         let base_out = lora.base.forward(x.clone());
@@ -255,7 +280,7 @@ mod tests {
         // A backward pass must produce a gradient for the trainable adapter but
         // none for the frozen base — the autodiff-level proof of the freeze.
         let device = Default::default();
-        let lora = LoraLinear::<AB>::new(4, 3, 2, 8.0, true, &device);
+        let lora = LoraLinear::<AB>::new(4, 3, 2, 8.0, true, 0.0, &device);
 
         let x = Tensor::<AB, 2>::random([5, 4], Distribution::Default, &device);
         let loss = lora.forward(x).sum();
@@ -268,6 +293,43 @@ mod tests {
         assert!(
             lora.lora_b.weight.val().grad(&grads).is_some(),
             "trainable adapter must receive a gradient"
+        );
+    }
+
+    #[test]
+    fn dropout_is_identity_at_inference() {
+        // burn's `Dropout` is identity on a non-autodiff backend, so a high
+        // dropout prob must NOT perturb the forward at inference/sampling: two
+        // forwards of the same module are bit-identical and no RNG is consumed.
+        let device = Default::default();
+        let lora = LoraLinear::<TB>::new(6, 4, 3, 16.0, true, 0.9, &device);
+
+        let x = Tensor::<TB, 2>::random([8, 6], Distribution::Default, &device);
+        let a = lora.forward(x.clone());
+        let b = lora.forward(x);
+
+        a.into_data()
+            .assert_approx_eq::<f32>(&b.into_data(), Tolerance::default());
+    }
+
+    #[test]
+    fn dropout_is_active_during_training() {
+        // On an autodiff (training) backend a non-zero dropout prob must
+        // randomize its input: two applications to the same tensor draw
+        // independent Bernoulli masks and so differ. A prob of 0.0 (or an
+        // unwired dropout) would make them identical — the model-level guard
+        // that the configured dropout is actually applied during training.
+        let device = Default::default();
+        let lora = LoraLinear::<AB>::new(6, 4, 3, 16.0, true, 0.9, &device);
+
+        let x = Tensor::<AB, 2>::random([32, 6], Distribution::Default, &device);
+        let a = lora.dropout.forward(x.clone());
+        let b = lora.dropout.forward(x);
+
+        assert_ne!(
+            a.into_data(),
+            b.into_data(),
+            "dropout must randomize its input during training (autodiff backend)"
         );
     }
 }

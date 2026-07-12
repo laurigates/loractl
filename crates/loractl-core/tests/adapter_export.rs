@@ -18,7 +18,7 @@
 
 use burn::backend::NdArray;
 use burn::module::Param;
-use burn::nn::Linear;
+use burn::nn::{DropoutConfig, Linear};
 use burn::tensor::{TensorData, Tolerance};
 use loractl_core::LoraDelta;
 use loractl_core::adapters::LoraAdapters;
@@ -98,6 +98,7 @@ fn kohya_export_matches_golden() {
         lora_a,
         lora_b,
         scaling: ALPHA / RANK as f64,
+        dropout: DropoutConfig::new(0.0).init(),
     };
     let set = LoraAdapters {
         deltas: vec![delta],

@@ -77,7 +77,7 @@ impl Drop for TempDir {
 /// of whether loading actually worked.
 fn train_one_step(device: &burn::tensor::Device<AB>) -> LoraMlp<AB> {
     AB::seed(device, SEED);
-    let mut model = LoraMlp::<AB>::new(D_IN, HIDDEN, OUT, RANK, ALPHA, device);
+    let mut model = LoraMlp::<AB>::new(D_IN, HIDDEN, OUT, RANK, ALPHA, 0.0, device);
 
     let x = Tensor::<AB, 2>::random([5, D_IN], Distribution::Default, device);
     let targets =

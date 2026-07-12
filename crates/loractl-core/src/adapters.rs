@@ -134,7 +134,10 @@ pub fn build_adapters<B: Backend>(
         if let Some((_, spec)) = compiled.iter().find(|(re, _)| re.is_match(&site.path)) {
             let rank = spec.rank.unwrap_or(cfg.rank) as usize;
             let alpha = spec.alpha.unwrap_or(cfg.alpha) as f64;
-            deltas.push(LoraDelta::new(site.d_in, site.d_out, rank, alpha, device));
+            let dropout = cfg.dropout as f64;
+            deltas.push(LoraDelta::new(
+                site.d_in, site.d_out, rank, alpha, dropout, device,
+            ));
             targets.push(site.path.clone());
         }
     }

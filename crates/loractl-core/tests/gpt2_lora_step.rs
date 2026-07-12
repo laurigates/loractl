@@ -77,7 +77,14 @@ fn input_ids(device: &burn::tensor::Device<AB>) -> Tensor<AB, 2, Int> {
 /// 3·n_embd`, sized from the tiny config).
 fn single_c_attn_adapters(device: &burn::tensor::Device<AB>) -> LoraAdapters<AB> {
     let e = Gpt2Config::tiny().n_embd;
-    let delta = LoraDelta::<AB>::new(e, 3 * e, /* rank */ 4, /* alpha */ 8.0, device);
+    let delta = LoraDelta::<AB>::new(
+        e,
+        3 * e,
+        /* rank */ 4,
+        /* alpha */ 8.0,
+        /* dropout */ 0.0,
+        device,
+    );
     LoraAdapters {
         deltas: vec![delta],
         targets: vec![TARGET.to_string()],

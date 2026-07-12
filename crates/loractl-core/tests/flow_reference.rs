@@ -22,7 +22,7 @@
 
 use burn::backend::{Autodiff, NdArray};
 use burn::module::Param;
-use burn::nn::Linear;
+use burn::nn::{DropoutConfig, Linear};
 use burn::optim::{GradientsParams, Optimizer, SgdConfig};
 use burn::tensor::{Tensor, TensorData, Tolerance};
 use loractl_core::config::FlowConfig;
@@ -237,6 +237,7 @@ fn training_matches_pytorch_reference() {
             lora_a,
             lora_b,
             scaling: 2.0, // alpha/rank = 4/2
+            dropout: DropoutConfig::new(0.0).init(),
         },
     };
 
