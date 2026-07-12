@@ -37,8 +37,11 @@ burn's `AdamW` (burn-optim 0.21 `adamw.rs`) computes
 `beta_1=0.9, beta_2=0.999, epsilon=1e-5` — i.e. decoupled decay, identical in
 form to `torch.optim.AdamW`. torch's eps default is 1e-8, so it is set to 1e-5
 explicitly below. The golden pins two trajectories, `weight_decay = 0.0` and
-`0.05`, so the *decoupled* decay semantics are pinned against torch and not just
-asserted (see `.claude/rules/burn-optimizer-and-dropout.md`).
+`1.0`, so the *decoupled* decay semantics are pinned against torch and not just
+asserted (see `.claude/rules/burn-optimizer-and-dropout.md`). `1.0` is the
+kill-test value from that rule — large enough that the decayed trajectory
+visibly diverges (~5e-2 max loss separation) rather than vanishing into the
+f32 noise floor.
 
 Convention: all matrices in the dump are burn layout `[d_in, d_out]`. This script
 owns every transpose (torch `nn.Linear.weight` is `[out, in]`) and transposes back

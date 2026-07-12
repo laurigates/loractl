@@ -47,7 +47,7 @@ const LR: f64 = 0.01;
 /// The two weight-decay settings the golden pins. `0.0` is the plain trajectory;
 /// `1.0` exercises AdamW's *decoupled* decay against torch's own AdamW — the
 /// kill-test value `.claude/rules/burn-optimizer-and-dropout.md` prescribes,
-/// chosen so the two trajectories separate by ~2e-2 (far above the golden's
+/// chosen so the two trajectories separate by ~5e-2 (far above the golden's
 /// 1e-3 tolerance) instead of vanishing into the noise floor.
 const WEIGHT_DECAYS: [f64; 2] = [0.0, 1.0];
 
