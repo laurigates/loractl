@@ -11,7 +11,7 @@ GUI (or any HTTP client) builds against. Design rationale lives in
 | Endpoint | Request | Success | Errors |
 |---|---|---|---|
 | `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `422` invalid body — plain-text diagnostic, see below (no run is created) |
-| `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `404` `{"error":"unknown run id"}` |
+| `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `404` `{"error":"unknown run id"}` — the id was never issued **or its run has been evicted** (see [Run retention](#run-retention)) |
 
 That is the whole M5 surface. There is no run listing, no status endpoint, no
 cancellation, no auth — see ADR-0003's cut list and revive triggers.
@@ -99,6 +99,35 @@ data: {"type":"finished","adapter_path":"output/lora.safetensors"}
 6. Caveats: run ids are process-local and **not stable across server
    restarts**; two runs sharing the same `output.dir` clobber each other's
    checkpoints (a pre-existing `TrainConfig` property, not an API one).
+7. A run's history is **not retained forever** — see [Run retention](#run-retention).
+
+## Run retention
+
+The event history *is* the replay buffer (ADR-0003), so it is held in memory
+for the life of the run. To give that a ceiling, the server keeps only the
+**N most-recently-completed runs**; older completed runs are evicted and their
+events dropped, so `GET /runs/{id}/events` on an evicted id is a plain `404`,
+indistinguishable from an id that was never issued.
+
+| | |
+|---|---|
+| Env var | `LORACTL_RUN_RETENTION` |
+| Default | `32` |
+| Applies to | **completed** runs only |
+
+Two guarantees a client can rely on:
+
+- **An in-flight run is never evicted**, whatever `LORACTL_RUN_RETENTION` is
+  set to — only a run that has emitted its terminal event (`finished` or
+  `failed`) is a candidate.
+- **An open stream is never cut short by eviction.** A subscriber that is
+  already streaming an evicted run drains its full history and receives its
+  terminal event; eviction only removes the run from the lookup registry, so
+  it is a *future* `GET` that 404s.
+
+Consume a run's events while it is fresh; a client that needs history beyond
+the retention window must persist it itself. Setting the value higher trades
+memory for a longer replay window; `0` evicts each run the moment it finishes.
 
 ## Trying it with curl
 

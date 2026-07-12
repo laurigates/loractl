@@ -41,7 +41,7 @@ async fn create_run(
 ) -> impl IntoResponse {
     let (id, run) = state.register_run();
     let trainer = (state.factory)();
-    state::spawn_run(run, config, trainer);
+    state::spawn_run(Arc::clone(&state), id, run, config, trainer);
     (
         StatusCode::CREATED,
         Json(CreatedRun {

@@ -8,10 +8,10 @@
 //! zero event loss. The mutex is never held across an `.await`: writers are
 //! sync code on the blocking thread, readers copy-then-release.
 
-use crate::TrainerFactory;
+use crate::{ApiConfig, TrainerFactory};
 use loractl_core::{TrainConfig, TrainEvent};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -63,19 +63,35 @@ impl Run {
     }
 }
 
-/// Shared application state: the run registry and the trainer seam.
+/// The run registry: the live map plus the completion order that bounds it.
+///
+/// Both fields move together under one lock, so `runs` and `completed` can
+/// never disagree about which ids are retained.
+#[derive(Default)]
+struct Registry {
+    runs: HashMap<u64, Arc<Run>>,
+    /// Ids of **finished** runs in completion order, oldest first. This is the
+    /// eviction queue: a run is only a candidate once it lands here, which is
+    /// exactly what makes in-flight runs un-evictable (#36).
+    completed: VecDeque<u64>,
+}
+
+/// Shared application state: the run registry, the server config, and the
+/// trainer seam.
 pub struct AppState {
-    pub runs: Mutex<HashMap<u64, Arc<Run>>>,
+    runs: Mutex<Registry>,
     next_id: AtomicU64,
     pub factory: TrainerFactory,
+    pub config: ApiConfig,
 }
 
 impl AppState {
-    pub fn new(factory: TrainerFactory) -> Self {
+    pub fn new(factory: TrainerFactory, config: ApiConfig) -> Self {
         Self {
-            runs: Mutex::new(HashMap::new()),
+            runs: Mutex::new(Registry::default()),
             next_id: AtomicU64::new(1),
             factory,
+            config,
         }
     }
 
@@ -84,12 +100,32 @@ impl AppState {
     pub fn register_run(&self) -> (u64, Arc<Run>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let run = Arc::new(Run::new());
-        self.runs.lock().unwrap().insert(id, Arc::clone(&run));
+        self.runs.lock().unwrap().runs.insert(id, Arc::clone(&run));
         (id, run)
     }
 
+    /// Marks a run finished and enforces the completed-run cap (#36).
+    ///
+    /// Called exactly once per run, by the supervisor, **before** the terminal
+    /// wake — so a subscriber whose stream has closed is guaranteed to observe
+    /// the post-eviction registry, which is what makes eviction deterministically
+    /// testable rather than a race.
+    ///
+    /// Eviction drops the `Arc<Run>` from the map only; a subscriber already
+    /// streaming an evicted run holds its own `Arc` and finishes undisturbed.
+    pub fn complete_run(&self, id: u64) {
+        let mut registry = self.runs.lock().unwrap();
+        registry.completed.push_back(id);
+        while registry.completed.len() > self.config.run_retention {
+            let Some(evicted) = registry.completed.pop_front() else {
+                break;
+            };
+            registry.runs.remove(&evicted);
+        }
+    }
+
     pub fn get_run(&self, id: u64) -> Option<Arc<Run>> {
-        self.runs.lock().unwrap().get(&id).cloned()
+        self.runs.lock().unwrap().runs.get(&id).cloned()
     }
 }
 
@@ -146,7 +182,11 @@ fn push_event(run: &Run, event: &TrainEvent) {
 /// and trainer panic both converge into an API-layer `failed` event; the
 /// `done` flip is **always** followed by a wake on every arm (including
 /// `Ok`) — the missed-wake fix that keeps subscribers from parking forever.
+/// It is also where a run leaves the in-flight set and becomes evictable
+/// (`complete_run`).
 pub fn spawn_run(
+    state: Arc<AppState>,
+    id: u64,
     run: Arc<Run>,
     config: TrainConfig,
     mut trainer: Box<dyn loractl_core::Trainer + Send>,
@@ -171,6 +211,9 @@ pub fn spawn_run(
             }
             log.done = true;
         }
+        // Retire the run BEFORE the terminal wake: a subscriber that observes
+        // the closed stream has, by that ordering, also observed the eviction.
+        state.complete_run(id);
         // MISSED-WAKE FIX: wake on EVERY arm, incl. Ok — a subscriber that
         // consumed the Finished wake and re-parked before `done` was set
         // would otherwise hang forever.

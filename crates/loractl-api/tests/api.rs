@@ -9,7 +9,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use loractl_api::TrainerFactory;
+use loractl_api::{ApiConfig, TrainerFactory};
 use loractl_core::{MockTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,9 +36,20 @@ fn unique_output_dir(tag: &str) -> PathBuf {
     ))
 }
 
+/// An app on the default server config (retention 32 — nothing evicts in a
+/// test that starts a handful of runs).
+fn app_with(factory: TrainerFactory) -> Router {
+    loractl_api::app(factory, ApiConfig::default())
+}
+
+/// An app whose registry retains only `run_retention` completed runs.
+fn app_retaining(factory: TrainerFactory, run_retention: usize) -> Router {
+    loractl_api::app(factory, ApiConfig { run_retention })
+}
+
 fn mock_app() -> Router {
     let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
-    loractl_api::app(factory)
+    app_with(factory)
 }
 
 /// A minimal valid config as JSON (same schema as the YAML file).
@@ -434,7 +445,7 @@ async fn live_tail_delivers_events_before_run_completes() {
             finish_gate: factory_finish.clone(),
         })
     });
-    let app = loractl_api::app(factory);
+    let app = app_with(factory);
 
     let response = app
         .clone()
@@ -502,7 +513,7 @@ async fn live_tail_delivers_events_before_run_completes() {
 async fn failing_trainer_emits_failed_event_then_closes() {
     let dir = unique_output_dir("failing");
     let factory: TrainerFactory = Arc::new(|| Box::new(FailingTrainer));
-    let app = loractl_api::app(factory);
+    let app = app_with(factory);
 
     let response = app
         .clone()
@@ -530,7 +541,7 @@ async fn failing_trainer_emits_failed_event_then_closes() {
 async fn panicking_trainer_emits_failed_and_app_keeps_serving() {
     let dir = unique_output_dir("panicking");
     let factory: TrainerFactory = Arc::new(|| Box::new(PanickingTrainer));
-    let app = loractl_api::app(factory);
+    let app = app_with(factory);
 
     let response = app
         .clone()
@@ -579,7 +590,7 @@ async fn client_disconnect_does_not_kill_run() {
             finish_gate: factory_finish.clone(),
         })
     });
-    let app = loractl_api::app(factory);
+    let app = app_with(factory);
 
     let response = app
         .clone()
@@ -669,7 +680,7 @@ async fn concurrent_runs_are_independent() {
 async fn trainer_ok_without_finished_still_closes_stream() {
     let dir = unique_output_dir("silent");
     let factory: TrainerFactory = Arc::new(|| Box::new(SilentTrainer));
-    let app = loractl_api::app(factory);
+    let app = app_with(factory);
 
     let response = app
         .clone()
@@ -731,7 +742,7 @@ async fn burst_of_events_is_delivered_without_loss_and_closes() {
     const N: u64 = 512;
     let dir = unique_output_dir("burst");
     let factory: TrainerFactory = Arc::new(|| Box::new(BurstTrainer { steps: N }));
-    let app = loractl_api::app(factory);
+    let app = app_with(factory);
 
     let response = app
         .clone()
@@ -780,6 +791,135 @@ async fn burst_of_events_is_delivered_without_loss_and_closes() {
         })
         .collect();
     assert_eq!(step_nums, (1..=N).collect::<Vec<_>>());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Run retention / eviction (#36)
+// ---------------------------------------------------------------------------
+
+/// Drives a mock run to completion by draining its SSE stream. Because the
+/// supervisor evicts *before* the terminal wake, a closed stream is proof the
+/// registry has already been reconciled — no sleeps, no polling.
+async fn run_to_completion(app: &Router, dir: &std::path::Path, id: u64) {
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(dir, 1, 100).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app.clone().oneshot(get_events(id)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = parse_sse(&body_string(response.into_body()).await);
+    assert_eq!(
+        types(&events).last().map(String::as_str),
+        Some("finished"),
+        "run {id} should have completed"
+    );
+}
+
+/// Status of `GET /runs/{id}/events` without draining the body (so an
+/// in-flight run can be probed without blocking on its stream).
+async fn events_status(app: &Router, id: u64) -> StatusCode {
+    let response = app.clone().oneshot(get_events(id)).await.unwrap();
+    response.status()
+}
+
+/// #36: the runs map is bounded — completed runs beyond `run_retention` are
+/// evicted oldest-first, and an evicted run's events are a 404.
+///
+/// Reverting the eviction makes run 1 a live 200 here, so this fails red.
+#[tokio::test(flavor = "multi_thread")]
+async fn completed_runs_are_evicted_beyond_retention() {
+    let dir = unique_output_dir("evict");
+    let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
+    let app = app_retaining(factory, 2);
+
+    run_to_completion(&app, &dir, 1).await;
+    run_to_completion(&app, &dir, 2).await;
+
+    // Two completed runs, retention 2: nothing evicted yet.
+    assert_eq!(events_status(&app, 1).await, StatusCode::OK);
+    assert_eq!(events_status(&app, 2).await, StatusCode::OK);
+
+    // The third completion pushes the queue over the cap: run 1 (the
+    // oldest-completed) is evicted, the two newest survive.
+    run_to_completion(&app, &dir, 3).await;
+    assert_eq!(
+        events_status(&app, 1).await,
+        StatusCode::NOT_FOUND,
+        "oldest completed run must be evicted once retention is exceeded"
+    );
+    assert_eq!(events_status(&app, 2).await, StatusCode::OK);
+    assert_eq!(events_status(&app, 3).await, StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #36: an **in-flight** run is never evicted, however tight the retention.
+///
+/// With `run_retention = 0` every completed run is dropped the instant it
+/// finishes — yet run 1, parked mid-training, must still be streamable. A
+/// naive "evict the oldest run when the map grows" policy (ignoring `done`)
+/// would kill the live run and fail this test red.
+#[tokio::test(flavor = "multi_thread")]
+async fn in_flight_runs_are_never_evicted() {
+    let dir = unique_output_dir("evict-in-flight");
+    let start_gate = Gate::default();
+    let finish_gate = Gate::default();
+    // Failure guards: any panic below releases the parked trainer thread.
+    let _start_guard = OpenOnDrop(start_gate.clone());
+    let _finish_guard = OpenOnDrop(finish_gate.clone());
+
+    // The first run parks mid-training; every later run is a fast mock.
+    let spawned = AtomicU64::new(0);
+    let factory_start = start_gate.clone();
+    let factory_finish = finish_gate.clone();
+    let factory: TrainerFactory = Arc::new(move || {
+        if spawned.fetch_add(1, Ordering::Relaxed) == 0 {
+            Box::new(GatedTrainer {
+                start_gate: factory_start.clone(),
+                finish_gate: factory_finish.clone(),
+            })
+        } else {
+            Box::new(MockTrainer)
+        }
+    });
+    let app = app_retaining(factory, 0);
+
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(&dir, 2, 100).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    start_gate.open(); // let it emit `started`, then park on the finish gate
+
+    // Two runs complete and are evicted immediately (retention 0)...
+    run_to_completion(&app, &dir, 2).await;
+    run_to_completion(&app, &dir, 3).await;
+    assert_eq!(events_status(&app, 2).await, StatusCode::NOT_FOUND);
+    assert_eq!(events_status(&app, 3).await, StatusCode::NOT_FOUND);
+
+    // ...while the in-flight run is untouched.
+    assert_eq!(
+        events_status(&app, 1).await,
+        StatusCode::OK,
+        "an unfinished run must survive eviction of completed runs"
+    );
+
+    // It is evictable only once it finishes.
+    finish_gate.open();
+    let response = app.clone().oneshot(get_events(1)).await.unwrap();
+    let events = parse_sse(&body_string(response.into_body()).await);
+    assert_eq!(types(&events), vec!["started", "step", "step", "finished"]);
+    assert_eq!(
+        events_status(&app, 1).await,
+        StatusCode::NOT_FOUND,
+        "a run becomes evictable the moment it completes"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
