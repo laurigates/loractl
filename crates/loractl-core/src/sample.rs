@@ -223,4 +223,38 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn predicted_class_is_the_argmax_of_logits() {
+        // `run_sample_is_deterministic` proves the output is stable but not that
+        // `predicted_class` actually corresponds to the logits — a bug returning
+        // a constant class would pass it. Pin the relationship directly.
+        let device = Default::default();
+        let model = LoraMlp::<TB>::new(8, 6, 4, 2, 8.0, 0.0, &device);
+        let out = run_sample(&model, 7, &device).expect("run_sample succeeds");
+
+        let expected = out
+            .logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(i, _)| i)
+            .expect("logits are non-empty");
+        assert_eq!(
+            out.predicted_class, expected,
+            "predicted_class must be the argmax of the logits {:?}",
+            out.logits
+        );
+    }
+
+    #[test]
+    fn seed_from_prompt_matches_the_fnv1a64_constant() {
+        // Independent truth (not the code's own output): FNV-1a-64 of "hello"
+        // with offset basis 14695981039346656037 and prime 1099511628211. This
+        // pins the hash to a *specific* algorithm — swapping FNV-1a for any
+        // other stable hash is caught here, whereas the determinism test alone
+        // could not (both sides would move together).
+        assert_eq!(seed_from_prompt(Some("hello")), 11831194018420276491);
+        assert_eq!(seed_from_prompt(None), 0);
+    }
 }

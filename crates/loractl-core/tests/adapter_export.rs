@@ -149,3 +149,54 @@ fn kohya_export_matches_golden() {
     TensorData::new(view_f32(&up_view), golden.b_shape.clone())
         .assert_approx_eq::<f32>(&TensorData::new(golden.b_transposed, golden.b_shape), tol);
 }
+
+/// The golden test above uses exactly one delta, so the `zip(deltas, targets)`
+/// loop in `export_adapters` is never exercised with >1 delta — a bug that
+/// collided keys or dropped elements would pass. Pin that N deltas produce
+/// `3·N` distinct, correctly-named tensors.
+#[test]
+fn multi_delta_export_writes_distinct_keys_per_target() {
+    use std::collections::HashSet;
+
+    let device = Default::default();
+    let targets = ["transformer.h.0.attn.c_attn", "transformer.h.1.mlp.c_fc"];
+    // Values are irrelevant here (we assert on keys/count, not numerics), so a
+    // plain `new` per site is enough; the two deltas differ in shape.
+    let deltas = vec![
+        LoraDelta::<TB>::new(4, 6, 2, 8.0, 0.0, &device),
+        LoraDelta::<TB>::new(8, 5, 3, 6.0, 0.0, &device),
+    ];
+    let set = LoraAdapters {
+        deltas,
+        targets: targets.iter().map(|s| s.to_string()).collect(),
+    };
+
+    let out = TempDir::new("adapter-export-multi");
+    let path = out.0.join("adapter.safetensors");
+    export_adapters(&set, ExportFormat::KohyaSs, &path).expect("export succeeds");
+
+    let bytes = std::fs::read(&path).expect("read exported file");
+    let st = SafeTensors::deserialize(&bytes).expect("valid safetensors");
+    let names: HashSet<String> = st.names().into_iter().map(String::from).collect();
+
+    assert_eq!(
+        names.len(),
+        6,
+        "two deltas must yield 6 distinct tensors, got {names:?}"
+    );
+    for t in targets {
+        let base = format!("lora_{}", t.replace('.', "_"));
+        assert!(
+            names.contains(&format!("{base}.lora_down.weight")),
+            "missing lora_down for {t}"
+        );
+        assert!(
+            names.contains(&format!("{base}.lora_up.weight")),
+            "missing lora_up for {t}"
+        );
+        assert!(
+            names.contains(&format!("{base}.alpha")),
+            "missing alpha for {t}"
+        );
+    }
+}
