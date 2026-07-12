@@ -143,3 +143,63 @@ pub fn build_adapters<B: Backend>(
     }
     LoraAdapters { deltas, targets }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{LoraConfig, TargetSpec};
+    use burn::backend::NdArray;
+
+    type B = NdArray;
+
+    #[test]
+    fn per_target_rank_and_alpha_overrides_win_over_globals() {
+        // Every existing call passes `TargetSpec { rank: None, alpha: None }`, so
+        // `spec.rank.unwrap_or(cfg.rank)` / `spec.alpha.unwrap_or(cfg.alpha)` are
+        // never exercised with `Some`. A bug ignoring the overrides (always using
+        // the globals) would pass. Pin both the override and the fallthrough.
+        let device = Default::default();
+        let cfg = LoraConfig {
+            rank: 4,
+            alpha: 8.0,
+            dropout: 0.0,
+            targets: vec![
+                TargetSpec {
+                    pattern: "foo".into(),
+                    rank: Some(16),
+                    alpha: Some(64.0),
+                },
+                TargetSpec {
+                    pattern: "bar".into(),
+                    rank: None,
+                    alpha: None,
+                },
+            ],
+        };
+        let sites = vec![
+            LoraSite {
+                path: "foo".into(),
+                d_in: 10,
+                d_out: 20,
+            },
+            LoraSite {
+                path: "bar".into(),
+                d_in: 10,
+                d_out: 20,
+            },
+        ];
+
+        let set = build_adapters::<B>(&sites, &cfg, &device);
+        assert_eq!(set.deltas.len(), 2);
+        assert_eq!(set.targets, vec!["foo".to_string(), "bar".to_string()]);
+
+        // foo: override rank 16 / alpha 64 → A is [d_in, 16], scaling 64/16 = 4.
+        assert_eq!(set.deltas[0].lora_a.weight.dims(), [10, 16]);
+        assert_eq!(set.deltas[0].lora_b.weight.dims(), [16, 20]);
+        assert_eq!(set.deltas[0].scaling, 64.0 / 16.0);
+
+        // bar: no override → global rank 4 / alpha 8 → A is [d_in, 4], scaling 2.
+        assert_eq!(set.deltas[1].lora_a.weight.dims(), [10, 4]);
+        assert_eq!(set.deltas[1].scaling, 8.0 / 4.0);
+    }
+}
