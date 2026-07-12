@@ -861,10 +861,25 @@ async fn burst_of_events_is_delivered_without_loss_and_closes() {
 // Run retention / eviction (#36)
 // ---------------------------------------------------------------------------
 
-/// Drives a mock run to completion by draining its SSE stream. Because the
-/// supervisor evicts *before* the terminal wake, a closed stream is proof the
-/// registry has already been reconciled — no sleeps, no polling.
-async fn run_to_completion(app: &Router, id: u64) {
+/// Starts a mock run and returns once the POST is accepted (`201`). The run
+/// then trains to completion on its own on the blocking pool; its *terminal*
+/// state is observed separately, because draining a run's stream is unreliable
+/// at low retention — a completed run can self-evict before any subscriber
+/// attaches, so the drain would race a legitimate `404`.
+async fn start_run(app: &Router) {
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 100).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+/// Starts a mock run and drains its stream to the terminal `finished` event.
+/// Sound only where the run is guaranteed to stay in the registry across the
+/// POST → GET window (retention high enough that its own completion does not
+/// displace it) — otherwise use [`start_run`] + [`wait_for_events_status`].
+async fn run_to_finished(app: &Router, id: u64) {
     let response = app
         .clone()
         .oneshot(post_runs(config_json(RUN_DIR, 1, 100).to_string()))
@@ -880,6 +895,31 @@ async fn run_to_completion(app: &Router, id: u64) {
         Some("finished"),
         "run {id} should have completed"
     );
+}
+
+/// Polls `GET /runs/{id}/events` until its status is `want`, bounded by
+/// `DRAIN_TIMEOUT`.
+///
+/// Eviction is genuinely asynchronous: it runs on the runtime a beat *after* a
+/// run's stream closes (the supervisor makes `done` observable just before
+/// `complete_run` finishes removing the run from the registry), so "drain to
+/// finished, then assert evicted" races the eviction. Both target states are
+/// monotonic — a completed-then-evicted run stays `404`; a retained run stays
+/// `200` until something newer displaces it — so polling to the expected
+/// status is race-free and fails slow-red on a stuck run rather than hanging.
+async fn wait_for_events_status(app: &Router, id: u64, want: StatusCode) {
+    let deadline = std::time::Instant::now() + DRAIN_TIMEOUT;
+    loop {
+        let got = events_status(app, id).await;
+        if got == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run {id}: expected {want} within {DRAIN_TIMEOUT:?}, still {got}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }
 
 /// Status of `GET /runs/{id}/events` without draining the body (so an
@@ -899,21 +939,21 @@ async fn completed_runs_are_evicted_beyond_retention() {
     let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
     let app = app_retaining(factory, &base, 2);
 
-    run_to_completion(&app, 1).await;
-    run_to_completion(&app, 2).await;
+    // Retention 2: a run does not self-evict on its own completion, so it stays
+    // in the registry across the POST → GET window — draining to `finished` is
+    // sound here.
+    run_to_finished(&app, 1).await;
+    run_to_finished(&app, 2).await;
 
     // Two completed runs, retention 2: nothing evicted yet.
     assert_eq!(events_status(&app, 1).await, StatusCode::OK);
     assert_eq!(events_status(&app, 2).await, StatusCode::OK);
 
     // The third completion pushes the queue over the cap: run 1 (the
-    // oldest-completed) is evicted, the two newest survive.
-    run_to_completion(&app, 3).await;
-    assert_eq!(
-        events_status(&app, 1).await,
-        StatusCode::NOT_FOUND,
-        "oldest completed run must be evicted once retention is exceeded"
-    );
+    // oldest-completed) is evicted, the two newest survive. Eviction runs a
+    // beat after run 3's stream closes, so poll for it rather than racing it.
+    run_to_finished(&app, 3).await;
+    wait_for_events_status(&app, 1, StatusCode::NOT_FOUND).await;
     assert_eq!(events_status(&app, 2).await, StatusCode::OK);
     assert_eq!(events_status(&app, 3).await, StatusCode::OK);
 
@@ -959,29 +999,36 @@ async fn in_flight_runs_are_never_evicted() {
     assert_eq!(response.status(), StatusCode::CREATED);
     start_gate.open(); // let it emit `started`, then park on the finish gate
 
-    // Two runs complete and are evicted immediately (retention 0)...
-    run_to_completion(&app, 2).await;
-    run_to_completion(&app, 3).await;
-    assert_eq!(events_status(&app, 2).await, StatusCode::NOT_FOUND);
-    assert_eq!(events_status(&app, 3).await, StatusCode::NOT_FOUND);
+    // Two mock runs complete and, at retention 0, self-evict the instant they
+    // finish — a completed run is dropped before any subscriber can attach, so
+    // observe the eviction by polling the run's endpoint to 404 rather than
+    // draining its (racy) stream.
+    start_run(&app).await;
+    start_run(&app).await;
+    wait_for_events_status(&app, 2, StatusCode::NOT_FOUND).await;
+    wait_for_events_status(&app, 3, StatusCode::NOT_FOUND).await;
 
-    // ...while the in-flight run is untouched.
+    // ...while the in-flight run is untouched: parked mid-training, never
+    // `done`, so never a candidate — however tight the retention.
     assert_eq!(
         events_status(&app, 1).await,
         StatusCode::OK,
         "an unfinished run must survive eviction of completed runs"
     );
 
-    // It is evictable only once it finishes.
-    finish_gate.open();
+    // Subscribe to run 1 *before* releasing it, so the drain cannot lose the
+    // same pre-attach race the mocks above hit: attached while it is still
+    // parked, the subscriber holds its own `Arc` and drains to `finished` even
+    // as the run self-evicts on completion.
     let response = app.clone().oneshot(get_events(1)).await.unwrap();
-    let events = parse_sse(&body_string(response.into_body()).await);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body();
+    finish_gate.open();
+    let events = parse_sse(&body_string(body).await);
     assert_eq!(types(&events), vec!["started", "step", "step", "finished"]);
-    assert_eq!(
-        events_status(&app, 1).await,
-        StatusCode::NOT_FOUND,
-        "a run becomes evictable the moment it completes"
-    );
+
+    // Having finished, run 1 is now a candidate and evicts (retention 0).
+    wait_for_events_status(&app, 1, StatusCode::NOT_FOUND).await;
 
     let _ = std::fs::remove_dir_all(&base);
 }
