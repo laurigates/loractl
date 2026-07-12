@@ -1,34 +1,30 @@
-name: Claude Code
+name: Claude Code Review
 
 on:
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted]
-  issues:
-    types: [opened, assigned]
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
-  claude:
-    uses: laurigates/.github/.github/workflows/reusable-claude.yml@main
+  review:
+    uses: laurigates/.github/.github/workflows/reusable-claude-review.yml@main
     # Explicit grant so the reusable workflow gets the token scopes it declares
     # even though this repo's default workflow permissions are read-only.
     # Without this the run dies at startup_failure before any step executes.
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
       id-token: write
-      actions: read
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     with:
+      # Turn budget is inherited from the reusable's `claude_args` default
+      # (currently `--model opus --max-turns 50`). The old inline workflow
+      # pinned `--max-turns 5` and died with `error_max_turns` at num_turns 6
+      # on essentially every PR. Set `claude_args` here only to diverge from
+      # the org default.
       plugin_marketplaces: |
         https://github.com/laurigates/claude-plugins.git
       plugins: |
-        git-plugin@laurigates-claude-plugins
-        rust-plugin@laurigates-claude-plugins
-        testing-plugin@laurigates-claude-plugins
         code-quality-plugin@laurigates-claude-plugins
+        testing-plugin@laurigates-claude-plugins
