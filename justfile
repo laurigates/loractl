@@ -105,6 +105,23 @@ run-wgpu config="config/examples/lora-wgpu.yaml":
 reference:
     uv run reference/lora_reference.py > crates/loractl-core/tests/golden/lora_toy.json
 
+# Regenerate the BurnTrainer step-loss golden (#49 H9; needs torch via uv).
+#
+# Two-stage, unlike the other references: burn's frozen base, LoRA `A` init, and
+# synthetic dataset all come out of its seeded ChaCha RNG, which PyTorch cannot
+# reproduce — so torch cannot DERIVE the run's inputs, it has to be GIVEN them.
+# Stage 1 dumps burn's actual init + batches (~5 MB, throwaway); stage 2 replays
+# the same training loop in torch over that dump and emits the small loss golden,
+# which is the only artifact that lands in git.
+burn-trainer-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dump="$(mktemp -d)"
+    trap 'rm -rf "$dump"' EXIT
+    cargo run -q -p loractl-core --example dump_synthetic_run -- "$dump"
+    uv run reference/burn_trainer_reference.py --dump "$dump" > "$dump/golden.json"
+    mv "$dump/golden.json" crates/loractl-core/tests/golden/burn_trainer_steps.json
+
 # Regenerate the kohya-ss export golden fixture (numpy only, no torch/network).
 export-reference:
     uv run reference/lora_export_reference.py > crates/loractl-core/tests/golden/lora_export.json

@@ -89,7 +89,10 @@ use burn::backend::{Wgpu, wgpu::WgpuDevice};
 
 /// One training batch: features `[batch, 784]` and integer class labels
 /// `[batch]`, on the run's selected backend `B`.
-type Batch<B> = (Tensor<B, 2>, Tensor<B, 1, Int>);
+///
+/// Public so [`synthetic_run_inputs`] can hand a run's real batches out to the
+/// PyTorch reference generator.
+pub type Batch<B> = (Tensor<B, 2>, Tensor<B, 1, Int>);
 
 /// One flow-matching training batch: velocity-net input
 /// `[batch, FLOW_LATENT_DIM + 1]` (`concat[x_t, t]`) and its v-prediction
@@ -266,6 +269,57 @@ fn run_training<B: AutodiffBackend>(
         TaskKind::Classification => run_classification::<B>(config, device, sink),
         TaskKind::FlowMatching => run_flow_matching::<B>(config, device, sink),
     }
+}
+
+/// Reproduce the *initial state* of a default synthetic classification run —
+/// the model exactly as [`run_classification`] constructs it, and the batches
+/// it will train on — without running a single step (#49 H9).
+///
+/// This exists so the loss golden in `tests/burn_trainer_reference.rs` can be
+/// a genuine **PyTorch** golden rather than a burn self-recording. The obstacle
+/// is that both the frozen base and the synthetic data come out of burn's
+/// seeded RNG (a ChaCha-based `StdRng`), which PyTorch cannot reproduce — so
+/// the reference generator cannot *derive* the run's inputs, it has to be
+/// *given* them. `examples/dump_synthetic_run.rs` calls this, writes the
+/// tensors to disk, and `reference/burn_trainer_reference.py` replays the same
+/// training loop over them in torch. See `just burn-trainer-reference`.
+///
+/// **The RNG ordering here is the contract, not a detail** (see
+/// `.claude/rules/burn-lazy-param-init.md`): seed → construct (frozen base
+/// materializes eagerly) → draw the batches → *only then* touch the LoRA
+/// factors, whose lazy Kaiming draw in the real loop happens at the first
+/// `forward()`, i.e. after the data. Reorder any of that and the reference is
+/// fed weights the trainer never had. It is not asserted here — it is asserted
+/// by the golden test itself: if this drifts from [`run_classification`], the
+/// torch-replayed losses stop matching the trainer's emitted losses and the
+/// test goes red.
+pub fn synthetic_run_inputs<B: Backend>(
+    config: &TrainConfig,
+    device: &B::Device,
+) -> (LoraMlp<B>, Vec<Batch<B>>) {
+    B::seed(device, config.seed);
+
+    let rank = config.lora.rank.max(1) as usize;
+    let model = LoraMlp::<B>::new(
+        INPUT_DIM,
+        HIDDEN_DIM,
+        NUM_CLASSES,
+        rank,
+        config.lora.alpha as f64,
+        config.lora.dropout as f64,
+        device,
+    );
+
+    let batches = select_batches::<B>(config, device, &mut |_| {});
+
+    // Force the lazily-initialized LoRA factors to draw HERE — the same point
+    // in the RNG stream where the training loop's first `forward()` would draw
+    // them (after the batches), and in the same order the forward touches them
+    // (`lora_a` then `lora_b`; `lora_b` is zero-init and draws nothing).
+    let _ = model.fc2.lora_a.weight.val();
+    let _ = model.fc2.lora_b.weight.val();
+
+    (model, batches)
 }
 
 /// Train the LoRA-MLP classifier (the M2 demo / opt-in MNIST path) — the
