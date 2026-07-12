@@ -43,3 +43,8 @@ sentry = { version = "0.46", default-features = false, features = [
     "reqwest",
     "rustls",
 ] }
+
+[dev-dependencies]
+# `figment::Jail` (env + cwd isolation for the config-precedence tests) is
+# gated behind figment's `test` feature.
+figment = { version = "0.10", features = ["yaml", "env", "test"] }
