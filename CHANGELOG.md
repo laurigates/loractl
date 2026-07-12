@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/laurigates/loractl/compare/v0.4.1...v0.5.0) (2026-07-12)
+
+
+### Features
+
+* **just:** add clean recipe for build artifacts ([#57](https://github.com/laurigates/loractl/issues/57)) ([0f2489c](https://github.com/laurigates/loractl/commit/0f2489c51b89dd048bacc54571e4de413c04a8bc))
+* **lora:** implement adapter dropout (was dead config) ([#51](https://github.com/laurigates/loractl/issues/51)) ([14fa603](https://github.com/laurigates/loractl/commit/14fa603db0f0f3cc8b8a88078a86078d35d7ff0b))
+
+
+### Bug Fixes
+
+* **trainer:** honor optim.weight_decay via AdamW ([#50](https://github.com/laurigates/loractl/issues/50)) ([594a057](https://github.com/laurigates/loractl/commit/594a057958c4dc09cd3d52dfba888476e0f64269))
+
 ## [0.4.1](https://github.com/laurigates/loractl/compare/v0.4.0...v0.4.1) (2026-07-11)
 
 
