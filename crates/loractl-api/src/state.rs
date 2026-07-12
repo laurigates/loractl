@@ -8,10 +8,11 @@
 //! zero event loss. The mutex is never held across an `.await`: writers are
 //! sync code on the blocking thread, readers copy-then-release.
 
-use crate::TrainerFactory;
+use crate::{ApiConfig, TrainerFactory};
 use loractl_core::{TrainConfig, TrainEvent};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -63,33 +64,91 @@ impl Run {
     }
 }
 
-/// Shared application state: the run registry and the trainer seam.
+/// The run registry: the live map plus the completion order that bounds it.
+///
+/// Both fields move together under one lock, so `runs` and `completed` can
+/// never disagree about which ids are retained.
+#[derive(Default)]
+struct Registry {
+    runs: HashMap<u64, Arc<Run>>,
+    /// Ids of **finished** runs in completion order, oldest first. This is the
+    /// eviction queue: a run is only a candidate once it lands here, which is
+    /// exactly what makes in-flight runs un-evictable (#36).
+    completed: VecDeque<u64>,
+    /// Runs registered but not yet retired by the supervisor. Bounded by
+    /// `ApiConfig::max_concurrent_runs` (#37) — each in-flight run owns a real
+    /// compute thread on the blocking pool.
+    in_flight: usize,
+}
+
+/// Shared application state: the run registry, the server config, and the
+/// trainer seam.
 pub struct AppState {
-    pub runs: Mutex<HashMap<u64, Arc<Run>>>,
+    runs: Mutex<Registry>,
     next_id: AtomicU64,
     pub factory: TrainerFactory,
+    pub config: ApiConfig,
+    /// The canonical directory every run's output is confined under (#37).
+    /// Canonicalized once at startup so containment checks compare two
+    /// symlink-free absolute paths.
+    pub output_base: PathBuf,
 }
 
 impl AppState {
-    pub fn new(factory: TrainerFactory) -> Self {
-        Self {
-            runs: Mutex::new(HashMap::new()),
+    pub fn new(factory: TrainerFactory, config: ApiConfig) -> anyhow::Result<Self> {
+        let output_base = crate::paths::canonical_base(&config.output_base)?;
+        Ok(Self {
+            runs: Mutex::new(Registry::default()),
             next_id: AtomicU64::new(1),
             factory,
+            config,
+            output_base,
+        })
+    }
+
+    /// Registers a new run and returns `(id, run)`, or `None` when the
+    /// concurrent-run cap is saturated (the handler renders that as `429`).
+    ///
+    /// The cap check and the insert happen under **one** lock acquisition, so
+    /// N simultaneous `POST /runs` cannot all observe a free slot and all take
+    /// it. Ids are sequential from 1 and process-local (not stable across
+    /// restarts — documented contract).
+    pub fn register_run(&self) -> Option<(u64, Arc<Run>)> {
+        let mut registry = self.runs.lock().unwrap();
+        if registry.in_flight >= self.config.max_concurrent_runs {
+            return None;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let run = Arc::new(Run::new());
+        registry.runs.insert(id, Arc::clone(&run));
+        registry.in_flight += 1;
+        Some((id, run))
+    }
+
+    /// Marks a run finished: frees its concurrency slot and enforces the
+    /// completed-run cap (#36).
+    ///
+    /// Called exactly once per run, by the supervisor, **before** the terminal
+    /// wake — so a subscriber whose stream has closed is guaranteed to observe
+    /// the post-eviction registry, which is what makes eviction deterministically
+    /// testable rather than a race.
+    ///
+    /// Eviction drops the `Arc<Run>` from the map only; a subscriber already
+    /// streaming an evicted run holds its own `Arc` and finishes undisturbed.
+    pub fn complete_run(&self, id: u64) {
+        let mut registry = self.runs.lock().unwrap();
+        registry.in_flight = registry.in_flight.saturating_sub(1);
+        registry.completed.push_back(id);
+        while registry.completed.len() > self.config.run_retention {
+            let Some(evicted) = registry.completed.pop_front() else {
+                break;
+            };
+            registry.runs.remove(&evicted);
         }
     }
 
-    /// Registers a new run and returns `(id, run)`. Ids are sequential from 1
-    /// and process-local (not stable across restarts — documented contract).
-    pub fn register_run(&self) -> (u64, Arc<Run>) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let run = Arc::new(Run::new());
-        self.runs.lock().unwrap().insert(id, Arc::clone(&run));
-        (id, run)
-    }
-
     pub fn get_run(&self, id: u64) -> Option<Arc<Run>> {
-        self.runs.lock().unwrap().get(&id).cloned()
+        self.runs.lock().unwrap().runs.get(&id).cloned()
     }
 }
 
@@ -146,7 +205,11 @@ fn push_event(run: &Run, event: &TrainEvent) {
 /// and trainer panic both converge into an API-layer `failed` event; the
 /// `done` flip is **always** followed by a wake on every arm (including
 /// `Ok`) — the missed-wake fix that keeps subscribers from parking forever.
+/// It is also where a run leaves the in-flight set and becomes evictable
+/// (`complete_run`).
 pub fn spawn_run(
+    state: Arc<AppState>,
+    id: u64,
     run: Arc<Run>,
     config: TrainConfig,
     mut trainer: Box<dyn loractl_core::Trainer + Send>,
@@ -171,6 +234,9 @@ pub fn spawn_run(
             }
             log.done = true;
         }
+        // Retire the run BEFORE the terminal wake: a subscriber that observes
+        // the closed stream has, by that ordering, also observed the eviction.
+        state.complete_run(id);
         // MISSED-WAKE FIX: wake on EVERY arm, incl. Ok — a subscriber that
         // consumed the Finished wake and re-parked before `done` was set
         // would otherwise hang forever.

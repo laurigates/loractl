@@ -30,18 +30,58 @@ struct CreatedRun {
 
 #[derive(Serialize)]
 struct ApiError {
-    error: &'static str,
+    error: String,
+}
+
+fn error_response(status: StatusCode, error: impl Into<String>) -> Response {
+    (
+        status,
+        Json(ApiError {
+            error: error.into(),
+        }),
+    )
+        .into_response()
 }
 
 /// Starts a run. An invalid body is rejected by the `Json` extractor (422)
 /// before this handler runs, so no run is ever registered for it.
+///
+/// Two admission gates gate it further, both because the endpoint is
+/// **unauthenticated** (#37):
+///
+/// 1. **Path confinement** — the request's `output.dir`/`output.name` become
+///    real filesystem writes, so they are resolved under the server's output
+///    base and rejected (`400`) if they escape it. The config the trainer runs
+///    with carries the *resolved* dir, never the client's raw string, so no
+///    later code path can be handed the unvalidated value by mistake.
+/// 2. **Concurrency cap** — each run occupies a blocking thread doing real
+///    compute; past the cap the request is refused (`429`) rather than queued,
+///    so a client learns immediately instead of timing out.
+///
+/// Both reject *before* `register_run`, so a refused request leaves no run
+/// behind and burns no id.
 async fn create_run(
     State(state): State<Arc<AppState>>,
-    Json(config): Json<TrainConfig>,
-) -> impl IntoResponse {
-    let (id, run) = state.register_run();
+    Json(mut config): Json<TrainConfig>,
+) -> Response {
+    match crate::paths::confine_output(&state.output_base, &config.output.dir, &config.output.name)
+    {
+        Ok(dir) => config.output.dir = dir,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    }
+
+    let Some((id, run)) = state.register_run() else {
+        return error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "too many concurrent runs (limit {}); retry when a run finishes",
+                state.config.max_concurrent_runs
+            ),
+        );
+    };
+
     let trainer = (state.factory)();
-    state::spawn_run(run, config, trainer);
+    state::spawn_run(Arc::clone(&state), id, run, config, trainer);
     (
         StatusCode::CREATED,
         Json(CreatedRun {
@@ -49,6 +89,7 @@ async fn create_run(
             events_url: format!("/runs/{id}/events"),
         }),
     )
+        .into_response()
 }
 
 /// SSE stream: full replay from event 0, then live tail. Frames carry
@@ -56,13 +97,7 @@ async fn create_run(
 /// keep-alive comment lines flow during long gaps.
 async fn run_events(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> Response {
     let Some(run) = state.get_run(id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "unknown run id",
-            }),
-        )
-            .into_response();
+        return error_response(StatusCode::NOT_FOUND, "unknown run id");
     };
     let frames = state::subscribe(run);
     let stream = async_stream::stream! {

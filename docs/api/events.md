@@ -10,24 +10,68 @@ GUI (or any HTTP client) builds against. Design rationale lives in
 
 | Endpoint | Request | Success | Errors |
 |---|---|---|---|
-| `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `422` invalid body — plain-text diagnostic, see below (no run is created) |
-| `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `404` `{"error":"unknown run id"}` |
+| `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `400` `{"error":"…"}` — `output.dir`/`output.name` escape the [output base](#output-paths-are-confined)<br>`422` invalid body — plain-text diagnostic, see below<br>`429` `{"error":"…"}` — the [concurrency cap](#concurrency-cap) is saturated<br>(none of these create a run, and none burn an id) |
+| `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `404` `{"error":"unknown run id"}` — the id was never issued **or its run has been evicted** (see [Run retention](#run-retention)) |
 
 That is the whole M5 surface. There is no run listing, no status endpoint, no
-cancellation, no auth — see ADR-0003's cut list and revive triggers.
+cancellation, **no auth** — see ADR-0003's cut list and revive triggers. The
+default `127.0.0.1` bind is what keeps an unauthenticated `POST /runs` safe;
+the confinement and cap below are the guards that hold if you move that bind.
 
-Error bodies are **not uniform**. The `404` is JSON, but the `422` comes from
-axum's `Json` extractor and is **plain text**
-(`content-type: text/plain; charset=utf-8`) describing the deserialization
-failure, e.g.:
+Error bodies are **not uniform**. `400` (path rejection), `404`, and `429` are
+JSON `{"error": "…"}`, but the `422` comes from axum's `Json` extractor and is
+**plain text** (`content-type: text/plain; charset=utf-8`) describing the
+deserialization failure, e.g.:
 
 ```
 Failed to deserialize the JSON body into the target type: missing field `model` at line 1 column 2
 ```
 
 Do not parse `422` bodies as JSON — surface them as a human-readable
-diagnostic. (A syntactically malformed body — not even valid JSON — is `400`,
-also plain text.)
+diagnostic. A syntactically malformed body — not even valid JSON — is also a
+**plain-text** `400` from the extractor, so a client that wants to distinguish
+"bad path" from "bad JSON" must check `content-type`, not just the status.
+
+## Output paths are confined
+
+`output.dir` and `output.name` become real filesystem writes (the run's
+directory, its checkpoints, its `.safetensors` adapter). The endpoint is
+unauthenticated, so those fields are **not** taken as literal paths: they name
+a location *inside* a base directory the server owns.
+
+| | |
+|---|---|
+| Env var | `LORACTL_OUTPUT_BASE` |
+| Default | `./runs` (relative to the server's working directory) |
+
+The rules, all enforced before any run is created:
+
+- **`output.dir` must be relative and free of `..` components.** An absolute
+  path (`/etc/loractl`) or a traversal (`../../..`) is a `400`.
+- **`output.name` must be a plain file name** — no separators, no `..`, not
+  empty. It is joined onto the dir, so it escapes just as easily.
+- **Symlinks may not escape the base**, even ones already on disk.
+
+An accepted request runs against the **resolved absolute path**, which is what
+the `checkpoint` / `sample` / `finished` events report — so `"dir": "demo"`
+with the default base surfaces as `.../runs/demo/lora.safetensors`, not
+`demo/lora.safetensors`. Nothing outside the base is ever created.
+
+## Concurrency cap
+
+Each run occupies a thread doing real compute for as long as it trains, so the
+number of **simultaneous** runs is bounded. Past the cap, `POST /runs` returns
+`429` immediately rather than queueing — a client learns at once instead of
+timing out.
+
+| | |
+|---|---|
+| Env var | `LORACTL_MAX_CONCURRENT_RUNS` |
+| Default | `4` |
+
+A slot is released the moment a run emits its terminal event, so the retry is
+simply the same `POST` again. This is a resource guard, not a scheduler: there
+is no queue and no fairness between clients.
 
 ## Event shapes
 
@@ -99,6 +143,35 @@ data: {"type":"finished","adapter_path":"output/lora.safetensors"}
 6. Caveats: run ids are process-local and **not stable across server
    restarts**; two runs sharing the same `output.dir` clobber each other's
    checkpoints (a pre-existing `TrainConfig` property, not an API one).
+7. A run's history is **not retained forever** — see [Run retention](#run-retention).
+
+## Run retention
+
+The event history *is* the replay buffer (ADR-0003), so it is held in memory
+for the life of the run. To give that a ceiling, the server keeps only the
+**N most-recently-completed runs**; older completed runs are evicted and their
+events dropped, so `GET /runs/{id}/events` on an evicted id is a plain `404`,
+indistinguishable from an id that was never issued.
+
+| | |
+|---|---|
+| Env var | `LORACTL_RUN_RETENTION` |
+| Default | `32` |
+| Applies to | **completed** runs only |
+
+Two guarantees a client can rely on:
+
+- **An in-flight run is never evicted**, whatever `LORACTL_RUN_RETENTION` is
+  set to — only a run that has emitted its terminal event (`finished` or
+  `failed`) is a candidate.
+- **An open stream is never cut short by eviction.** A subscriber that is
+  already streaming an evicted run drains its full history and receives its
+  terminal event; eviction only removes the run from the lookup registry, so
+  it is a *future* `GET` that 404s.
+
+Consume a run's events while it is fresh; a client that needs history beyond
+the retention window must persist it itself. Setting the value higher trades
+memory for a longer replay window; `0` evicts each run the moment it finishes.
 
 ## Trying it with curl
 
@@ -109,7 +182,9 @@ Start the server (bind address via `LORACTL_API_ADDR`, default
 just serve
 ```
 
-In another terminal, write a config and start a run:
+In another terminal, write a config and start a run. Note `output.dir` is
+**relative** — it resolves under `LORACTL_OUTPUT_BASE` (default `./runs`), and
+an absolute path or a `..` would be rejected with a `400`:
 
 ```sh
 cat > /tmp/run.json <<'JSON'
@@ -119,7 +194,7 @@ cat > /tmp/run.json <<'JSON'
   "model": { "base": "synthetic" },
   "lora": { "rank": 4, "alpha": 4.0 },
   "dataset": { "path": "./data" },
-  "output": { "dir": "/tmp/loractl-demo", "checkpoint_every": 2 }
+  "output": { "dir": "demo", "checkpoint_every": 2 }
 }
 JSON
 curl -sX POST localhost:3000/runs -H 'content-type: application/json' -d @/tmp/run.json
@@ -152,13 +227,15 @@ data: {"type":"step","step":1,"loss":2.4849,"lr":0.0001}
 
 id: 9
 event: finished
-data: {"type":"finished","adapter_path":"/tmp/loractl-demo/lora.safetensors"}
+data: {"type":"finished","adapter_path":"/srv/loractl/runs/demo/lora.safetensors"}
 ```
 
 (Loss values vary run to run; the frame sequence and shapes are what the
 contract pins. With `steps: 5` and `checkpoint_every: 2` the full stream is
 `started`, `warning`, five `step`s with `checkpoint`s after steps 2 and 4,
-then `finished` — ids 0 through 9.)
+then `finished` — ids 0 through 9. `adapter_path` is the request's relative
+`"dir": "demo"` **resolved** under the server's output base, so its prefix is
+whatever `LORACTL_OUTPUT_BASE` points at.)
 
 An unknown run id returns a JSON 404:
 

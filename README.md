@@ -190,6 +190,15 @@ SSE instead of a progress bar:
 - `GET /runs/{id}/events` — SSE stream: full replay from event 0, then live
   tail, ending with exactly one terminal event (`finished` or `failed`).
 
+`POST /runs` is **unauthenticated** — the default localhost bind is what makes
+that safe, so treat these guards as load-bearing if you ever change it:
+
+| Env var | Default | Guard |
+|---|---|---|
+| `LORACTL_OUTPUT_BASE` | `./runs` | A request's `output.dir`/`output.name` are confined under this base; absolute paths, `..`, and symlink escapes are a `400`. |
+| `LORACTL_MAX_CONCURRENT_RUNS` | `4` | Simultaneous runs; `POST /runs` returns `429` while saturated. |
+| `LORACTL_RUN_RETENTION` | `32` | Completed runs kept in memory; older ones are evicted and their events become a `404`. In-flight runs are never evicted. |
+
 The full wire contract — event shapes (pinned byte-for-byte by a golden
 test), SSE framing, lifecycle rules, and a copy-paste curl transcript — lives
 in [docs/api/events.md](docs/api/events.md); the design decisions in
