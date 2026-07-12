@@ -75,7 +75,7 @@ use burn::backend::Autodiff;
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::module::AutodiffModule;
 use burn::nn::loss::CrossEntropyLossConfig;
-use burn::optim::{AdamConfig, GradientsParams, Optimizer};
+use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{Distribution, ElementConversion, Int, Tensor, TensorData};
 use std::path::PathBuf;
@@ -288,7 +288,13 @@ fn run_classification<B: AutodiffBackend>(
 
     let batches = select_batches::<B>(config, &device, sink);
 
-    let mut optim = AdamConfig::new().init::<B, LoraMlp<B>>();
+    // AdamW (decoupled weight decay) so `optim.weight_decay` is honored; at the
+    // default `0.0` this is numerically identical to plain Adam, so the numerics
+    // goldens are unaffected. `AdamWConfig`'s own default decay is 1e-4, so we
+    // always set it explicitly from config.
+    let mut optim = AdamWConfig::new()
+        .with_weight_decay(config.optim.weight_decay as f32)
+        .init::<B, LoraMlp<B>>();
     let loss_fn = CrossEntropyLossConfig::new().init(&device);
     let checkpoint_every = config.output.checkpoint_every.max(1);
     let sample_every = config.output.sample_every;
@@ -413,7 +419,10 @@ fn run_flow_matching<B: AutodiffBackend>(
         &device,
     );
 
-    let mut optim = AdamConfig::new().init::<B, LoraMlp<B>>();
+    // AdamW (decoupled weight decay); see the note in `run_classification`.
+    let mut optim = AdamWConfig::new()
+        .with_weight_decay(config.optim.weight_decay as f32)
+        .init::<B, LoraMlp<B>>();
     let checkpoint_every = config.output.checkpoint_every.max(1);
 
     for step in 1..=total {
