@@ -170,7 +170,13 @@ fn load_config(path: &Path) -> Result<TrainConfig> {
         .with_context(|| format!("loading config from {}", path.display()))
 }
 
-fn train(cmd: TrainCmd) -> Result<()> {
+/// Resolve the effective [`TrainConfig`] for a train command, layering every
+/// source lowest-to-highest precedence: the YAML file, then `LORACTL_`
+/// environment variables (both via [`load_config`]), then the CLI flag
+/// overrides — which are applied here, *after* extraction, so they are the
+/// last word. Extracted from [`train`] so the precedence contract is testable
+/// without running a real training loop.
+fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     let mut config = load_config(&cmd.config)?;
     if let Some(lr) = cmd.lr {
         config.optim.lr = lr;
@@ -187,6 +193,11 @@ fn train(cmd: TrainCmd) -> Result<()> {
     if let Some(task) = cmd.task {
         config.task = task;
     }
+    Ok(config)
+}
+
+fn train(cmd: TrainCmd) -> Result<()> {
+    let config = resolve_config(&cmd)?;
 
     std::fs::create_dir_all(&config.output.dir)
         .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
@@ -261,4 +272,93 @@ fn sample(cmd: SampleCmd) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Config-layering precedence (issue #47): YAML file < `LORACTL_` env <
+    //! CLI flags. Nothing tested this before, so a swapped merge order in
+    //! `load_config` or applying flags before extraction would silently break
+    //! user overrides. `figment::Jail` isolates env vars and cwd per test.
+
+    // `figment::Jail::expect_with`'s closure returns `Result<(), figment::Error>`;
+    // `figment::Error` is large, so `?` here trips `clippy::result_large_err`.
+    // It's a fixed part of the Jail test API, not our code to shrink.
+    #![allow(clippy::result_large_err)]
+
+    use super::*;
+    use figment::Jail;
+
+    /// A minimal-but-complete config YAML: `model`, `lora`, and `dataset` are
+    /// the required keys (no serde default on `TrainConfig`), so all three must
+    /// be present for extraction to succeed; `lora: {}` takes LoraConfig's own
+    /// defaults, mirroring the API tests' `"lora": {}`.
+    const YAML: &str = "steps: 10\n\
+         model:\n  base: synthetic\n\
+         dataset:\n  path: unused\n\
+         lora: {}\n\
+         optim:\n  lr: 0.0001\n";
+
+    fn cmd_for(config: &str) -> TrainCmd {
+        TrainCmd {
+            config: config.into(),
+            lr: None,
+            steps: None,
+            backend: None,
+            device: None,
+            task: None,
+        }
+    }
+
+    #[test]
+    fn file_value_is_used_when_no_env_or_flag() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.optim.lr, 0.0001);
+            assert_eq!(config.steps, 10);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn env_beats_file_and_nested_keys_split_on_double_underscore() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            jail.set_env("LORACTL_OPTIM__LR", "0.0002");
+            jail.set_env("LORACTL_OUTPUT__DIR", "/tmp/from-env");
+
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.optim.lr, 0.0002, "env must beat the file value");
+            assert_eq!(config.steps, 10, "unset keys keep the file value");
+            assert_eq!(
+                config.output.dir,
+                std::path::PathBuf::from("/tmp/from-env"),
+                "`__` must split into the nested output.dir key"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn cli_flags_beat_env_and_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            jail.set_env("LORACTL_OPTIM__LR", "0.0002");
+            jail.set_env("LORACTL_STEPS", "20");
+
+            let mut cmd = cmd_for("config.yaml");
+            cmd.lr = Some(0.0003); // beats env 0.0002, file 0.0001
+            cmd.steps = Some(30); // beats env 20, file 10
+            cmd.backend = Some(BackendKind::Wgpu); // flag-only override
+            cmd.task = Some(TaskKind::FlowMatching); // flag-only override
+
+            let config = resolve_config(&cmd).expect("resolve");
+            assert_eq!(config.optim.lr, 0.0003, "flag must win over env and file");
+            assert_eq!(config.steps, 30, "flag must win over env and file");
+            assert_eq!(config.compute.backend, BackendKind::Wgpu);
+            assert_eq!(config.task, TaskKind::FlowMatching);
+            Ok(())
+        });
+    }
 }
