@@ -1143,6 +1143,15 @@ async fn saturated_concurrency_cap_returns_429() {
         StatusCode::CREATED,
         "a completed run must release its slot, got: {body}"
     );
+    // The refused request burned NO id: this run is 2, not 3. `register_run`
+    // must consume `next_id` only *after* passing the cap guard — a mutant
+    // that hoists `next_id.fetch_add` above the guard would make this run 3
+    // and fail here. (The 404 above only proves no Run was inserted, which
+    // holds either way.)
+    assert!(
+        body.contains(r#""id":2"#),
+        "the 429-refused request must not consume an id — expected id 2, got: {body}"
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }

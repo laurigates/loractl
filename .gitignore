@@ -4,6 +4,9 @@
 
 # Runtime output (checkpoints, samples, adapters)
 /output
+# loractl-api's default LORACTL_OUTPUT_BASE — `just serve` from the repo root
+# creates ./runs at startup (see AppState::new / #37 output confinement).
+/runs
 
 # Real-GPT-2 parity fixtures (~500 MB safetensors + its golden) are generated
 # locally by `just gpt2-reference` for the opt-in `gpt2-real` test — never
