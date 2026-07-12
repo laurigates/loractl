@@ -171,6 +171,39 @@ impl Trainer for SilentTrainer {
     }
 }
 
+/// Emits `Started` then a tight burst of `Step`s then `Finished`, with NO
+/// yielding between events — the write path outruns any subscriber, so many
+/// events land in the history between two of the subscriber's wakes. Used to
+/// pin that `subscribe` re-snapshots the *full* tail on each wake (no event
+/// loss when writes coalesce into fewer `watch` notifications).
+struct BurstTrainer {
+    steps: u64,
+}
+
+impl Trainer for BurstTrainer {
+    fn train(
+        &mut self,
+        config: &TrainConfig,
+        sink: &mut dyn FnMut(TrainEvent),
+    ) -> anyhow::Result<PathBuf> {
+        sink(TrainEvent::Started {
+            total_steps: self.steps,
+        });
+        for step in 1..=self.steps {
+            sink(TrainEvent::Step {
+                step,
+                loss: 1.0 / step as f32,
+                lr: 1e-4,
+            });
+        }
+        let adapter_path = config.output.dir.join("lora.safetensors");
+        sink(TrainEvent::Finished {
+            adapter_path: adapter_path.clone(),
+        });
+        Ok(adapter_path)
+    }
+}
+
 /// A gate the test opens to release a parked trainer thread.
 #[derive(Clone, Default)]
 struct Gate(Arc<(Mutex<bool>, Condvar)>);
@@ -677,4 +710,76 @@ async fn post_invalid_config_is_422_and_creates_no_run() {
 
     let response = app.oneshot(get_events(1)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Test 13 (burst contract — regression guard for #45): a large, tight burst
+/// of events followed by a terminal must be delivered to the subscriber with
+/// ZERO loss, in order, and the stream must close.
+///
+/// This targets the "missed-wakeup under load" hypothesis directly. The write
+/// path (`push_event`) pushes each event then calls `watch::Sender::send_replace(())`;
+/// because `watch` is edge-triggered on a monotonic version counter (not the
+/// `()` value) and its `changed()` registers-then-checks, multiple sends between
+/// two subscriber wakes collapse into one notification WITHOUT loss — the
+/// subscriber re-snapshots the full `events[cursor..]` tail on every wake. If a
+/// future refactor made the read path lossy (e.g. one event per wake, or a
+/// value-based wake), this test fails: the delivered count would drop below
+/// `N + 2` or the ids would skip. A hang would trip the 5 s `body_string`
+/// timeout (fail slow-red, never wedge CI).
+#[tokio::test(flavor = "multi_thread")]
+async fn burst_of_events_is_delivered_without_loss_and_closes() {
+    const N: u64 = 512;
+    let dir = unique_output_dir("burst");
+    let factory: TrainerFactory = Arc::new(|| Box::new(BurstTrainer { steps: N }));
+    let app = loractl_api::app(factory);
+
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(&dir, N, 10_000).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app.oneshot(get_events(1)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = parse_sse(&body_string(response.into_body()).await);
+
+    // Zero loss: exactly Started + N Steps + Finished, in that shape.
+    assert_eq!(
+        events.len() as u64,
+        N + 2,
+        "burst must deliver every event: expected {} got {}",
+        N + 2,
+        events.len()
+    );
+    let kinds = types(&events);
+    assert_eq!(kinds.first().map(String::as_str), Some("started"));
+    assert_eq!(kinds.last().map(String::as_str), Some("finished"));
+    assert_eq!(
+        kinds[1..kinds.len() - 1]
+            .iter()
+            .filter(|k| *k == "step")
+            .count() as u64,
+        N,
+        "every one of the {N} Step events must be present"
+    );
+
+    // In order and gap-free: SSE ids are 0..N+1 consecutive, and the Step
+    // numbers are 1..=N in order (a lossy read path would skip).
+    for (i, event) in events.iter().enumerate() {
+        assert_eq!(event.id.as_deref(), Some(i.to_string().as_str()));
+    }
+    let step_nums: Vec<u64> = events
+        .iter()
+        .filter(|e| e.event.as_deref() == Some("step"))
+        .map(|e| {
+            serde_json::from_str::<serde_json::Value>(&e.data).unwrap()["step"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(step_nums, (1..=N).collect::<Vec<_>>());
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
