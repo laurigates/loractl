@@ -65,6 +65,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Real-GPT-2 forward-parity proof | `just test-gpt2-real` (opt-in; run `just gpt2-reference` first) |
 | GPU portability smoke (M7, Metal) | `just test-wgpu` (opt-in; runs the wgpu smoke on a real GPU) |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
+| Regenerate the BurnTrainer step-loss golden | `just burn-trainer-reference` (dumps burn's real init + batches, replays the loop in `torch` via `uv`; needs `torch`) |
 | Regenerate the kohya-ss export golden | `just export-reference` (numpy only, no torch/network) |
 | Regenerate the flow-matching golden | `just flow-reference` (needs `torch` via `uv`) |
 | Regenerate the tiny-GPT-2 fixture | `just gpt2-tiny-reference` (weights + golden; `torch` via `uv`) |
