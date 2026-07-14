@@ -44,7 +44,10 @@ fn cfg(backend: BackendKind) -> TrainConfig {
             checkpoint_every: 10_000,
             sample_every: 0,
         },
-        compute: ComputeConfig { backend, device: 0 },
+        compute: ComputeConfig {
+            backend,
+            ..ComputeConfig::default()
+        },
         flow: FlowConfig::default(),
     }
 }

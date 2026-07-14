@@ -64,7 +64,7 @@
 //! through the `&mut dyn FnMut(TrainEvent)` sink.
 
 use crate::adapter;
-use crate::config::{BackendKind, FlowConfig, TaskKind, TrainConfig};
+use crate::config::{BackendKind, FlowConfig, Precision, TaskKind, TrainConfig};
 use crate::event::TrainEvent;
 use crate::flow;
 use crate::model::LoraMlp;
@@ -167,13 +167,19 @@ impl Trainer for BurnTrainer {
                         ),
                     });
                 }
+                require_f32(config, "ndarray")?;
                 let device = NdArrayDevice::default();
-                run_training::<Autodiff<NdArray>>(config, device, sink)
+                dispatch_checkpointing::<NdArray>(config, device, sink)
             }
             #[cfg(feature = "wgpu")]
             BackendKind::Wgpu => {
                 let device = wgpu_device(config.compute.device);
-                run_training::<Autodiff<Wgpu>>(config, device, sink)
+                match config.compute.precision {
+                    Precision::F32 => dispatch_checkpointing::<Wgpu>(config, device, sink),
+                    Precision::F16 => {
+                        dispatch_checkpointing::<Wgpu<burn::tensor::f16>>(config, device, sink)
+                    }
+                }
             }
             #[cfg(not(feature = "wgpu"))]
             BackendKind::Wgpu => anyhow::bail!(
@@ -182,8 +188,9 @@ impl Trainer for BurnTrainer {
             ),
             #[cfg(feature = "cuda")]
             BackendKind::Cuda => {
+                require_f32(config, "cuda")?;
                 let device = CudaDevice::new(config.compute.device);
-                run_training::<Autodiff<Cuda>>(config, device, sink)
+                dispatch_checkpointing::<Cuda>(config, device, sink)
             }
             #[cfg(not(feature = "cuda"))]
             BackendKind::Cuda => anyhow::bail!(
@@ -193,8 +200,9 @@ impl Trainer for BurnTrainer {
             ),
             #[cfg(feature = "tch")]
             BackendKind::Tch => {
+                require_f32(config, "tch")?;
                 let device = tch_device(config.compute.device);
-                run_training::<Autodiff<LibTorch>>(config, device, sink)
+                dispatch_checkpointing::<LibTorch>(config, device, sink)
             }
             #[cfg(not(feature = "tch"))]
             BackendKind::Tch => anyhow::bail!(
@@ -202,6 +210,50 @@ impl Trainer for BurnTrainer {
                  rebuild with `--features tch` (a linked libtorch binary is required)"
             ),
         }
+    }
+}
+
+/// Reject `precision: f16` on backends that don't wire it — loudly, per the
+/// M7 no-silent-fallback rule. Only wgpu carries a verified f16 path (Metal
+/// on the dev machine); cuda/tch f16 stays unwired until it can be verified
+/// on real hardware rather than shipped blind.
+fn require_f32(config: &TrainConfig, backend: &str) -> Result<()> {
+    if config.compute.precision != Precision::F32 {
+        anyhow::bail!(
+            "compute.precision = f16 is only supported on the wgpu backend \
+             (selected backend: {backend}); set compute.precision to f32 or \
+             switch compute.backend to wgpu"
+        );
+    }
+    Ok(())
+}
+
+/// The M13 gradient-checkpointing dispatch: wrap the chosen inner backend in
+/// [`Autodiff`] with either the default stored-activation strategy or burn's
+/// `BalancedCheckpointing` (recompute during backward — numerically identical,
+/// substantially less activation memory, slower per step).
+///
+/// The checkpointing branch announces itself through the event stream (the
+/// same advisory channel as the ndarray device-index notice). That is the
+/// knob's ONLY observable effect besides its memory profile — recomputation
+/// is bit-identical by design — so the advisory doubles as the proof, in
+/// tests and in real runs alike, that the flag reached the dispatch rather
+/// than dying somewhere in the config plumbing.
+fn dispatch_checkpointing<B: burn::tensor::backend::Backend>(
+    config: &TrainConfig,
+    device: B::Device,
+    sink: &mut dyn FnMut(TrainEvent),
+) -> Result<PathBuf> {
+    use burn::backend::autodiff::checkpoint::strategy::BalancedCheckpointing;
+    if config.compute.grad_checkpointing {
+        sink(TrainEvent::Warning {
+            message: "activation checkpointing enabled (BalancedCheckpointing): \
+                      lower memory, slower steps, identical numerics"
+                .into(),
+        });
+        run_training::<Autodiff<B, BalancedCheckpointing>>(config, device, sink)
+    } else {
+        run_training::<Autodiff<B>>(config, device, sink)
     }
 }
 

@@ -218,12 +218,56 @@ impl<'de> Deserialize<'de> for BackendKind {
     }
 }
 
+/// Numeric precision of the backend's float element type (M13, #24).
+///
+/// `F16` halves the resident weight memory — the knob that fits the ~12B
+/// Krea 2 base (~49 GB in f32, ~24.6 GB in f16) on a 48 GiB host. Only the
+/// wgpu backend supports it (Metal/Vulkan f16 kernels); selecting `F16` on
+/// any other backend fails loudly, never a silent fallback — the M7 rule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Precision {
+    /// Full precision (every backend).
+    #[default]
+    F32,
+    /// Half precision (wgpu only).
+    F16,
+}
+
+// No `clap::ValueEnum` here for the same reason as `BackendKind`: core never
+// imports clap; the CLI routes its `--precision` flag through this `FromStr`.
+impl FromStr for Precision {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "f32" | "fp32" | "full" => Ok(Self::F32),
+            "f16" | "fp16" | "half" => Ok(Self::F16),
+            other => Err(format!("unknown precision {other:?} (f32|f16)")),
+        }
+    }
+}
+
+// Deserialize through `FromStr` for the same layer-parity reasons as
+// `BackendKind` (case-insensitive + aliases, identical errors in YAML, env,
+// and flag form).
+impl<'de> Deserialize<'de> for Precision {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Compute backend + device selection.
 ///
 /// `#[serde(default)]` plus the derived `Default` (`{ backend: Ndarray,
 /// device: 0 }`) means every existing YAML/JSON — which carries no `compute:`
 /// block — deserializes exactly as before onto the ndarray CPU backend, so
-/// `just test` and CI stay offline (acceptance #2 of #18).
+/// `just test` and CI stay offline (acceptance #2 of #18). The M13 memory
+/// knobs (`precision`, `grad_checkpointing`) default off the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComputeConfig {
@@ -233,6 +277,13 @@ pub struct ComputeConfig {
     /// default/best GPU (the only verified path on a single-GPU Apple-Silicon
     /// Mac).
     pub device: usize,
+    /// Float precision (M13). `f16` halves weight memory; wgpu only.
+    pub precision: Precision,
+    /// Recompute activations during the backward pass instead of storing
+    /// them (M13) — burn's `BalancedCheckpointing`. Slower per step,
+    /// substantially less activation memory; numerically identical
+    /// (recomputation replays the same ops).
+    pub grad_checkpointing: bool,
 }
 
 /// Which training objective a run drives (M8, #19).

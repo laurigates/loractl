@@ -9,7 +9,7 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
 
-**Current status:** milestones M1–M12 (#1–#4, #17–#23) have landed.
+**Current status:** milestones M1–M13 (#1–#4, #17–#24) have landed.
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
 **synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
 golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
@@ -50,18 +50,25 @@ and tokenizer parity. M11 (#22) landed the core model: `Mmdit`
 (zero-centered RMSNorm, gated-sigmoid GQA attention, rotation-matrix RoPE
 over 3 position axes, shared 6-way modulation, the 2+2-block text-fusion
 transformer, pad-to-256 semantics) with staged parity vs the official
-`mmdit.py`, an opt-in depth-truncated real-weights proof (full depth needs
-M13's quantization on this 48 GiB host), and the M6 LoRA attach across every
-trunk projection. M12 (#23) landed the dataset pipeline (`src/dataset.rs`):
+`mmdit.py`, an opt-in depth-truncated real-weights proof (full depth in f32
+exceeds this 48 GiB host; M13's f16 knob is the full-depth path), and the M6
+LoRA attach across every trunk projection. M12 (#23) landed the dataset pipeline (`src/dataset.rs`):
 kohya-style folder scanning, 16-px-aligned aspect-ratio buckets, cover-resize
 + center-crop image loading, and one-time latent/conditioning caching to
 `<dataset>/.loractl-cache/` (encoders injected as closures; M14 wires the
-real frozen models). See the roadmap in `README.md`.
+real frozen models). M13 (#24) landed the memory knobs:
+`compute.precision: f16` (wgpu only, fails loudly elsewhere — halves weight
+memory, fitting the ~12B base in ~24.6 GB on this 48 GiB host) and
+`compute.grad_checkpointing` (burn `BalancedCheckpointing`, proven
+bit-identical to stored activations); 8-bit Adam is a documented skip (LoRA
+optimizer state is adapter-only) and int8/NF4 is the tracked follow-up on
+#24 for ≤16 GB GPUs. See the roadmap in `README.md`.
 
-**Next direction (M9–M14, #20–#25):** training LoRAs for **Krea 2**, an
-open-weights ~12B rectified-flow **image** model — a different domain that
-reuses this architecture but needs a greenfield burn diffusion stack (MMDiT
-denoiser, VAE, Qwen 3 VL text encoder, flow-matching objective, GPU + QLoRA).
+**Next direction (M14, #25):** the end-to-end **`DiffusionTrainer`** —
+compose the now-complete Krea 2 stack (M9 VAE + M10 conditioner + M11 MMDiT
++ M12 dataset pipeline + M8 objective + M13 memory knobs) into one
+`impl Trainer`, train a real LoRA on `krea/Krea-2-Raw`, and prove the
+exported adapter loads and conditions generation in ComfyUI / Krea-2-Turbo.
 Strategy and gap analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 ## Commands
@@ -93,7 +100,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Real Qwen-Image VAE parity proof (M9) | `just test-vae-real` (opt-in; run `just vae-real-reference` first) |
 | Real Krea text-encoder parity proof (M10) | `just test-qwen3vl-real` (opt-in; run `just qwen3vl-real-reference` first) |
 | Real Krea MMDiT staged-parity proof (M11) | `just test-mmdit-real` (opt-in; run `just mmdit-real-reference` first — 26 GB download) |
-| GPU portability smoke (M7, Metal) | `just test-wgpu` (opt-in; runs the wgpu smoke on a real GPU) |
+| GPU smokes (M7 + M13 f16/ckpt, Metal) | `just test-wgpu` (opt-in; runs both wgpu smokes on a real GPU) |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
 | Regenerate the BurnTrainer step-loss golden | `just burn-trainer-reference` (dumps burn's real init + batches, replays the loop in `torch` via `uv`; needs `torch`) |
 | Regenerate the kohya-ss export golden | `just export-reference` (numpy only, no torch/network) |
@@ -105,7 +112,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Regenerate the tiny Qwen3-VL fixture (M10) | `just qwen3vl-reference` (weights + golden; `torch`/`transformers` via `uv`, no network) |
 | Regenerate the real Krea text-encoder golden (M10) | `just qwen3vl-real-reference` (downloads `krea/Krea-2-Raw`'s text_encoder; `torch`/`transformers` via `uv`) |
 | Regenerate the tiny MMDiT fixture (M11) | `just mmdit-reference` (downloads `krea-ai/krea-2`'s `mmdit.py` at a pinned commit; `torch` via `uv`) |
-| Regenerate the real MMDiT golden (M11) | `just mmdit-real-reference` (downloads `raw.safetensors`, 26.3 GB; kept for M13/M14) |
+| Regenerate the real MMDiT golden (M11) | `just mmdit-real-reference` (downloads `raw.safetensors`, 26.3 GB; kept for M14) |
 | One test by name | `cargo test -p loractl-core <test_name>` |
 
 Before committing, the meaningful gate is `just fmt-check && just lint` — CI
