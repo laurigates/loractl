@@ -234,19 +234,34 @@ fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
     // cannot distinguish a hit from a deterministic re-encode, so a
     // run-unstable fingerprint would otherwise go unnoticed): no cache file
     // may be added, removed, or rewritten by the second run.
+    //
+    // The rerun's bundle holds ONLY the MMDiT: with a warm cache the lazy
+    // encode phase must never load the VAE / text encoder / tokenizer, and
+    // the training phase reads the cache exclusively — so deleting them all
+    // must not matter. (This pins the f32-encode/train split: the training
+    // backend cannot quietly re-encode at its own precision.)
     let cache = cache_snapshot(&dataset);
     assert!(
         !cache.is_empty(),
         "the first run must have written the cache"
     );
+    let stripped = out.0.join("bundle-stripped");
+    std::fs::create_dir_all(&stripped).unwrap();
+    std::fs::copy(
+        Path::new(BUNDLE).join("raw.safetensors"),
+        stripped.join("raw.safetensors"),
+    )
+    .unwrap();
+    let mut config2 = config(&out, dataset.clone());
+    config2.model.base = stripped.to_string_lossy().into_owned();
     let mut losses2 = Vec::new();
     DiffusionTrainer
-        .train(&config(&out, dataset.clone()), &mut |event| {
+        .train(&config2, &mut |event| {
             if let TrainEvent::Step { loss, .. } = event {
                 losses2.push(loss);
             }
         })
-        .expect("warm-cache rerun completes");
+        .expect("warm-cache rerun completes without any encoder files present");
     assert_eq!(losses, losses2, "reseeded rerun must be bit-identical");
     assert_eq!(
         cache_snapshot(&dataset),

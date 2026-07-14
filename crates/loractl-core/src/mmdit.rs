@@ -70,12 +70,16 @@ use burn::module::{Module, Param};
 use burn::nn::{Gelu, Linear, LinearConfig};
 use burn::tensor::activation::{sigmoid, silu, softmax};
 use burn::tensor::backend::Backend;
-use burn::tensor::{Tensor, TensorData};
+use burn::tensor::{FloatDType, Tensor, TensorData};
 
-/// Additive-mask sentinel (finite, so contributions cannot overflow to
-/// `-inf`; fully-masked rows softmax to uniform garbage that valid positions
-/// never read).
-const MASK_NEG: f32 = -1.0e30;
+/// Additive-mask sentinel — finite **in f16 too** (f16 max ≈ 65504, so a
+/// larger magnitude saturates to `-inf`, and a fully-masked row's
+/// max-subtracted softmax computes `-inf − (-inf) = NaN`, which then spreads
+/// to valid positions through `0 × NaN` in the value matmul). At −3e4 the
+/// intended semantics hold in every float dtype: masked contributions
+/// underflow to exactly 0 after the max shift, and fully-masked rows softmax
+/// to uniform garbage that valid positions never read.
+const MASK_NEG: f32 = -3.0e4;
 
 /// Static architecture of a `SingleStreamDiT` variant. Field names mirror
 /// `SingleMMDiTConfig`.
@@ -224,10 +228,20 @@ impl<B: Backend> ZRmsNorm<B> {
     }
 
     /// Normalize the last dimension of a rank-`D` tensor.
+    ///
+    /// Computed in **f32 regardless of the backend's float dtype**: the
+    /// squared-magnitude reduction overflows f16 for any |x| > ~256, and
+    /// Qwen-family hidden states routinely carry outlier channels in the
+    /// hundreds (observed max ~395 on real Krea-2-Raw conditioning — every
+    /// f16 run NaN'd in this norm before the upcast). On an f32 backend the
+    /// casts are identity, so the always-run parity goldens are unaffected.
     pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
+        let dtype: FloatDType = x.dtype().into();
+        let x = x.cast(FloatDType::F32);
         let variance = x.clone().powi_scalar(2).mean_dim(D - 1);
         let x = x / (variance + 1e-5).sqrt();
-        x * (self.scale.val() + 1.0).unsqueeze::<D>()
+        let scaled = x * (self.scale.val().cast(FloatDType::F32) + 1.0).unsqueeze::<D>();
+        scaled.cast(dtype)
     }
 }
 
@@ -404,12 +418,24 @@ impl<B: Backend> MmditAttention<B> {
         let k = expand_kv(k);
         let v = expand_kv(v);
 
+        // Scores in f32 regardless of the backend dtype: the post-norm q/k
+        // carry Qwen-style outlier channels (observed ~600 on the real
+        // weights), so raw q·k products (~3.6e5) exceed f16's range before
+        // the head-dim reduction even completes — torch's SDPA makes the
+        // same internal upcast, which is why official f16 inference works.
+        // The softmaxed weights are ≤ 1 and the value mix is convex
+        // (bounded by max |v|), so the ctx matmul is f16-safe. Identity on
+        // f32 backends, so parity goldens are unaffected.
+        let dtype: FloatDType = q.dtype().into();
         let scale = (hd as f64).sqrt();
-        let mut scores = q.matmul(k.swap_dims(2, 3)).div_scalar(scale);
+        let mut scores = q
+            .cast(FloatDType::F32)
+            .matmul(k.swap_dims(2, 3).cast(FloatDType::F32))
+            .div_scalar(scale);
         if let Some(m) = mask {
-            scores = scores + m;
+            scores = scores + m.cast(FloatDType::F32);
         }
-        let ctx = softmax(scores, 3).matmul(v); // [b, heads, l, hd]
+        let ctx = softmax(scores, 3).cast(dtype).matmul(v); // [b, heads, l, hd]
         let merged = ctx.swap_dims(1, 2).reshape([b, l, heads * hd]);
 
         // The gated-sigmoid: gate the merged attention output, then project.
