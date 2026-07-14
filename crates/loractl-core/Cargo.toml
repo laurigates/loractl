@@ -68,3 +68,7 @@ mnist = ["burn/dataset", "burn/vision"]
 # transformers) and the Rust test reads them from disk. Kept out of the default
 # build so `cargo test` stays offline and needs no multi-hundred-MB fixture.
 gpt2-real = []
+# Opt-in real Qwen-Image VAE parity test (`tests/qwen_vae_real.rs`, M9). Same
+# shape as `gpt2-real`: no extra crates; the real weights + golden come from
+# `just vae-real-reference` (downloads Qwen/Qwen-Image's vae via diffusers).
+qwen-vae-real = []

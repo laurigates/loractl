@@ -35,8 +35,9 @@ jobs:
   # Compile-only clippy over the opt-in feature paths kept out of the default
   # `just lint` (they pull heavy/networked deps). One job with sequential steps
   # so the shared burn tree compiles once under a single rust-cache — a matrix
-  # would rebuild burn 3x. No GPU or network is needed to lint. Commands mirror
-  # the justfile recipes `lint-mnist`, `lint-gpt2-real`, `lint-wgpu` (CI parity).
+  # would rebuild burn 4x. No GPU or network is needed to lint. Commands mirror
+  # the justfile recipes `lint-mnist`, `lint-gpt2-real`, `lint-vae-real`,
+  # `lint-wgpu` (CI parity).
   feature-lints:
     name: clippy (opt-in feature paths)
     runs-on: ubuntu-latest
@@ -50,6 +51,8 @@ jobs:
         run: cargo clippy -p loractl-core --all-targets --features mnist -- -D warnings
       - name: clippy (gpt2-real)
         run: cargo clippy -p loractl-core --all-targets --features gpt2-real -- -D warnings
+      - name: clippy (qwen-vae-real)
+        run: cargo clippy -p loractl-core --all-targets --features qwen-vae-real -- -D warnings
       - name: clippy (wgpu)
         run: cargo clippy -p loractl-core --all-targets --features wgpu -- -D warnings
 

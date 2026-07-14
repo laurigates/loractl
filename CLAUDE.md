@@ -9,7 +9,7 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
 
-**Current status:** milestones M1–M8 (#1–#4, #17–#19) have landed.
+**Current status:** milestones M1–M9 (#1–#4, #17–#20) have landed.
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
 **synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
 golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
@@ -32,7 +32,13 @@ fails loudly, never a silent CPU fallback. M8 (#19) added the rectified-flow
 (v-prediction `v = ε − x₀`, SD3 time convention) with logit-normal + shifted
 timestep sampling (`src/flow.rs`) on a synthetic latent toy, pinned against a
 PyTorch golden; adapter sidecars record the producing task and `loractl
-sample` refuses flow adapters. See the roadmap in `README.md`.
+sample` refuses flow adapters. M9 (#20) landed the first Krea 2 model
+component: `QwenVae` (`src/qwen_vae.rs`) ports Krea 2's autoencoder — which is
+the **stock Qwen-Image VAE** (diffusers `AutoencoderKLQwenImage`, f8,
+16 latent channels, run image-only at `T = 1`) — with staged encode/decode
+parity vs diffusers on a checked-in tiny fixture plus an opt-in real-weights
+proof; `encode` emits the normalized latents diffusion training consumes.
+See the roadmap in `README.md`.
 
 **Next direction (M9–M14, #20–#25):** training LoRAs for **Krea 2**, an
 open-weights ~12B rectified-flow **image** model — a different domain that
@@ -55,6 +61,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Lint (warnings-as-errors) | `just lint` (`cargo clippy --all-targets -- -D warnings`, default/offline features) |
 | Lint the opt-in mnist path | `just lint-mnist` (compiles the networked dataset deps) |
 | Lint the opt-in gpt2-real path | `just lint-gpt2-real` (compiles the real-gpt2 parity test path) |
+| Lint the opt-in qwen-vae-real path | `just lint-vae-real` (compiles the real-VAE parity test path) |
 | Lint the opt-in wgpu path | `just lint-wgpu` (compiles the wgpu GPU backend; no GPU needed to build) |
 | Format / check format | `just fmt` / `just fmt-check` |
 | RustSec advisory scan | `just audit` (`cargo audit` over `Cargo.lock`; accepted advisories in `.cargo/audit.toml`) |
@@ -63,6 +70,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Tests (offline) | `just test` (`cargo test`) — numerics vs PyTorch golden + synthetic convergence |
 | Real-MNIST convergence proof | `just test-mnist` (opt-in, downloads MNIST) |
 | Real-GPT-2 forward-parity proof | `just test-gpt2-real` (opt-in; run `just gpt2-reference` first) |
+| Real Qwen-Image VAE parity proof (M9) | `just test-vae-real` (opt-in; run `just vae-real-reference` first) |
 | GPU portability smoke (M7, Metal) | `just test-wgpu` (opt-in; runs the wgpu smoke on a real GPU) |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
 | Regenerate the BurnTrainer step-loss golden | `just burn-trainer-reference` (dumps burn's real init + batches, replays the loop in `torch` via `uv`; needs `torch`) |
@@ -70,13 +78,16 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Regenerate the flow-matching golden | `just flow-reference` (needs `torch` via `uv`) |
 | Regenerate the tiny-GPT-2 fixture | `just gpt2-tiny-reference` (weights + golden; `torch` via `uv`) |
 | Regenerate the real-gpt2 golden | `just gpt2-reference` (downloads `openai-community/gpt2`; `torch`/`transformers` via `uv`) |
+| Regenerate the tiny Qwen-VAE fixture (M9) | `just vae-reference` (weights + golden; `torch`/`diffusers` via `uv`, no network) |
+| Regenerate the real Qwen-VAE golden (M9) | `just vae-real-reference` (downloads `Qwen/Qwen-Image`'s vae; `torch`/`diffusers` via `uv`) |
 | One test by name | `cargo test -p loractl-core <test_name>` |
 
 Before committing, the meaningful gate is `just fmt-check && just lint` — CI
 parity is intended (the `justfile` mirrors what CI should run). CI additionally
 runs the blocking `feature-lints` job (clippy over the opt-in
-mnist/gpt2-real/wgpu paths, mirroring `just lint-mnist` / `lint-gpt2-real` /
-`lint-wgpu`) and the `deny` job (`cargo deny check`, mirroring `just deny`) —
+mnist/gpt2-real/qwen-vae-real/wgpu paths, mirroring `just lint-mnist` /
+`lint-gpt2-real` / `lint-vae-real` / `lint-wgpu`) and the `deny` job
+(`cargo deny check`, mirroring `just deny`) —
 run those locally too when a change touches a feature-gated path or the
 dependency graph. rustfmt is default style; expect it to reflow multi-line
 signatures onto one line.

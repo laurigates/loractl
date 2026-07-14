@@ -42,6 +42,10 @@ lint-mnist:
 lint-gpt2-real:
     cargo clippy -p loractl-core --all-targets --features gpt2-real -- -D warnings
 
+# Lint the opt-in qwen-vae-real feature path (compiles the ignored real-VAE test).
+lint-vae-real:
+    cargo clippy -p loractl-core --all-targets --features qwen-vae-real -- -D warnings
+
 # Lint the opt-in wgpu GPU-backend path (M7). Compiles the cubecl/wgpu/naga
 # subtree + the gated wgpu smoke test; no GPU is needed to COMPILE and nothing
 # runs. Kept out of the default `just lint` so that stays offline and fast.
@@ -91,6 +95,11 @@ test-mnist:
 test-gpt2-real:
     cargo test -p loractl-core --features gpt2-real -- --ignored real_gpt2_forward_matches_pytorch_golden
 
+# Run the opt-in real Qwen-Image VAE parity test (needs `just vae-real-reference`
+# first). --release: the real decoder is tens of GMACs; debug ndarray crawls.
+test-vae-real:
+    cargo test --release -p loractl-core --features qwen-vae-real -- --ignored real_qwen_vae_encode_decode_matches_diffusers_golden
+
 # Run the wgpu GPU portability smoke (M7) on a real GPU — Metal on Apple Silicon.
 # The ONLY way the double-gated `#[ignore]`d smoke runs; never fires in CI.
 test-wgpu:
@@ -137,3 +146,13 @@ gpt2-tiny-reference:
 # Download real gpt2 + generate its (uncommitted) golden for the opt-in parity test.
 gpt2-reference:
     uv run reference/gpt2_reference.py --out crates/loractl-core/tests/fixtures
+
+# Regenerate the checked-in tiny Qwen-Image VAE parity fixture (weights + golden;
+# torch + diffusers via uv, no network — the tiny VAE is constructed locally).
+vae-reference:
+    uv run reference/qwen_vae_reference.py --out crates/loractl-core/tests/fixtures
+
+# Download the real Qwen/Qwen-Image VAE (the checkpoint Krea 2 wraps) + generate
+# its (uncommitted) f32 safetensors + golden for the opt-in parity test.
+vae-real-reference:
+    uv run reference/qwen_vae_reference.py --real --out crates/loractl-core/tests/fixtures
