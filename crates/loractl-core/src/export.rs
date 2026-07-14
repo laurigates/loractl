@@ -99,9 +99,11 @@ impl ExportFormat {
 ///
 /// The exporter materializes each transposed burn tensor (and each `.alpha`
 /// scalar) into one of these so the serializer borrows stable, owned bytes.
-struct OwnedF32Tensor {
-    shape: Vec<usize>,
-    bytes: Vec<u8>,
+/// `pub(crate)`: the M12 dataset cache ([`crate::dataset`]) writes its latent
+/// and conditioning tensors through the same unit.
+pub(crate) struct OwnedF32Tensor {
+    pub(crate) shape: Vec<usize>,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl View for &OwnedF32Tensor {
@@ -121,7 +123,7 @@ impl View for &OwnedF32Tensor {
 
 /// Materialize a burn tensor into an [`OwnedF32Tensor`] (row-major f32 bytes of
 /// its logical — i.e. post-transpose — layout).
-fn to_owned_f32<B: Backend, const D: usize>(t: Tensor<B, D>) -> OwnedF32Tensor {
+pub(crate) fn to_owned_f32<B: Backend, const D: usize>(t: Tensor<B, D>) -> OwnedF32Tensor {
     let shape = t.dims().to_vec();
     let values: Vec<f32> = t
         .into_data()

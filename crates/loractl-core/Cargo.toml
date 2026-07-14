@@ -46,6 +46,10 @@ safetensors = "0.7"
 # through the krea-2 chat template. Pure offline — file-based loading only,
 # no hub/HTTP features.
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+# Image dataset pipeline (M12, #23): decode + resize the training images.
+# Default features off — only the two formats the kohya-style folder
+# convention actually uses; no HDR/EXR/AVIF subtree.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [features]
 # GPU compute backends (M7, #18). None are in `default`, so `cargo build`/

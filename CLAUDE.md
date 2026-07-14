@@ -9,7 +9,7 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
 
-**Current status:** milestones M1–M11 (#1–#4, #17–#22) have landed.
+**Current status:** milestones M1–M12 (#1–#4, #17–#23) have landed.
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
 **synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
 golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
@@ -52,7 +52,11 @@ over 3 position axes, shared 6-way modulation, the 2+2-block text-fusion
 transformer, pad-to-256 semantics) with staged parity vs the official
 `mmdit.py`, an opt-in depth-truncated real-weights proof (full depth needs
 M13's quantization on this 48 GiB host), and the M6 LoRA attach across every
-trunk projection. See the roadmap in `README.md`.
+trunk projection. M12 (#23) landed the dataset pipeline (`src/dataset.rs`):
+kohya-style folder scanning, 16-px-aligned aspect-ratio buckets, cover-resize
++ center-crop image loading, and one-time latent/conditioning caching to
+`<dataset>/.loractl-cache/` (encoders injected as closures; M14 wires the
+real frozen models). See the roadmap in `README.md`.
 
 **Next direction (M9–M14, #20–#25):** training LoRAs for **Krea 2**, an
 open-weights ~12B rectified-flow **image** model — a different domain that
