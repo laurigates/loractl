@@ -118,10 +118,11 @@ test-qwen3vl-real:
 test-mmdit-real:
     cargo test --release -p loractl-core --features mmdit-real -- --ignored real_mmdit_truncated_forward_matches_krea2_golden
 
-# Run the wgpu GPU portability smoke (M7) on a real GPU — Metal on Apple Silicon.
-# The ONLY way the double-gated `#[ignore]`d smoke runs; never fires in CI.
+# Run the wgpu GPU smokes (M7 portability + the M13 f16/grad-checkpointing
+# variant) on a real GPU — Metal on Apple Silicon. The ONLY way the
+# double-gated `#[ignore]`d smokes run; never fires in CI.
 test-wgpu:
-    cargo test -p loractl-core --features wgpu -- --ignored wgpu_training_smoke
+    cargo test -p loractl-core --features wgpu -- --ignored wgpu
 
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.

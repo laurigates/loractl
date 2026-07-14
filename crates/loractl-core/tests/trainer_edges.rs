@@ -105,6 +105,7 @@ fn ndarray_nonzero_device_emits_a_warning() {
         ComputeConfig {
             backend: BackendKind::Ndarray,
             device: 1,
+            ..ComputeConfig::default()
         },
     );
 

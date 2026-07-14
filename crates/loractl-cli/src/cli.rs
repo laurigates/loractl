@@ -15,7 +15,8 @@ use figment::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use loractl_core::{
-    BackendKind, BurnTrainer, Device, NdArray, TaskKind, TrainConfig, TrainEvent, Trainer,
+    BackendKind, BurnTrainer, Device, NdArray, Precision, TaskKind, TrainConfig, TrainEvent,
+    Trainer,
 };
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
@@ -61,6 +62,12 @@ fn parse_task(s: &str) -> Result<TaskKind, String> {
     s.parse()
 }
 
+/// Parse a `--precision` value through core's [`Precision`] `FromStr` — the
+/// same core-owns-the-vocabulary pattern as [`parse_backend`].
+fn parse_precision(s: &str) -> Result<Precision, String> {
+    s.parse()
+}
+
 #[derive(Args)]
 struct TrainCmd {
     /// Path to the training config (YAML).
@@ -89,6 +96,18 @@ struct TrainCmd {
     /// synthetic toy).
     #[arg(long, value_parser = parse_task)]
     task: Option<TaskKind>,
+
+    /// Override the float precision from the config: `f32` (default) or
+    /// `f16` (wgpu only — halves resident weight memory; M13).
+    #[arg(long, value_parser = parse_precision)]
+    precision: Option<Precision>,
+
+    /// Override activation checkpointing from the config (M13): recompute
+    /// activations during backward instead of storing them — numerically
+    /// identical, less memory, slower per step. Bare `--grad-checkpointing`
+    /// means true; an explicit `false` overrides a config-file `true`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    grad_checkpointing: Option<bool>,
 }
 
 #[derive(Args)]
@@ -192,6 +211,12 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     }
     if let Some(task) = cmd.task {
         config.task = task;
+    }
+    if let Some(precision) = cmd.precision {
+        config.compute.precision = precision;
+    }
+    if let Some(grad_checkpointing) = cmd.grad_checkpointing {
+        config.compute.grad_checkpointing = grad_checkpointing;
     }
     Ok(config)
 }
@@ -307,6 +332,8 @@ mod tests {
             backend: None,
             device: None,
             task: None,
+            precision: None,
+            grad_checkpointing: None,
         }
     }
 
@@ -352,12 +379,33 @@ mod tests {
             cmd.steps = Some(30); // beats env 20, file 10
             cmd.backend = Some(BackendKind::Wgpu); // flag-only override
             cmd.task = Some(TaskKind::FlowMatching); // flag-only override
+            cmd.precision = Some(Precision::F16); // M13 flag-only override
+            cmd.grad_checkpointing = Some(true); // M13 flag-only override
 
             let config = resolve_config(&cmd).expect("resolve");
             assert_eq!(config.optim.lr, 0.0003, "flag must win over env and file");
             assert_eq!(config.steps, 30, "flag must win over env and file");
             assert_eq!(config.compute.backend, BackendKind::Wgpu);
             assert_eq!(config.task, TaskKind::FlowMatching);
+            // The M13 knobs reach the config (the trainer-side dispatch is
+            // covered in core: the f16 guard errors from inside the match,
+            // and checkpointing is bit-identical by design).
+            assert_eq!(config.compute.precision, Precision::F16);
+            assert!(config.compute.grad_checkpointing);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn m13_env_layer_reaches_compute_knobs() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            jail.set_env("LORACTL_COMPUTE__PRECISION", "f16");
+            jail.set_env("LORACTL_COMPUTE__GRAD_CHECKPOINTING", "true");
+
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.compute.precision, Precision::F16);
+            assert!(config.compute.grad_checkpointing);
             Ok(())
         });
     }

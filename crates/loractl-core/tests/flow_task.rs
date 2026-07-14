@@ -48,7 +48,10 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
             // specific and must be rejected for the flow task.
             sample_every: 5,
         },
-        compute: ComputeConfig { backend, device: 0 },
+        compute: ComputeConfig {
+            backend,
+            ..ComputeConfig::default()
+        },
         flow: FlowConfig::default(),
     }
 }

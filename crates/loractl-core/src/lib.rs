@@ -76,7 +76,7 @@ pub mod train;
 
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
-pub use config::{BackendKind, ComputeConfig, FlowConfig, TaskKind, TrainConfig};
+pub use config::{BackendKind, ComputeConfig, FlowConfig, Precision, TaskKind, TrainConfig};
 pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
