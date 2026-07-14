@@ -9,7 +9,9 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
 
-**Current status:** milestones M1–M13 (#1–#4, #17–#24) have landed.
+**Current status:** milestones M1–M13 (#1–#4, #17–#24) have landed, plus
+M14's (#25) `DiffusionTrainer` code (the real-run ComfyUI interop proof is
+the milestone's remaining checkbox).
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
 **synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
 golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
@@ -62,14 +64,20 @@ memory, fitting the ~12B base in ~24.6 GB on this 48 GiB host) and
 `compute.grad_checkpointing` (burn `BalancedCheckpointing`, proven
 bit-identical to stored activations); 8-bit Adam is a documented skip (LoRA
 optimizer state is adapter-only) and int8/NF4 is the tracked follow-up on
-#24 for ≤16 GB GPUs. See the roadmap in `README.md`.
+#24 for ≤16 GB GPUs. M14 (#25) landed `DiffusionTrainer`
+(`src/diffusion_trainer.rs`): the whole stack as one `impl Trainer` behind
+core's `select_trainer` factory on `model.base` ("synthetic"/"mnist" →
+`BurnTrainer`, a Krea-2-Raw-layout dir → the diffusion trainer), proven
+offline on the composed tiny-krea2 bundle (`just krea2-reference`,
+`tests/diffusion_trainer.rs`); kohya-ss exports at every checkpoint. See
+the roadmap in `README.md`.
 
-**Next direction (M14, #25):** the end-to-end **`DiffusionTrainer`** —
-compose the now-complete Krea 2 stack (M9 VAE + M10 conditioner + M11 MMDiT
-+ M12 dataset pipeline + M8 objective + M13 memory knobs) into one
-`impl Trainer`, train a real LoRA on `krea/Krea-2-Raw`, and prove the
-exported adapter loads and conditions generation in ComfyUI / Krea-2-Turbo.
-Strategy and gap analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+**Next direction (M14's remaining checkbox, #25):** the real run — train a
+LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer`
+(`config/examples/krea2-lora.yaml`, wgpu f16 + grad checkpointing) and
+prove the exported adapter loads and visibly conditions generation in
+ComfyUI / Krea-2-Turbo. Strategy and gap analysis:
+[ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 ## Commands
 
@@ -111,6 +119,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Regenerate the real Qwen-VAE golden (M9) | `just vae-real-reference` (downloads `Qwen/Qwen-Image`'s vae; `torch`/`diffusers` via `uv`) |
 | Regenerate the tiny Qwen3-VL fixture (M10) | `just qwen3vl-reference` (weights + golden; `torch`/`transformers` via `uv`, no network) |
 | Regenerate the real Krea text-encoder golden (M10) | `just qwen3vl-real-reference` (downloads `krea/Krea-2-Raw`'s text_encoder; `torch`/`transformers` via `uv`) |
+| Regenerate the tiny-krea2 bundle + dataset (M14) | `just krea2-reference` (composed fixture; `torch`/`diffusers`/`transformers` via `uv`, no network) |
 | Regenerate the tiny MMDiT fixture (M11) | `just mmdit-reference` (downloads `krea-ai/krea-2`'s `mmdit.py` at a pinned commit; `torch` via `uv`) |
 | Regenerate the real MMDiT golden (M11) | `just mmdit-real-reference` (downloads `raw.safetensors`, 26.3 GB; kept for M14) |
 | One test by name | `cargo test -p loractl-core <test_name>` |
@@ -151,14 +160,16 @@ upward dependencies and no front-end has training logic.
 
 ### Swapping the trainer
 
-Swapping the trainer means writing a new `impl Trainer` in core and changing
-**one constructor line per front-end**: the line in `cli.rs` that constructs
-`BurnTrainer` (`crates/loractl-cli/src/cli.rs`), and the single `BurnTrainer`
-line in `loractl-api`'s `main.rs` (its `TrainerFactory` seam). If a new
-trainer forces front-end changes beyond those constructors, the event
-abstraction has leaked — fix the abstraction, not the front-end. The LoRA
-math: freeze the base weights, train the low-rank factors, forward =
-`base(x) + (alpha/rank) · B(A(x))`.
+Swapping the trainer means writing a new `impl Trainer` in core and adding
+an arm to **core's `select_trainer`** (`src/train.rs`) — the single factory
+that maps `model.base` to a concrete trainer ("synthetic"/"mnist" →
+`BurnTrainer`, anything else → `DiffusionTrainer`; pinned by
+`tests/trainer_routing.rs`). Both front-ends call it at their one
+construction site each: `cli.rs`'s `train()` and the `TrainerFactory`
+closure in `loractl-api`'s `main.rs`. If a new trainer forces front-end
+changes beyond that factory, the event abstraction has leaked — fix the
+abstraction, not the front-end. The LoRA math: freeze the base weights,
+train the low-rank factors, forward = `base(x) + (alpha/rank) · B(A(x))`.
 
 ### Config layering
 

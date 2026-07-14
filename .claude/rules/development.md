@@ -23,11 +23,12 @@ numerics against a reference before scaling up.
 `loractl-core` emits events; it never renders. Core must not import `clap` and
 must not `println!` / write to stdout/stderr. A `Trainer` reports progress
 through a `&mut dyn FnMut(TrainEvent)` sink; the caller decides how to surface
-it. Adding a trainer (e.g. the burn backend) means a new `impl Trainer` in core
-plus **one constructor line per front-end**: the line in
-`crates/loractl-cli/src/cli.rs` that constructs `BurnTrainer`, and the single
-`BurnTrainer` line in `loractl-api`'s `main.rs` (its `TrainerFactory` seam). If
-a new trainer forces front-end changes beyond those constructors, the event
+it. Adding a trainer means a new `impl Trainer` in core plus **an arm in
+core's `select_trainer`** (`src/train.rs`) — the single `model.base` →
+trainer factory both front-ends call at their one construction site each
+(`cli.rs`'s `train()`, and the `TrainerFactory` closure in `loractl-api`'s
+`main.rs`). Routing is pinned by `tests/trainer_routing.rs`. If a new
+trainer forces front-end changes beyond that factory, the event
 abstraction has leaked; fix the abstraction, not the front-end.
 
 Dependency direction is strictly `cli → core` and `api → core`. Core has

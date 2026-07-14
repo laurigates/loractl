@@ -56,8 +56,57 @@ pub struct TrainConfig {
 /// The base model being adapted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    /// Hub id or local path to the base model (e.g. a safetensors directory).
+    /// `"synthetic"` (the M2 demo trainer), `"mnist"` (the demo trainer's
+    /// opt-in real-MNIST path, `--features mnist`), or a local path to a
+    /// Krea-2-Raw-layout checkpoint directory (`raw.safetensors`,
+    /// `text_encoder/model.safetensors`, `tokenizer/tokenizer.json`,
+    /// `vae/diffusion_pytorch_model.safetensors`) — which routes the run to
+    /// the M14 [`DiffusionTrainer`](crate::DiffusionTrainer). The routing
+    /// itself is [`select_trainer`](crate::select_trainer).
     pub base: String,
+    /// Which architecture the checkpoint directory holds (M14). Explicit
+    /// rather than inferred from tensor shapes — a config mistake should be
+    /// a clear error, not a creative misinterpretation of a checkpoint.
+    #[serde(default)]
+    pub variant: ModelVariant,
+}
+
+/// The known Krea 2 architecture variants (M14).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelVariant {
+    /// The real ~12B `krea/Krea-2-Raw` stack.
+    #[default]
+    Krea2,
+    /// The dimension-matched tiny test bundle
+    /// (`reference/krea2_reference.py`).
+    TinyKrea2,
+}
+
+// FromStr + Deserialize-through-FromStr: the same layer-parity pattern as
+// `BackendKind`/`Precision`.
+impl FromStr for ModelVariant {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "krea2" | "krea-2" => Ok(Self::Krea2),
+            "tiny-krea2" | "tinykrea2" => Ok(Self::TinyKrea2),
+            other => Err(format!(
+                "unknown model variant {other:?} (krea2|tiny-krea2)"
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelVariant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// LoRA adapter shape.
@@ -114,6 +163,11 @@ pub struct DatasetConfig {
     /// Target resolution for bucketing/resizing.
     #[serde(default = "defaults::resolution")]
     pub resolution: u32,
+
+    /// Examples per training batch (per bucket — batches never mix buckets).
+    /// M14; the synthetic tasks ignore it.
+    #[serde(default = "defaults::batch_size")]
+    pub batch_size: u32,
 }
 
 /// Optimizer configuration.
@@ -375,6 +429,9 @@ impl Default for FlowConfig {
 mod defaults {
     pub fn steps() -> u64 {
         1000
+    }
+    pub fn batch_size() -> u32 {
+        1
     }
     pub fn rank() -> u32 {
         16

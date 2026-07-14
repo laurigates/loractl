@@ -164,6 +164,7 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
     let config = DatasetConfig {
         path: dir.clone(),
         resolution: RESOLUTION,
+        batch_size: 1,
     };
     let device = Default::default();
 
@@ -384,6 +385,7 @@ fn corrupted_cache_file_is_an_error_not_a_panic() {
     let config = DatasetConfig {
         path: dir.clone(),
         resolution: RESOLUTION,
+        batch_size: 1,
     };
     let device = Default::default();
 
@@ -416,6 +418,7 @@ fn empty_dataset_folder_fails_fast() {
     let config = DatasetConfig {
         path: dir.clone(),
         resolution: RESOLUTION,
+        batch_size: 1,
     };
     let device = Default::default();
     let result = prepare_dataset::<B>(&config, "mock-v1", &device, Ok, mock_encode_caption);

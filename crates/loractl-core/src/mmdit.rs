@@ -135,6 +135,29 @@ impl MmditConfig {
         }
     }
 
+    /// The composed tiny-Krea-2 bundle's denoiser (M14): dimension-matched
+    /// to the tiny VAE (`channels = 4` = its `z_dim`) and the tiny Qwen3-VL
+    /// (`txtdim = 32` = its hidden size, `txtlayers = 2` = its select-layer
+    /// count), so the whole stack composes offline. Must match
+    /// `reference/krea2_reference.py`'s `MMDIT` exactly.
+    pub fn tiny_krea2() -> Self {
+        Self {
+            features: 64,
+            tdim: 16,
+            txtdim: 32,
+            heads: 4,
+            kvheads: 2,
+            multiplier: 4,
+            layers: 2,
+            patch: 2,
+            channels: 4,
+            txtheads: 2,
+            txtkvheads: 2,
+            txtlayers: 2,
+            theta: 1e3,
+        }
+    }
+
     /// The real Krea 2 denoiser (`single_mmdit_large_wide` in the reference's
     /// `inference.py`), ~12B parameters at full depth.
     pub fn krea2() -> Self {
@@ -948,4 +971,45 @@ fn temb<B: Backend>(t: Tensor<B, 1>, dim: usize, device: &B::Device) -> Tensor<B
         Tensor::<B, 1>::from_data(TensorData::new(freqs, [half]), device).reshape([1, 1, half]);
     let args = t.mul_scalar(1e3).reshape([b, 1, 1]) * freqs;
     Tensor::cat(vec![args.clone().cos(), args.sin()], 2)
+}
+
+/// Patchify a latent `[b, c, h, w]` into MMDiT image tokens
+/// `[b, (h/p)·(w/p), c·p²]` — `sampling.py`'s
+/// `rearrange("b c (h ph) (w pw) -> b (h w) (c ph pw)")`, channel-major
+/// within each patch. `h`/`w` must divide by `patch`.
+pub fn patchify<B: Backend>(latent: Tensor<B, 4>, patch: usize) -> Tensor<B, 3> {
+    let [b, c, h, w] = latent.dims();
+    assert!(
+        h.is_multiple_of(patch) && w.is_multiple_of(patch),
+        "latent {h}x{w} not divisible by patch {patch}"
+    );
+    let (gh, gw) = (h / patch, w / patch);
+    latent
+        .reshape([b, c, gh, patch, gw, patch])
+        .permute([0, 2, 4, 1, 3, 5]) // [b, gh, gw, c, p, p]
+        .reshape([b, gh * gw, c * patch * patch])
+}
+
+/// The Krea 2 position grid for a combined text+image sequence
+/// (`sampling.py`'s `prepare()`): text tokens all at the origin `(0, 0, 0)`,
+/// image tokens at `(0, row, col)` on the `gh × gw` patch grid. Returns
+/// `[batch, txt_len + gh·gw, 3]`.
+pub fn krea2_positions<B: Backend>(
+    txt_len: usize,
+    gh: usize,
+    gw: usize,
+    batch: usize,
+    device: &B::Device,
+) -> Tensor<B, 3> {
+    let len = txt_len + gh * gw;
+    let mut pos = vec![0.0f32; len * 3];
+    for row in 0..gh {
+        for col in 0..gw {
+            let token = txt_len + row * gw + col;
+            pos[token * 3 + 1] = row as f32;
+            pos[token * 3 + 2] = col as f32;
+        }
+    }
+    let one = Tensor::<B, 2>::from_data(TensorData::new(pos, [len, 3]), device);
+    Tensor::cat(vec![one.unsqueeze_dim::<3>(0); batch], 0)
 }

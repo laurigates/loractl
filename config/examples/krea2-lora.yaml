@@ -1,0 +1,48 @@
+# A real Krea 2 LoRA training run (M14) — the DiffusionTrainer end to end.
+#
+# `model.base` points at a krea/Krea-2-Raw HF snapshot directory:
+#   raw.safetensors, text_encoder/model.safetensors,
+#   tokenizer/tokenizer.json, vae/diffusion_pytorch_model.safetensors
+# (e.g. the copy `just mmdit-real-reference` leaves under
+# crates/loractl-core/tests/fixtures/krea2-raw/ — complete it with the
+# text_encoder/tokenizer/vae subfolders, or download the full snapshot).
+#
+# Memory (48 GiB host): f16 + activation checkpointing fits the ~12B base
+# (~24.6 GB weights); run with `--features wgpu` (Metal).
+
+task: flow-matching
+
+model:
+  base: /path/to/krea-2-raw    # the snapshot directory described above
+  variant: krea2
+
+dataset:
+  path: /path/to/dataset       # images + same-named .txt captions
+  resolution: 512              # multiple of 16
+  batch_size: 1
+
+lora:
+  rank: 16
+  alpha: 16.0
+  targets:
+    - pattern: 'blocks\.'      # every MMDiT trunk projection
+
+optim:
+  lr: 1.0e-4
+
+steps: 500
+seed: 42
+
+output:
+  dir: output/krea2-lora
+  name: krea2-lora             # -> output/krea2-lora/krea2-lora.safetensors (kohya-ss)
+  checkpoint_every: 100
+  sample_every: 0              # no classifier sample path in the diffusion trainer
+
+compute:
+  backend: wgpu
+  precision: f16
+  grad_checkpointing: true
+
+flow:
+  shift: 3.0                   # kohya/SD3 default; see flow::resolution_shift

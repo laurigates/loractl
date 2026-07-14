@@ -191,7 +191,12 @@ qwen3vl-real-reference:
 mmdit-reference:
     uv run reference/mmdit_reference.py --out crates/loractl-core/tests/fixtures
 
-# Download krea/Krea-2-Raw's raw.safetensors (26.3 GB, kept for M13/M14) +
+# Download krea/Krea-2-Raw's raw.safetensors (26.3 GB, kept for M14) +
 # generate the (uncommitted) depth-truncated real-width fixture + golden.
 mmdit-real-reference:
     uv run reference/mmdit_reference.py --real --out crates/loractl-core/tests/fixtures
+
+# Regenerate the checked-in tiny-krea2 composed bundle + tiny dataset (M14;
+# torch/diffusers/transformers via uv, no network).
+krea2-reference:
+    uv run reference/krea2_reference.py

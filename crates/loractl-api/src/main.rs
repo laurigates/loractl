@@ -1,9 +1,8 @@
-//! Binary shell for `loractl-api`: env config, tracing init, the one real
-//! trainer line, and the server loop. Everything else lives in the library
-//! so integration tests exercise the exact same `app()`.
+//! Binary shell for `loractl-api`: env config, tracing init, the real
+//! trainer factory, and the server loop. Everything else lives in the
+//! library so integration tests exercise the exact same `app()`.
 
 use loractl_api::{ApiConfig, TrainerFactory};
-use loractl_core::BurnTrainer;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -14,9 +13,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // The analogue of cli.rs's single `BurnTrainer` construction line: the
-    // only place the API names a concrete trainer.
-    let factory: TrainerFactory = Arc::new(|| Box::new(BurnTrainer));
+    // The analogue of cli.rs's trainer seam: routing on `model.base` lives
+    // in core (`select_trainer`) so the CLI and the API cannot drift apart.
+    let factory: TrainerFactory = Arc::new(loractl_core::select_trainer);
 
     let config = ApiConfig::from_env()?;
     let addr = std::env::var("LORACTL_API_ADDR").unwrap_or_else(|_| String::from("127.0.0.1:3000"));

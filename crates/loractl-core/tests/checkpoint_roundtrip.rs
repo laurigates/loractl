@@ -52,6 +52,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
         task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 8,
@@ -62,6 +63,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,

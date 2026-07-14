@@ -25,6 +25,7 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
         task: TaskKind::FlowMatching,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 2,
@@ -35,6 +36,7 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,

@@ -15,8 +15,7 @@ use figment::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use loractl_core::{
-    BackendKind, BurnTrainer, Device, NdArray, Precision, TaskKind, TrainConfig, TrainEvent,
-    Trainer,
+    BackendKind, Device, NdArray, Precision, TaskKind, TrainConfig, TrainEvent, select_trainer,
 };
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
@@ -236,7 +235,10 @@ fn train(cmd: TrainCmd) -> Result<()> {
         .progress_chars("=>-"),
     );
 
-    let mut trainer = BurnTrainer;
+    // The trainer factory — the constructor seam the load-bearing invariant
+    // protects. Routing on `model.base` lives in core (`select_trainer`) so
+    // the CLI and the API cannot drift apart.
+    let mut trainer = select_trainer(&config);
     let adapter = trainer.train(&config, &mut |event| match event {
         TrainEvent::Started { total_steps } => bar.set_length(total_steps),
         TrainEvent::Step { step, loss, lr } => {

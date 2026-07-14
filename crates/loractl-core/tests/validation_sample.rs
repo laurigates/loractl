@@ -51,6 +51,7 @@ fn periodic_validation_samples_are_emitted_and_written() {
         task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 4,
@@ -61,6 +62,7 @@ fn periodic_validation_samples_are_emitted_and_written() {
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,
