@@ -14,6 +14,13 @@
 /crates/loractl-core/tests/fixtures/gpt2-real/
 /crates/loractl-core/tests/fixtures/gpt2_real_golden.json
 
+# Real Qwen-Image VAE parity fixtures (~500 MB f32 safetensors + its golden),
+# generated locally by `just vae-real-reference` for the opt-in `qwen-vae-real`
+# test (M9) — never committed. The tiny VAE fixture IS committed
+# (see tests/fixtures/tiny-qwen-vae/).
+/crates/loractl-core/tests/fixtures/qwen-vae-real/
+/crates/loractl-core/tests/fixtures/qwen_vae_real_golden.json
+
 # Local, uncommitted training configs (keep config/examples/ tracked)
 /config/*.yaml
 !/config/examples/

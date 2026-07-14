@@ -8,25 +8,27 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: rectified-flow objective (milestone 8).** The latest milestones
-> turn toward image diffusion. M8 adds the **rectified-flow** (flow-matching)
-> training objective — v-parameterization (`v = ε − x₀`) with logit-normal +
-> shifted timestep sampling, pinned against a PyTorch golden
-> ([#19](https://github.com/laurigates/loractl/issues/19)); M7 makes the
-> training loop generic over a **config-selectable GPU compute backend**
-> (`wgpu`/Metal, with compile-gated `cuda`/`tch`)
-> ([#18](https://github.com/laurigates/loractl/issues/18)); M6 generalizes LoRA
-> from wrapping one `Linear` to a name-keyed adapter set injected across a
-> module tree, plus a **kohya-ss `.safetensors` export** that loads in
-> ComfyUI/Krea ([#17](https://github.com/laurigates/loractl/issues/17)). Earlier
+> **Status: Krea 2 latent VAE (milestone 9).** The Krea 2 image-diffusion
+> stack ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)) is under
+> way. M9 lands its first model component: the **Qwen-Image latent VAE**
+> (Krea 2's autoencoder — an f8, 16-channel video VAE run at `T = 1`) in burn,
+> with staged encode/decode parity vs diffusers on identical weights and an
+> opt-in real-weights proof against `Qwen/Qwen-Image`
+> ([#20](https://github.com/laurigates/loractl/issues/20)). It builds on M8's
+> **rectified-flow** objective — v-parameterization with logit-normal +
+> shifted timestep sampling
+> ([#19](https://github.com/laurigates/loractl/issues/19)) — M7's
+> **config-selectable GPU compute backend** (`wgpu`/Metal, compile-gated
+> `cuda`/`tch`) ([#18](https://github.com/laurigates/loractl/issues/18)), and
+> M6's name-keyed LoRA injection with a **kohya-ss `.safetensors` export**
+> that loads in ComfyUI/Krea
+> ([#17](https://github.com/laurigates/loractl/issues/17)). Earlier
 > milestones built the text-domain harness: an HTTP/SSE API (M5), portable
 > **`.safetensors`** adapter I/O and reproducible sampling (M4), and a real
 > GPT-2 loader with forward-pass parity vs PyTorch (M3), all on the M2
 > `BurnTrainer` pinned against a numerics golden (the dependency-free
-> `MockTrainer` remains for pipeline testing). Next up is **M9+** — the
-> greenfield burn diffusion stack for **Krea 2**
-> ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)). See
-> [Roadmap](#roadmap).
+> `MockTrainer` remains for pipeline testing). Next up: the **Qwen 3 VL text
+> encoder** (M10) and the **MMDiT denoiser** (M11). See [Roadmap](#roadmap).
 
 ## Why
 
@@ -323,7 +325,7 @@ burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-
 - [x] **M6 — Generic LoRA injection + kohya-ss export** ([#17](https://github.com/laurigates/loractl/issues/17))**.** `LoraAdapters` injects a name-keyed set of low-rank deltas across a module tree (config `targets` patterns → `build_adapters` over a model's `injectable_sites`); GPT-2's attach is re-expressed through it. `export_adapters` writes a kohya-ss `.safetensors` (transposed `lora_down`/`lora_up` + `.alpha` scalar) so a LoRA loads in ComfyUI/Krea, proven offline against a golden. A `PeftDiffusers` format is reserved behind the `AdapterNameMapper` seam.
 - [x] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** The training loop is generic over `B: AutodiffBackend`; `BurnTrainer` dispatches a config-selected backend (`compute.backend`) at run time — `ndarray` (CPU, always compiled, the offline/CI default), `wgpu` (GPU: Metal on Apple Silicon), and compile-gated `cuda`/`tch`. `just test` stays offline on ndarray; the GPU path is verified locally on Metal (`just test-wgpu`). See the [Config → Compute backend](#compute-backend-m7) section.
 - [x] **M8 — Rectified-flow objective** ([#19](https://github.com/laurigates/loractl/issues/19))**.** Flow-matching v-prediction (`v = ε − x₀`, SD3 time convention: t=0 data, t=1 noise) with logit-normal + shifted timestep sampling (`crates/loractl-core/src/flow.rs`; kohya/SD3 `shift: 3.0` default, plus the FLUX resolution-dependent `exp(μ)` helper for M11). `task: flow-matching` trains a LoRA velocity net on a synthetic latent toy, pinned against a PyTorch golden (M2 methodology, `just flow-reference`); adapter sidecars record the task and `loractl sample` refuses velocity nets.
-- [ ] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Hybrid Qwen-Image/FLUX-2 AE in burn; image→latent parity (no Rust prior art).
+- [x] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Krea 2's autoencoder turned out to be the **stock Qwen-Image VAE** (`krea-ai/krea-2`'s `autoencoder.py` wraps diffusers' `AutoencoderKLQwenImage` + per-channel latent stats), so `QwenVae` ports that: an f8, 16-latent-channel *video* VAE run image-only (`T = 1`), causal 3-D convs, Qwen RMS-norms, and the mid-block single-head attention (the "attention-free" report claim was wrong — `attn_scales: []` only strips trunk attention). Weights load verbatim (PyTorch conv layout, `gamma` norms; one `resample.1` Sequential-index rename), proven by staged encode/decode parity vs diffusers on a checked-in tiny fixture (`just vae-reference`) and an opt-in real-weights proof (`just vae-real-reference && just test-vae-real`). `encode` emits the **normalized** latents training consumes and M12 caches.
 - [ ] **M10 — Qwen 3 VL text encoder** ([#21](https://github.com/laurigates/loractl/issues/21))**.** Caption conditioning in burn — the largest single gap, no Rust prior art.
 - [ ] **M11 — Krea 2 MMDiT denoiser** ([#22](https://github.com/laurigates/loractl/issues/22))**.** ~12B DiT (3D axial RoPE, GQA, gated-sigmoid attn, QK-Norm, RMSNorm, SwiGLU); forward parity + LoRA attach — ADR-0001 methodology at 100× scale.
 - [ ] **M12 — Image dataset pipeline** ([#23](https://github.com/laurigates/loractl/issues/23))**.** Aspect-ratio bucketing + latent/embedding caching (the shape `DatasetConfig` already models).

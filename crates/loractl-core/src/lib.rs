@@ -18,6 +18,9 @@
 //! - [`flow`] — the rectified-flow (flow-matching) objective's math: the
 //!   data↔noise interpolation, the v-prediction target, and the logit-normal
 //!   + shift timestep sampler (milestone 8).
+//! - [`QwenVae`] — the Qwen-Image latent VAE (Krea 2's autoencoder): images
+//!   ↔ normalized f8/16-channel latents, with encode/decode parity vs.
+//!   diffusers (milestone 9).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -55,6 +58,7 @@ pub mod flow;
 pub mod gpt2;
 pub mod lora;
 pub mod model;
+pub mod qwen_vae;
 pub mod sample;
 pub mod train;
 
@@ -66,6 +70,7 @@ pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};
 pub use model::LoraMlp;
+pub use qwen_vae::{QwenVae, QwenVaeConfig};
 pub use train::{MockTrainer, Trainer};
 
 // Re-exported so `loractl-cli` can name the concrete inference backend/device

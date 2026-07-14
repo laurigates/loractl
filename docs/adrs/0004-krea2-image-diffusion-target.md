@@ -57,10 +57,10 @@ why the FLUX LoRA tooling transfers.
 | Norm | **zero-centered RMSNorm** | GPT-2 is LayerNorm |
 | Positional | **3D axial RoPE** | GPT-2 is learned absolute (no RoPE footgun) |
 | Text encoder | **Qwen 3 VL, text-only**, 12-layer feature aggregation | FLUX.1 uses T5-XXL + CLIP-L; loractl has neither |
-| VAE | **`AutoencoderKLQwenImage`**, f8 **16-channel** latents, attention-free | loractl has no VAE |
+| VAE | **`AutoencoderKLQwenImage`**, f8 **16-channel** latents, attention-free trunks (mid block keeps one attention — see the M9 correction below) | loractl has no VAE |
 | LoRA format | safetensors, kohya / diffusers-PEFT naming | loractl uses a bespoke `fc2.lora_a/b` scheme (M4) |
 
-The **Qwen 3 VL text encoder** and the **hybrid autoencoder** are the two
+The **Qwen 3 VL text encoder** and the **autoencoder** are the two
 components with **zero Rust prior art** in either burn or candle — they dominate
 the from-scratch cost. Both have concrete, researched burn design targets in
 their issues ([#20](https://github.com/laurigates/loractl/issues/20),
@@ -68,11 +68,23 @@ their issues ([#20](https://github.com/laurigates/loractl/issues/20),
 de-riskers: the encoder runs **text-only** (drop the vision tower via a
 `visual.*` regex filter at load; its M-RoPE collapses to plain 1D RoPE, and as a
 frozen extractor it needs **no Autodiff** backend at all — a clean split from the
-DiT+LoRA that do), and the VAE is **attention-free** (pure conv/norm/act:
-`GroupNorm` + SiLU + a Qwen-Image RMSNorm, with a custom left-padded causal
-`Conv3d`). Every specific (12 aggregation layers, 28/11 enc/dec depth, 16-channel
-f8 latents) is a *target to confirm against `krea-ai/krea-2` source*, per the
-report-vs-code risk below.
+DiT+LoRA that do), and the VAE was researched as **attention-free** (pure
+conv/norm/act with a custom left-padded causal `Conv3d`) — a claim the M9
+correction below revises. Every specific (12 aggregation layers, 28/11 enc/dec
+depth, 16-channel f8 latents) is a *target to confirm against `krea-ai/krea-2`
+source*, per the report-vs-code risk below.
+
+> **Correction (M9, 2026-07-14).** The source settled the AE's identity: it is
+> the **stock Qwen-Image VAE** — `krea-ai/krea-2`'s `autoencoder.py` wraps
+> diffusers' `AutoencoderKLQwenImage.from_pretrained("Qwen/Qwen-Image",
+> subfolder="vae")` verbatim, adding only per-channel `latents_mean`/
+> `latents_std` (de)normalization — not a Qwen-Image/FLUX-2 *hybrid* as this
+> section's research suggested. Two further report-vs-code deltas landed with
+> the M9 port (`crates/loractl-core/src/qwen_vae.rs`): the AE is **not** fully
+> attention-free (`attn_scales: []` only strips trunk attention; the mid block
+> always carries one single-head spatial self-attention), and its norms are the
+> Qwen RMS-norm variant + no `GroupNorm` on the actual checkpoint path. Depths
+> are per-config (`dim_mult` [1,2,4,4], `num_res_blocks` 2), not "28/11".
 
 ## Decision
 
@@ -129,7 +141,7 @@ forward and rectified-flow loop a Rust cross-reference to port from.
 entire M1–M5 investment (parity harness, `burn-store` loading discipline,
 `LoraLinear`, event stream, CLI/config/API) are burn-native; a pivot discards
 that for a partial head-start. Crucially, the **two hardest components — Qwen 3
-VL and the hybrid AE — are greenfield in candle too**, so candle's advantage is
+VL and the Qwen-Image AE — are greenfield in candle too**, so candle's advantage is
 concentrated in the DiT (M11), which the ADR-0001 methodology already knows how
 to build and verify. Decision: **stay on burn**, but treat candle's `flux`
 module and `candle-lora` as **cross-references** when implementing M8/M11 (a
@@ -152,7 +164,7 @@ encoders) if M10 proves a bottleneck — a fallback, not the plan.
 
 **Negative / costs**
 - This is effectively a second, larger project: a 12B multimodal diffusion stack
-  greenfield in burn. The Qwen 3 VL encoder (M10) and hybrid AE (M9) have no
+  greenfield in burn. The Qwen 3 VL encoder (M10) and Qwen-Image AE (M9) have no
   Rust prior art anywhere.
 - Every modern-arch footgun GPT-2 was chosen to avoid (3D axial RoPE half-split
   vs interleaved, RMSNorm, GQA, SwiGLU) now applies at once (M11), at 12B scale
