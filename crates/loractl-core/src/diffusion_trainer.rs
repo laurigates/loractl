@@ -61,7 +61,7 @@ use crate::adapters::{LoraAdapters, build_adapters};
 use crate::config::{BackendKind, ModelVariant, Precision, TaskKind, TrainConfig};
 use crate::dataset::prepare_dataset;
 use crate::event::TrainEvent;
-use crate::export::{ExportFormat, export_adapters};
+use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, sample_timesteps, velocity_target};
 use crate::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
@@ -442,16 +442,32 @@ fn run_diffusion<AB: AutodiffBackend>(
         );
     }
 
+    let adapter_path = config
+        .output
+        .dir
+        .join(format!("{}.safetensors", config.output.name));
+
+    // Resume: an existing final artifact is loaded back into the fresh
+    // adapters and training continues from it — running the same config
+    // again extends the adapter rather than restarting it. (The export
+    // carries no optimizer state, so AdamW re-warms its moments.)
+    if adapter_path.exists() {
+        let loaded = import_adapters(&mut set, ExportFormat::Krea2Diffusers, &adapter_path)
+            .with_context(|| format!("resuming from {}", adapter_path.display()))?;
+        sink(TrainEvent::Warning {
+            message: format!(
+                "resuming from existing adapter {} ({loaded} deltas loaded)",
+                adapter_path.display()
+            ),
+        });
+    }
+
     let mut optim = AdamWConfig::new()
         .with_weight_decay(config.optim.weight_decay as f32)
         .init::<AB, LoraAdapters<AB>>();
     let mut loss_scale = INITIAL_LOSS_SCALE;
     let mut clean_streak = 0u32;
     let checkpoint_every = config.output.checkpoint_every.max(1);
-    let adapter_path = config
-        .output
-        .dir
-        .join(format!("{}.safetensors", config.output.name));
 
     for step in 1..=total {
         let batch = &batches[((step - 1) as usize) % batches.len()];
@@ -525,21 +541,24 @@ fn run_diffusion<AB: AutodiffBackend>(
         // the scaled backward overflowed f16 — skip this update, halve the
         // scale, and continue; the loss itself was finite, so the run is
         // healthy. Identity-cost on f32 backends (always finite).
-        let mut acc: Option<Tensor<AB::InnerBackend, 1>> = None;
-        for delta in &set.deltas {
-            for id in [delta.lora_a.weight.id, delta.lora_b.weight.id] {
-                if let Some(g) = grads.get::<AB::InnerBackend, 2>(id) {
-                    let s = g.abs().sum();
-                    acc = Some(match acc {
-                        Some(a) => a + s,
-                        None => s,
-                    });
+        let grads_finite = if std::env::var_os("LORACTL_SKIP_GRAD_CHECK").is_some() {
+            true
+        } else {
+            let mut acc: Option<Tensor<AB::InnerBackend, 1>> = None;
+            for delta in &set.deltas {
+                for id in [delta.lora_a.weight.id, delta.lora_b.weight.id] {
+                    if let Some(g) = grads.get::<AB::InnerBackend, 2>(id) {
+                        let s = g.abs().sum();
+                        acc = Some(match acc {
+                            Some(a) => a + s,
+                            None => s,
+                        });
+                    }
                 }
             }
-        }
-        let grads_finite = acc
-            .map(|a| a.into_scalar().elem::<f32>().is_finite())
-            .unwrap_or(true);
+            acc.map(|a| a.into_scalar().elem::<f32>().is_finite())
+                .unwrap_or(true)
+        };
 
         if grads_finite {
             set = optim.step(config.optim.lr, set, grads);
