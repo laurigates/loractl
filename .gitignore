@@ -21,6 +21,14 @@
 /crates/loractl-core/tests/fixtures/qwen-vae-real/
 /crates/loractl-core/tests/fixtures/qwen_vae_real_golden.json
 
+# Real Krea-2-Raw text-encoder parity fixtures (~18 GB f32 re-save + goldens),
+# generated locally by `just qwen3vl-real-reference` for the opt-in
+# `qwen3vl-real` test (M10) — never committed. The tiny Qwen3-VL fixture IS
+# committed (see tests/fixtures/tiny-qwen3vl/).
+/crates/loractl-core/tests/fixtures/qwen3vl-real/
+/crates/loractl-core/tests/fixtures/qwen3vl_real_golden.json
+/crates/loractl-core/tests/fixtures/qwen3vl_real_golden.safetensors
+
 # Local, uncommitted training configs (keep config/examples/ tracked)
 /config/*.yaml
 !/config/examples/

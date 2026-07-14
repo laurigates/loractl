@@ -3522,6 +3522,7 @@ dependencies = [
  "safetensors 0.7.0",
  "serde",
  "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
