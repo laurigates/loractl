@@ -80,3 +80,6 @@ qwen-vae-real = []
 # Opt-in real Krea-2-Raw text-encoder parity test (`tests/qwen3vl_real.rs`,
 # M10). Same shape: fixtures come from `just qwen3vl-real-reference`.
 qwen3vl-real = []
+# Opt-in real Krea-2-Raw MMDiT staged-parity test (`tests/mmdit_real.rs`,
+# M11; depth-truncated — see the test docs). Fixtures: `just mmdit-real-reference`.
+mmdit-real = []

@@ -29,6 +29,14 @@
 /crates/loractl-core/tests/fixtures/qwen3vl_real_golden.json
 /crates/loractl-core/tests/fixtures/qwen3vl_real_golden.safetensors
 
+# Real Krea-2-Raw MMDiT fixtures (the 26.3 GB raw.safetensors download + the
+# ~6 GB depth-truncated f32 re-save + golden), generated locally by
+# `just mmdit-real-reference` for the opt-in `mmdit-real` test (M11) — never
+# committed. The tiny MMDiT fixture IS committed (see tests/fixtures/tiny-mmdit/).
+/crates/loractl-core/tests/fixtures/krea2-raw/
+/crates/loractl-core/tests/fixtures/mmdit-real/
+/crates/loractl-core/tests/fixtures/mmdit_real_golden.json
+
 # Local, uncommitted training configs (keep config/examples/ tracked)
 /config/*.yaml
 !/config/examples/

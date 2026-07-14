@@ -24,6 +24,9 @@
 //! - [`Qwen3VlEncoder`]/[`Qwen3VlConditioner`] — Krea 2's caption
 //!   conditioner: a frozen, text-only Qwen3-VL trunk emitting the 12-layer
 //!   hidden-state stack the MMDiT cross-attends to (milestone 10).
+//! - [`Mmdit`] — the Krea 2 single-stream MMDiT denoiser itself, with forward
+//!   parity vs the official implementation and the M6 LoRA attach across its
+//!   trunk projections (milestone 11).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -60,6 +63,7 @@ pub mod export;
 pub mod flow;
 pub mod gpt2;
 pub mod lora;
+pub mod mmdit;
 pub mod model;
 pub mod qwen3vl;
 pub mod qwen_vae;
@@ -73,6 +77,7 @@ pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};
+pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};
 pub use qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
