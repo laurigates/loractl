@@ -41,6 +41,11 @@ serde_json.workspace = true
 # new external surface.
 regex = "1"
 safetensors = "0.7"
+# Qwen3-VL caption conditioning (M10, #21): loads the HF `tokenizer.json`
+# shipped with Krea-2-Raw so `Qwen3VlConditioner` can tokenize captions
+# through the krea-2 chat template. Pure offline — file-based loading only,
+# no hub/HTTP features.
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
 [features]
 # GPU compute backends (M7, #18). None are in `default`, so `cargo build`/
@@ -72,3 +77,6 @@ gpt2-real = []
 # shape as `gpt2-real`: no extra crates; the real weights + golden come from
 # `just vae-real-reference` (downloads Qwen/Qwen-Image's vae via diffusers).
 qwen-vae-real = []
+# Opt-in real Krea-2-Raw text-encoder parity test (`tests/qwen3vl_real.rs`,
+# M10). Same shape: fixtures come from `just qwen3vl-real-reference`.
+qwen3vl-real = []

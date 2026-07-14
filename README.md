@@ -8,16 +8,20 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: Krea 2 latent VAE (milestone 9).** The Krea 2 image-diffusion
-> stack ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)) is under
-> way. M9 lands its first model component: the **Qwen-Image latent VAE**
-> (Krea 2's autoencoder — an f8, 16-channel video VAE run at `T = 1`) in burn,
-> with staged encode/decode parity vs diffusers on identical weights and an
-> opt-in real-weights proof against `Qwen/Qwen-Image`
-> ([#20](https://github.com/laurigates/loractl/issues/20)). It builds on M8's
-> **rectified-flow** objective — v-parameterization with logit-normal +
-> shifted timestep sampling
-> ([#19](https://github.com/laurigates/loractl/issues/19)) — M7's
+> **Status: Qwen3-VL caption conditioner (milestone 10).** The Krea 2
+> image-diffusion stack
+> ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)) is under way.
+> M10 lands its biggest greenfield component: **Krea 2's caption conditioner**
+> — a frozen, text-only **Qwen3-VL** trunk (GQA, per-head QK-norm, half-split
+> RoPE) emitting the 12-layer hidden-state stack the MMDiT cross-attends to,
+> plus the chat-template tokenizer front door, with staged parity vs
+> transformers and an opt-in proof against Krea-2-Raw's own shipped
+> `text_encoder` ([#21](https://github.com/laurigates/loractl/issues/21)).
+> M9 landed the **Qwen-Image latent VAE** (Krea 2's autoencoder — an f8,
+> 16-channel video VAE run at `T = 1`) with encode/decode parity vs diffusers
+> ([#20](https://github.com/laurigates/loractl/issues/20)); they build on
+> M8's **rectified-flow** objective
+> ([#19](https://github.com/laurigates/loractl/issues/19)), M7's
 > **config-selectable GPU compute backend** (`wgpu`/Metal, compile-gated
 > `cuda`/`tch`) ([#18](https://github.com/laurigates/loractl/issues/18)), and
 > M6's name-keyed LoRA injection with a **kohya-ss `.safetensors` export**
@@ -27,8 +31,8 @@ thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 > **`.safetensors`** adapter I/O and reproducible sampling (M4), and a real
 > GPT-2 loader with forward-pass parity vs PyTorch (M3), all on the M2
 > `BurnTrainer` pinned against a numerics golden (the dependency-free
-> `MockTrainer` remains for pipeline testing). Next up: the **Qwen 3 VL text
-> encoder** (M10) and the **MMDiT denoiser** (M11). See [Roadmap](#roadmap).
+> `MockTrainer` remains for pipeline testing). Next up: the **~12B MMDiT
+> denoiser** (M11). See [Roadmap](#roadmap).
 
 ## Why
 
@@ -326,7 +330,7 @@ burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-
 - [x] **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18))**.** The training loop is generic over `B: AutodiffBackend`; `BurnTrainer` dispatches a config-selected backend (`compute.backend`) at run time — `ndarray` (CPU, always compiled, the offline/CI default), `wgpu` (GPU: Metal on Apple Silicon), and compile-gated `cuda`/`tch`. `just test` stays offline on ndarray; the GPU path is verified locally on Metal (`just test-wgpu`). See the [Config → Compute backend](#compute-backend-m7) section.
 - [x] **M8 — Rectified-flow objective** ([#19](https://github.com/laurigates/loractl/issues/19))**.** Flow-matching v-prediction (`v = ε − x₀`, SD3 time convention: t=0 data, t=1 noise) with logit-normal + shifted timestep sampling (`crates/loractl-core/src/flow.rs`; kohya/SD3 `shift: 3.0` default, plus the FLUX resolution-dependent `exp(μ)` helper for M11). `task: flow-matching` trains a LoRA velocity net on a synthetic latent toy, pinned against a PyTorch golden (M2 methodology, `just flow-reference`); adapter sidecars record the task and `loractl sample` refuses velocity nets.
 - [x] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Krea 2's autoencoder turned out to be the **stock Qwen-Image VAE** (`krea-ai/krea-2`'s `autoencoder.py` wraps diffusers' `AutoencoderKLQwenImage` + per-channel latent stats), so `QwenVae` ports that: an f8, 16-latent-channel *video* VAE run image-only (`T = 1`), causal 3-D convs, Qwen RMS-norms, and the mid-block single-head attention (the "attention-free" report claim was wrong — `attn_scales: []` only strips trunk attention). Weights load verbatim (PyTorch conv layout, `gamma` norms; one `resample.1` Sequential-index rename), proven by staged encode/decode parity vs diffusers on a checked-in tiny fixture (`just vae-reference`) and an opt-in real-weights proof (`just vae-real-reference && just test-vae-real`). `encode` emits the **normalized** latents training consumes and M12 caches.
-- [ ] **M10 — Qwen 3 VL text encoder** ([#21](https://github.com/laurigates/loractl/issues/21))**.** Caption conditioning in burn — the largest single gap, no Rust prior art.
+- [x] **M10 — Qwen 3 VL text encoder** ([#21](https://github.com/laurigates/loractl/issues/21))**.** `Qwen3VlEncoder` ports the Qwen3-VL *text* trunk (GQA 32/8 heads, per-head **QK-RMSNorm before RoPE**, **half-split** RoPE at θ=5e6 — text-only M-RoPE collapses to plain RoPE, verified against `modeling_qwen3_vl.py` — SwiGLU, pre-norm residuals) and loads Krea-2-Raw's own `text_encoder/` **text-only**: a `^language_model\.` filter drops the vision tower, `PyTorchToBurnAdapter` transposes the `nn.Linear`s, and only the first 35 decoder layers load (`select_layers` max; the 36th layer + final norm are dead for conditioning). `Qwen3VlConditioner` adds `encoder.py`'s exact chat template + tokenizer (HF `tokenizers`, right-pad-then-suffix-concat) and emits the conditioning stack `[b, s, 12, 2560]` + mask the MMDiT (M11) consumes. Proven by staged parity vs transformers on a checked-in tiny fixture — whose golden includes a **right-padded row**, pinning key-padding masking — plus an opt-in real-weights + tokenizer-parity proof (`just qwen3vl-real-reference && just test-qwen3vl-real`).
 - [ ] **M11 — Krea 2 MMDiT denoiser** ([#22](https://github.com/laurigates/loractl/issues/22))**.** ~12B DiT (3D axial RoPE, GQA, gated-sigmoid attn, QK-Norm, RMSNorm, SwiGLU); forward parity + LoRA attach — ADR-0001 methodology at 100× scale.
 - [ ] **M12 — Image dataset pipeline** ([#23](https://github.com/laurigates/loractl/issues/23))**.** Aspect-ratio bucketing + latent/embedding caching (the shape `DatasetConfig` already models).
 - [ ] **M13 — Single-GPU 12B fit** ([#24](https://github.com/laurigates/loractl/issues/24))**.** bf16, gradient checkpointing, 8-bit Adam, QLoRA/NF4.

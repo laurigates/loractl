@@ -46,6 +46,10 @@ lint-gpt2-real:
 lint-vae-real:
     cargo clippy -p loractl-core --all-targets --features qwen-vae-real -- -D warnings
 
+# Lint the opt-in qwen3vl-real feature path (compiles the ignored real-encoder test).
+lint-qwen3vl-real:
+    cargo clippy -p loractl-core --all-targets --features qwen3vl-real -- -D warnings
+
 # Lint the opt-in wgpu GPU-backend path (M7). Compiles the cubecl/wgpu/naga
 # subtree + the gated wgpu smoke test; no GPU is needed to COMPILE and nothing
 # runs. Kept out of the default `just lint` so that stays offline and fast.
@@ -99,6 +103,11 @@ test-gpt2-real:
 # first). --release: the real decoder is tens of GMACs; debug ndarray crawls.
 test-vae-real:
     cargo test --release -p loractl-core --features qwen-vae-real -- --ignored real_qwen_vae_encode_decode_matches_diffusers_golden
+
+# Run the opt-in real Krea-2-Raw text-encoder parity test (needs
+# `just qwen3vl-real-reference` first). --release: a 4B-parameter forward.
+test-qwen3vl-real:
+    cargo test --release -p loractl-core --features qwen3vl-real -- --ignored real_qwen3vl_conditioning_matches_transformers_golden
 
 # Run the wgpu GPU portability smoke (M7) on a real GPU — Metal on Apple Silicon.
 # The ONLY way the double-gated `#[ignore]`d smoke runs; never fires in CI.
@@ -156,3 +165,13 @@ vae-reference:
 # its (uncommitted) f32 safetensors + golden for the opt-in parity test.
 vae-real-reference:
     uv run reference/qwen_vae_reference.py --real --out crates/loractl-core/tests/fixtures
+
+# Regenerate the checked-in tiny Qwen3-VL parity fixture (weights + golden;
+# torch + transformers via uv, no network — the tiny model is constructed locally).
+qwen3vl-reference:
+    uv run reference/qwen3vl_reference.py --out crates/loractl-core/tests/fixtures
+
+# Download krea/Krea-2-Raw's text_encoder + tokenizer (~8.9 GB bf16, re-saved
+# f32 ~18 GB) + generate its (uncommitted) goldens for the opt-in parity test.
+qwen3vl-real-reference:
+    uv run reference/qwen3vl_reference.py --real --out crates/loractl-core/tests/fixtures

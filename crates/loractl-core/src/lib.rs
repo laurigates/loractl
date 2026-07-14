@@ -21,6 +21,9 @@
 //! - [`QwenVae`] — the Qwen-Image latent VAE (Krea 2's autoencoder): images
 //!   ↔ normalized f8/16-channel latents, with encode/decode parity vs.
 //!   diffusers (milestone 9).
+//! - [`Qwen3VlEncoder`]/[`Qwen3VlConditioner`] — Krea 2's caption
+//!   conditioner: a frozen, text-only Qwen3-VL trunk emitting the 12-layer
+//!   hidden-state stack the MMDiT cross-attends to (milestone 10).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -58,6 +61,7 @@ pub mod flow;
 pub mod gpt2;
 pub mod lora;
 pub mod model;
+pub mod qwen3vl;
 pub mod qwen_vae;
 pub mod sample;
 pub mod train;
@@ -71,6 +75,7 @@ pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};
+pub use qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
 pub use train::{MockTrainer, Trainer};
 
 // Re-exported so `loractl-cli` can name the concrete inference backend/device
