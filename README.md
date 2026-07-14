@@ -8,16 +8,21 @@ completion-friendly, pipe-able — and a GUI, if anyone wants one, is just
 another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
-> **Status: the Krea 2 MMDiT denoiser (milestone 11).** The Krea 2
+> **Status: the image dataset pipeline (milestone 12).** The Krea 2
 > image-diffusion stack
-> ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)) is under way,
-> and its **core model is now ported**: M11 lands the ~12B single-stream
-> MMDiT (zero-centered RMSNorm, gated-sigmoid GQA attention, 3-axis
-> rotation-matrix RoPE, shared 6-way modulation, and the text-fusion
-> transformer that collapses the conditioner's 12-layer hidden-state
-> stack) with forward parity vs the official `krea-ai/krea-2`
+> ([ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)) is under way.
+> M12 lands the **kohya-style dataset pipeline**: folder-of-images +
+> same-named `.txt` captions, **aspect-ratio bucketing** (16-px-aligned, the
+> Krea 2 patch-grid constraint), and **one-time latent/conditioning caching**
+> to disk — after the first pass, epochs never touch the image decoder, the
+> VAE, or the text encoder again
+> ([#23](https://github.com/laurigates/loractl/issues/23)). It feeds M11's
+> **~12B single-stream MMDiT** (zero-centered RMSNorm, gated-sigmoid GQA
+> attention, 3-axis rotation-matrix RoPE, shared 6-way modulation, and the
+> text-fusion transformer that collapses the conditioner's 12-layer
+> hidden-state stack) with forward parity vs the official `krea-ai/krea-2`
 > implementation and the M6 **LoRA attach across its trunk projections**
-> ([#22](https://github.com/laurigates/loractl/issues/22)). It consumes
+> ([#22](https://github.com/laurigates/loractl/issues/22)), which consumes
 > M10's **Qwen3-VL caption conditioner** — a frozen, text-only trunk
 > emitting the 12-layer hidden-state stack, plus the chat-template tokenizer
 > ([#21](https://github.com/laurigates/loractl/issues/21)) — and M9's
@@ -34,8 +39,9 @@ thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 > **`.safetensors`** adapter I/O and reproducible sampling (M4), and a real
 > GPT-2 loader with forward-pass parity vs PyTorch (M3), all on the M2
 > `BurnTrainer` pinned against a numerics golden (the dependency-free
-> `MockTrainer` remains for pipeline testing). Next up: the **image dataset
-> pipeline** (M12). See [Roadmap](#roadmap).
+> `MockTrainer` remains for pipeline testing). Next up: the **single-GPU
+> 12B memory stack** (M13) and the end-to-end `DiffusionTrainer` (M14).
+> See [Roadmap](#roadmap).
 
 ## Why
 
@@ -335,7 +341,7 @@ burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-
 - [x] **M9 — Krea 2 latent VAE** ([#20](https://github.com/laurigates/loractl/issues/20))**.** Krea 2's autoencoder turned out to be the **stock Qwen-Image VAE** (`krea-ai/krea-2`'s `autoencoder.py` wraps diffusers' `AutoencoderKLQwenImage` + per-channel latent stats), so `QwenVae` ports that: an f8, 16-latent-channel *video* VAE run image-only (`T = 1`), causal 3-D convs, Qwen RMS-norms, and the mid-block single-head attention (the "attention-free" report claim was wrong — `attn_scales: []` only strips trunk attention). Weights load verbatim (PyTorch conv layout, `gamma` norms; one `resample.1` Sequential-index rename), proven by staged encode/decode parity vs diffusers on a checked-in tiny fixture (`just vae-reference`) and an opt-in real-weights proof (`just vae-real-reference && just test-vae-real`). `encode` emits the **normalized** latents training consumes and M12 caches.
 - [x] **M10 — Qwen 3 VL text encoder** ([#21](https://github.com/laurigates/loractl/issues/21))**.** `Qwen3VlEncoder` ports the Qwen3-VL *text* trunk (GQA 32/8 heads, per-head **QK-RMSNorm before RoPE**, **half-split** RoPE at θ=5e6 — text-only M-RoPE collapses to plain RoPE, verified against `modeling_qwen3_vl.py` — SwiGLU, pre-norm residuals) and loads Krea-2-Raw's own `text_encoder/` **text-only**: a `^language_model\.` filter drops the vision tower, `PyTorchToBurnAdapter` transposes the `nn.Linear`s, and only the first 35 decoder layers load (`select_layers` max; the 36th layer + final norm are dead for conditioning). `Qwen3VlConditioner` adds `encoder.py`'s exact chat template + tokenizer (HF `tokenizers`, right-pad-then-suffix-concat) and emits the conditioning stack `[b, s, 12, 2560]` + mask the MMDiT (M11) consumes. Proven by staged parity vs transformers on a checked-in tiny fixture — whose golden includes a **right-padded row**, pinning key-padding masking — plus an opt-in real-weights + tokenizer-parity proof (`just qwen3vl-real-reference && just test-qwen3vl-real`).
 - [x] **M11 — Krea 2 MMDiT denoiser** ([#22](https://github.com/laurigates/loractl/issues/22))**.** `Mmdit` ports `krea-ai/krea-2`'s `SingleStreamDiT` — a **single-stream** DiT (text + image tokens concatenated through 28 identical blocks, not FLUX's double-stream): **zero-centered RMSNorm** (`weight = scale + 1`, eps 1e-5, f32), **gated-sigmoid attention** (`wo(attn · σ(gate(x)))`), QK-norm, GQA 48/12, **rotation-matrix RoPE** over 3 position axes `[32, 48, 48]` at θ=1e3 (text at the origin, image on the patch grid), shared 6-way timestep modulation with per-block learned bias, the 2+2-block **text-fusion transformer** that collapses the M10 conditioner's 12-layer stack, and the reference's pad-to-256/masking/output-slice semantics. Proven by staged parity vs the official `mmdit.py` (fetched at a pinned commit by `just mmdit-reference`) on a checked-in tiny fixture, plus an opt-in **real-weights staged proof** at real widths, depth-truncated to fit a 48 GiB host (`just mmdit-real-reference && just test-mmdit-real`; full-depth runs arrive with M13's quantization). The M6 LoRA attaches across every trunk projection (`blocks.N.attn.{wq,wk,wv,wo}` + `mlp.{gate,up,down}`): zero-init adapters are a bit-identical no-op and one real step routes gradients to the adapters only.
-- [ ] **M12 — Image dataset pipeline** ([#23](https://github.com/laurigates/loractl/issues/23))**.** Aspect-ratio bucketing + latent/embedding caching (the shape `DatasetConfig` already models).
+- [x] **M12 — Image dataset pipeline** ([#23](https://github.com/laurigates/loractl/issues/23))**.** `dataset` implements the kohya/ai-toolkit convention `DatasetConfig` was scaffolded for: scan a folder of images + same-named `.txt` captions (missing caption = unconditional example), group into **aspect-ratio buckets** (every dimension a multiple of 16 — Krea 2's `ae.compression · patch` grid), resize cover-style + center-crop, and cache **VAE latents + conditioning stacks** as safetensors under `<dataset>/.loractl-cache/`, keyed by image file name (latents) / stem (conditioning), bucket shape, and a hashed encoder fingerprint. Encoders are injected as closures — M14 wires the real frozen `QwenVae`/`Qwen3VlConditioner`, the offline tests wire mocks — and the cache-reuse test passes encoders that *panic*, proving warm epochs are pure tensor reads. Per-bucket batching never mixes shapes.
 - [ ] **M13 — Single-GPU 12B fit** ([#24](https://github.com/laurigates/loractl/issues/24))**.** bf16, gradient checkpointing, 8-bit Adam, QLoRA/NF4.
 - [ ] **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25))**.** A `DiffusionTrainer` trains a real Krea 2 LoRA; the output loads and applies in ComfyUI / Krea-2-Turbo.
 

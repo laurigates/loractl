@@ -3518,6 +3518,7 @@ dependencies = [
  "anyhow",
  "burn",
  "burn-store",
+ "image",
  "regex",
  "safetensors 0.7.0",
  "serde",

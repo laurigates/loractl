@@ -27,6 +27,9 @@
 //! - [`Mmdit`] — the Krea 2 single-stream MMDiT denoiser itself, with forward
 //!   parity vs the official implementation and the M6 LoRA attach across its
 //!   trunk projections (milestone 11).
+//! - [`dataset`] — the image dataset pipeline: kohya-style folder scanning,
+//!   aspect-ratio bucketing, and one-time latent/conditioning caching
+//!   (milestone 12).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -58,6 +61,7 @@ pub mod adapter;
 pub mod adapters;
 pub mod burn_trainer;
 pub mod config;
+pub mod dataset;
 pub mod event;
 pub mod export;
 pub mod flow;
