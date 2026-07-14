@@ -1,0 +1,951 @@
+//! The Krea 2 MMDiT denoiser (`SingleStreamDiT`) — the model the LoRA adapts
+//! (M11, #22).
+//!
+//! Ported from `krea-ai/krea-2`'s `mmdit.py` (the authoritative source; there
+//! is no pip package — the reference generator downloads it at a pinned
+//! commit). It is a **single-stream** rectified-flow DiT: the text context and
+//! the patchified image latents are concatenated into one token sequence and
+//! run through `layers` identical blocks — not FLUX's double-stream layout.
+//!
+//! ## The modern-arch footguns, pinned against source
+//!
+//! - **Zero-centered RMSNorm** ([`ZRmsNorm`]): the parameter (`scale`) is
+//!   zero-initialized and the effective weight is `scale + 1`, eps `1e-5`
+//!   (not the encoder's `1e-6`), always computed in f32.
+//! - **Gated-sigmoid attention** ([`MmditAttention`]): a fifth projection
+//!   (`gate`) of the block input multiplies the *merged* attention output
+//!   elementwise through a sigmoid, before the output projection:
+//!   `wo(attn(q,k,v) * σ(gate(x)))`.
+//! - **QK-Norm**: [`ZRmsNorm`] over `head_dim`, applied after the head split
+//!   and before RoPE. **GQA**: 48 query heads over 12 KV heads (HF
+//!   `repeat_kv` grouping order).
+//! - **Rotation-matrix RoPE** ([`rope_tables`]/[`apply_rope`]): FLUX-style
+//!   *consecutive-pair* rotation (`x₀' = cos·x₀ − sin·x₁`,
+//!   `x₁' = sin·x₀ + cos·x₁`) at `theta = 1e3` — neither the half-split HF
+//!   convention (M10) nor burn's built-in layout. The head dim splits across
+//!   **3 position axes** `[hd − 12·(hd/16), 6·(hd/16), 6·(hd/16)]`
+//!   (= `[32, 48, 48]` at `hd = 128`); text tokens sit at position
+//!   `(0, 0, 0)`, image tokens at `(0, row, col)` on the patch grid.
+//! - **Shared 6-way modulation** ([`DoubleSharedModulation`]): one `tvec =
+//!   tproj(tmlp(temb(t)))` for the whole trunk; each block adds its own
+//!   learned bias (`mod.lin`, a bare parameter) and chunks into
+//!   pre/post scale-shift-gate. The timestep embedding ([`temb`]) is
+//!   cos-first with the timestep scaled ×1000, period 1e4, and its
+//!   `[b, 1, dim]` shape is what makes every modulation broadcast per-sample.
+//! - **Text fusion** ([`TextFusionTransformer`]): 2 blocks attend across the
+//!   M10 conditioner's **12-layer axis** per token, a `Linear(12 → 1)`
+//!   projector collapses it, then 2 blocks refine along the sequence. No
+//!   RoPE, no modulation, no GQA (20/20 heads) in fusion.
+//! - **Masking is symmetric** (query ⊗ key outer product), bidirectional —
+//!   no causal mask. The combined sequence is **zero-padded to a multiple of
+//!   256** (mask false, positions zero) and the output sliced back to the
+//!   image tokens. Masked positions carry attention garbage that never leaks
+//!   into valid outputs (they are blocked as keys); the parity harness zeroes
+//!   them on both sides before comparing.
+//!
+//! ## Weight loading
+//!
+//! The module tree mirrors `raw.safetensors` (430 tensors, single file).
+//! Trunk/fusion projections are `nn.Linear`s → `PyTorchToBurnAdapter`
+//! transpose (the bare modulation parameters live in custom containers the
+//! adapter leaves untouched). Two naming gaps are remapped
+//! ([`Mmdit::key_remap`]): the reference's `nn.Sequential` indices
+//! (`tmlp.0/2`, `tproj.1`, `txtmlp.0/1/3`) and its `mod` field (a Rust
+//! keyword, held here as `modulation`).
+//!
+//! ## LoRA attach (the point of the milestone)
+//!
+//! [`Mmdit::injectable_sites`] advertises every per-block projection
+//! (`attn.{wq,wk,wv,wo}` + `mlp.{gate,up,down}`) to the M6
+//! [`build_adapters`](crate::adapters::build_adapters) machinery, and
+//! [`Mmdit::forward_with_adapters`] threads the name-keyed delta set through
+//! the forward exactly like GPT-2's attach — zero-initialized deltas are a
+//! bit-identical no-op.
+//!
+//! Like the rest of `loractl-core`, this module emits no output and imports
+//! no CLI. Parity: `tests/mmdit_parity.rs` vs `reference/mmdit_reference.py`.
+
+use crate::adapters::{LoraAdapters, LoraSite};
+use burn::module::{Module, Param};
+use burn::nn::{Gelu, Linear, LinearConfig};
+use burn::tensor::activation::{sigmoid, silu, softmax};
+use burn::tensor::backend::Backend;
+use burn::tensor::{Tensor, TensorData};
+
+/// Additive-mask sentinel (finite, so contributions cannot overflow to
+/// `-inf`; fully-masked rows softmax to uniform garbage that valid positions
+/// never read).
+const MASK_NEG: f32 = -1.0e30;
+
+/// Static architecture of a `SingleStreamDiT` variant. Field names mirror
+/// `SingleMMDiTConfig`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MmditConfig {
+    /// Trunk width.
+    pub features: usize,
+    /// Timestep-embedding width (before `tmlp`).
+    pub tdim: usize,
+    /// Text-conditioning width (the M10 encoder's hidden size).
+    pub txtdim: usize,
+    /// Trunk query heads.
+    pub heads: usize,
+    /// Trunk KV heads (GQA).
+    pub kvheads: usize,
+    /// SwiGLU width multiplier.
+    pub multiplier: usize,
+    /// Trunk depth.
+    pub layers: usize,
+    /// Patch size (latent pixels per token side).
+    pub patch: usize,
+    /// Latent channels (the M9 VAE's `z_dim`).
+    pub channels: usize,
+    /// Text-fusion heads.
+    pub txtheads: usize,
+    /// Text-fusion KV heads.
+    pub txtkvheads: usize,
+    /// Number of conditioner hidden-state layers fed in (the projector's
+    /// input width) — NOT the fusion depth, which is fixed at 2 + 2.
+    pub txtlayers: usize,
+    /// RoPE base.
+    pub theta: f64,
+}
+
+impl MmditConfig {
+    /// The tiny fixture config. Must match `reference/mmdit_reference.py`'s
+    /// `TINY` exactly. Deliberately non-degenerate: `features/2`, `kv_out`,
+    /// `txtdim`, `head_dim`, `layers` and `txtlayers` are pairwise distinct,
+    /// so deriving one width from the wrong config field (or conflating trunk
+    /// depth with the fusion projector's layer axis) fails the always-run
+    /// parity test rather than only the opt-in real one.
+    pub fn tiny() -> Self {
+        Self {
+            features: 96,
+            tdim: 16,
+            txtdim: 40,
+            heads: 6,
+            kvheads: 2,
+            multiplier: 4,
+            layers: 2,
+            patch: 2,
+            channels: 4,
+            txtheads: 2,
+            txtkvheads: 2,
+            txtlayers: 3,
+            theta: 1e3,
+        }
+    }
+
+    /// The real Krea 2 denoiser (`single_mmdit_large_wide` in the reference's
+    /// `inference.py`), ~12B parameters at full depth.
+    pub fn krea2() -> Self {
+        Self {
+            features: 6144,
+            tdim: 256,
+            txtdim: 2560,
+            heads: 48,
+            kvheads: 12,
+            multiplier: 4,
+            layers: 28,
+            patch: 2,
+            channels: 16,
+            txtheads: 20,
+            txtkvheads: 20,
+            txtlayers: 12,
+            theta: 1e3,
+        }
+    }
+
+    /// [`krea2`](Self::krea2) truncated to `layers` blocks — the real-weights
+    /// staged-parity configuration (the full 28-block model in f32 exceeds a
+    /// 48 GiB host; full-depth runs arrive with M13's quantization).
+    pub fn krea2_truncated(layers: usize) -> Self {
+        Self {
+            layers,
+            ..Self::krea2()
+        }
+    }
+
+    /// Trunk head width.
+    pub fn head_dim(&self) -> usize {
+        self.features / self.heads
+    }
+
+    /// The 3-axis RoPE split of a head dim (`mmdit.py`'s `axes`).
+    pub fn rope_axes(head_dim: usize) -> [usize; 3] {
+        let unit = head_dim / 16;
+        [head_dim - 12 * unit, 6 * unit, 6 * unit]
+    }
+
+    /// SwiGLU inner width: `int(2·features/3) · multiplier`, rounded up to a
+    /// multiple of 128 (the reference's `multiple`).
+    pub fn swiglu_dim(features: usize, multiplier: usize) -> usize {
+        let raw = (2 * features / 3) * multiplier;
+        raw.div_ceil(128) * 128
+    }
+}
+
+/// Zero-centered RMSNorm: `x / sqrt(mean(x²) + 1e-5) · (scale + 1)`, with a
+/// zero-initialized `scale` parameter (matching the checkpoint's `…scale`
+/// keys).
+#[derive(Module, Debug)]
+pub struct ZRmsNorm<B: Backend> {
+    /// Zero-centered per-channel gain over the last dimension.
+    pub scale: Param<Tensor<B, 1>>,
+}
+
+impl<B: Backend> ZRmsNorm<B> {
+    fn init(dim: usize, device: &B::Device) -> Self {
+        Self {
+            scale: Param::from_tensor(Tensor::zeros([dim], device)),
+        }
+    }
+
+    /// Normalize the last dimension of a rank-`D` tensor.
+    pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
+        let variance = x.clone().powi_scalar(2).mean_dim(D - 1);
+        let x = x / (variance + 1e-5).sqrt();
+        x * (self.scale.val() + 1.0).unsqueeze::<D>()
+    }
+}
+
+/// The q/k pre-RoPE norms (`QKNorm`), each over `head_dim`.
+#[derive(Module, Debug)]
+pub struct QkNorm<B: Backend> {
+    /// Query norm.
+    pub qnorm: ZRmsNorm<B>,
+    /// Key norm.
+    pub knorm: ZRmsNorm<B>,
+}
+
+/// Per-token RoPE tables: `(cos, sin)`, each `[b, l, head_dim / 2]`, built
+/// from 3-axis integer positions with per-axis frequency bands (computed in
+/// f64, like the reference).
+pub struct RopeTables<B: Backend> {
+    /// Cosine table.
+    pub cos: Tensor<B, 3>,
+    /// Sine table.
+    pub sin: Tensor<B, 3>,
+}
+
+/// Build [`RopeTables`] from positions `[b, l, 3]` for a head dim split
+/// across [`MmditConfig::rope_axes`].
+pub fn rope_tables<B: Backend>(
+    pos: Tensor<B, 3>,
+    head_dim: usize,
+    theta: f64,
+    device: &B::Device,
+) -> RopeTables<B> {
+    let [b, l, three] = pos.dims();
+    assert_eq!(three, 3, "positions carry 3 axes");
+    let axes = MmditConfig::rope_axes(head_dim);
+    let pos: Vec<f32> = pos.into_data().convert::<f32>().into_vec::<f32>().unwrap();
+
+    let half = head_dim / 2;
+    let mut cos = Vec::with_capacity(b * l * half);
+    let mut sin = Vec::with_capacity(b * l * half);
+    for token in 0..b * l {
+        for (axis, &dim) in axes.iter().enumerate() {
+            let p = pos[token * 3 + axis] as f64;
+            for j in 0..dim / 2 {
+                let omega = theta.powf(-2.0 * j as f64 / dim as f64);
+                let angle = p * omega;
+                cos.push(angle.cos() as f32);
+                sin.push(angle.sin() as f32);
+            }
+        }
+    }
+    RopeTables {
+        cos: Tensor::from_data(TensorData::new(cos, [b, l, half]), device),
+        sin: Tensor::from_data(TensorData::new(sin, [b, l, half]), device),
+    }
+}
+
+/// Apply consecutive-pair rotation RoPE to `[b, heads, l, head_dim]`:
+/// for each pair `(x₀, x₁)`, `x₀' = cos·x₀ − sin·x₁`, `x₁' = sin·x₀ + cos·x₁`.
+fn apply_rope<B: Backend>(x: Tensor<B, 4>, tables: &RopeTables<B>) -> Tensor<B, 4> {
+    let [b, h, l, hd] = x.dims();
+    let half = hd / 2;
+    let pairs = x.reshape([b, h, l, half, 2]);
+    let x0 = pairs.clone().narrow(4, 0, 1);
+    let x1 = pairs.narrow(4, 1, 1);
+    // [b, l, half] -> [b, 1, l, half, 1], broadcast over heads and the pair.
+    let cos = tables.cos.clone().reshape([b, 1, l, half, 1]);
+    let sin = tables.sin.clone().reshape([b, 1, l, half, 1]);
+    let y0 = cos.clone() * x0.clone() - sin.clone() * x1.clone();
+    let y1 = sin * x0 + cos * x1;
+    Tensor::cat(vec![y0, y1], 4).reshape([b, h, l, hd])
+}
+
+/// Run a base `Linear` at an injectable site, adding any adapter registered
+/// for `path` (the M6 attach seam; `None` is the plain loaded forward).
+fn site<B: Backend, const D: usize>(
+    adapters: Option<&LoraAdapters<B>>,
+    path: &str,
+    lin: &Linear<B>,
+    x: Tensor<B, D>,
+) -> Tensor<B, D> {
+    match adapters {
+        Some(a) => a.apply(path, x.clone(), lin.forward(x)),
+        None => lin.forward(x),
+    }
+}
+
+/// The gated-sigmoid GQA attention (`mmdit.py`'s `Attention`).
+#[derive(Module, Debug)]
+pub struct MmditAttention<B: Backend> {
+    /// Query projection.
+    pub wq: Linear<B>,
+    /// Key projection (KV heads wide).
+    pub wk: Linear<B>,
+    /// Value projection (KV heads wide).
+    pub wv: Linear<B>,
+    /// The sigmoid gate projection (`dim → dim`), from the block input.
+    pub gate: Linear<B>,
+    /// Output projection.
+    pub wo: Linear<B>,
+    /// Pre-RoPE q/k norms.
+    pub qknorm: QkNorm<B>,
+    /// Query-head count.
+    #[module(skip)]
+    pub heads: usize,
+    /// KV-head count.
+    #[module(skip)]
+    pub kvheads: usize,
+}
+
+impl<B: Backend> MmditAttention<B> {
+    fn init(dim: usize, heads: usize, kvheads: usize, device: &B::Device) -> Self {
+        let head_dim = dim / heads;
+        let lin = |d_in: usize, d_out: usize| {
+            LinearConfig::new(d_in, d_out).with_bias(false).init(device)
+        };
+        Self {
+            wq: lin(dim, head_dim * heads),
+            wk: lin(dim, head_dim * kvheads),
+            wv: lin(dim, head_dim * kvheads),
+            gate: lin(dim, dim),
+            wo: lin(dim, dim),
+            qknorm: QkNorm {
+                qnorm: ZRmsNorm::init(head_dim, device),
+                knorm: ZRmsNorm::init(head_dim, device),
+            },
+            heads,
+            kvheads,
+        }
+    }
+
+    /// `x` is `[b, l, dim]`; `rope` is `None` in the text-fusion blocks;
+    /// `mask` the additive `[b, 1, l, l]` attention mask. `adapters`/`prefix`
+    /// route the projections through injected LoRA deltas.
+    fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        rope: Option<&RopeTables<B>>,
+        mask: Option<Tensor<B, 4>>,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
+    ) -> Tensor<B, 3> {
+        let [b, l, dim] = x.dims();
+        let (heads, kv) = (self.heads, self.kvheads);
+        let hd = dim / heads;
+
+        let split = |t: Tensor<B, 3>, n: usize| t.reshape([b, l, n, hd]).swap_dims(1, 2);
+        let q = split(
+            site(adapters, &format!("{prefix}.wq"), &self.wq, x.clone()),
+            heads,
+        );
+        let k = split(
+            site(adapters, &format!("{prefix}.wk"), &self.wk, x.clone()),
+            kv,
+        );
+        let v = split(
+            site(adapters, &format!("{prefix}.wv"), &self.wv, x.clone()),
+            kv,
+        );
+        let gate = self.gate.forward(x);
+
+        let q = self.qknorm.qnorm.forward(q);
+        let k = self.qknorm.knorm.forward(k);
+        let (q, k) = match rope {
+            Some(tables) => (apply_rope(q, tables), apply_rope(k, tables)),
+            None => (q, k),
+        };
+
+        // GQA: repeat KV heads over their query groups (HF repeat_kv order).
+        let groups = heads / kv;
+        let expand_kv = |t: Tensor<B, 4>| {
+            t.reshape([b, kv, 1, l, hd])
+                .expand([b, kv, groups, l, hd])
+                .reshape([b, heads, l, hd])
+        };
+        let k = expand_kv(k);
+        let v = expand_kv(v);
+
+        let scale = (hd as f64).sqrt();
+        let mut scores = q.matmul(k.swap_dims(2, 3)).div_scalar(scale);
+        if let Some(m) = mask {
+            scores = scores + m;
+        }
+        let ctx = softmax(scores, 3).matmul(v); // [b, heads, l, hd]
+        let merged = ctx.swap_dims(1, 2).reshape([b, l, heads * hd]);
+
+        // The gated-sigmoid: gate the merged attention output, then project.
+        site(
+            adapters,
+            &format!("{prefix}.wo"),
+            &self.wo,
+            merged * sigmoid(gate),
+        )
+    }
+}
+
+/// The SwiGLU feed-forward (`down(silu(gate(x)) · up(x))`), inner width per
+/// [`MmditConfig::swiglu_dim`].
+#[derive(Module, Debug)]
+pub struct SwiGlu<B: Backend> {
+    /// Gate projection.
+    pub gate: Linear<B>,
+    /// Up projection.
+    pub up: Linear<B>,
+    /// Down projection.
+    pub down: Linear<B>,
+}
+
+impl<B: Backend> SwiGlu<B> {
+    fn init(features: usize, multiplier: usize, device: &B::Device) -> Self {
+        let inner = MmditConfig::swiglu_dim(features, multiplier);
+        let lin = |d_in: usize, d_out: usize| {
+            LinearConfig::new(d_in, d_out).with_bias(false).init(device)
+        };
+        Self {
+            gate: lin(features, inner),
+            up: lin(features, inner),
+            down: lin(inner, features),
+        }
+    }
+
+    fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
+    ) -> Tensor<B, 3> {
+        let gated = silu(site(
+            adapters,
+            &format!("{prefix}.gate"),
+            &self.gate,
+            x.clone(),
+        )) * site(adapters, &format!("{prefix}.up"), &self.up, x);
+        site(adapters, &format!("{prefix}.down"), &self.down, gated)
+    }
+}
+
+/// The per-block learned modulation bias: `tvec + lin`, chunked into
+/// pre/post scale, shift, gate (each `[b, 1, features]`).
+#[derive(Module, Debug)]
+pub struct DoubleSharedModulation<B: Backend> {
+    /// The learned bias, `[6 · features]`, zero-initialized (the checkpoint's
+    /// `blocks.N.mod.lin` — `mod` is a Rust keyword, remapped at load).
+    pub lin: Param<Tensor<B, 1>>,
+}
+
+impl<B: Backend> DoubleSharedModulation<B> {
+    /// `tvec` is `[b, 1, 6 · features]` → six `[b, 1, features]` chunks.
+    fn forward(&self, tvec: Tensor<B, 3>) -> [Tensor<B, 3>; 6] {
+        let f = self.lin.dims()[0] / 6;
+        let out = tvec + self.lin.val().unsqueeze::<3>();
+        core::array::from_fn(|i| out.clone().narrow(2, i * f, f))
+    }
+}
+
+/// The output layer's 2-way modulation (`SimpleModulation`).
+#[derive(Module, Debug)]
+pub struct SimpleModulation<B: Backend> {
+    /// The learned bias, `[2, features]`, zero-initialized.
+    pub lin: Param<Tensor<B, 2>>,
+}
+
+impl<B: Backend> SimpleModulation<B> {
+    /// `t` is `[b, 1, features]` → `(scale, shift)`, each `[b, 1, features]`.
+    fn forward(&self, t: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
+        let out = t + self.lin.val().unsqueeze::<3>(); // [b, 2, features]
+        (out.clone().narrow(1, 0, 1), out.narrow(1, 1, 1))
+    }
+}
+
+/// One text-fusion block: plain pre-norm attention + SwiGLU residuals (no
+/// RoPE, no modulation).
+#[derive(Module, Debug)]
+pub struct TextFusionBlock<B: Backend> {
+    /// Pre-attention norm.
+    pub prenorm: ZRmsNorm<B>,
+    /// Pre-MLP norm.
+    pub postnorm: ZRmsNorm<B>,
+    /// The attention (no GQA in the real config: 20/20 heads).
+    pub attn: MmditAttention<B>,
+    /// The feed-forward.
+    pub mlp: SwiGlu<B>,
+}
+
+impl<B: Backend> TextFusionBlock<B> {
+    fn init(
+        dim: usize,
+        heads: usize,
+        kvheads: usize,
+        multiplier: usize,
+        device: &B::Device,
+    ) -> Self {
+        Self {
+            prenorm: ZRmsNorm::init(dim, device),
+            postnorm: ZRmsNorm::init(dim, device),
+            attn: MmditAttention::init(dim, heads, kvheads, device),
+            mlp: SwiGlu::init(dim, multiplier, device),
+        }
+    }
+
+    fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 4>>) -> Tensor<B, 3> {
+        let x = x.clone()
+            + self
+                .attn
+                .forward(self.prenorm.forward(x), None, mask, None, "");
+        x.clone() + self.mlp.forward(self.postnorm.forward(x), None, "")
+    }
+}
+
+/// The text-fusion transformer: 2 blocks across the conditioner's layer axis
+/// (per token), a `Linear(txtlayers → 1)` projector, then 2 blocks along the
+/// sequence.
+#[derive(Module, Debug)]
+pub struct TextFusionTransformer<B: Backend> {
+    /// The per-token, across-layers blocks.
+    pub layerwise_blocks: Vec<TextFusionBlock<B>>,
+    /// Collapses the layer axis (`txtlayers → 1`, no bias).
+    pub projector: Linear<B>,
+    /// The along-sequence refiner blocks.
+    pub refiner_blocks: Vec<TextFusionBlock<B>>,
+}
+
+impl<B: Backend> TextFusionTransformer<B> {
+    /// `x` is the conditioner stack `[b, l, txtlayers, txtdim]`; `mask` the
+    /// additive text mask `[b, 1, l, l]` (layerwise blocks run unmasked, like
+    /// the reference).
+    fn forward(&self, x: Tensor<B, 4>, mask: Tensor<B, 4>) -> Tensor<B, 3> {
+        let [b, l, n, d] = x.dims();
+        let mut y = x.reshape([b * l, n, d]);
+        for block in &self.layerwise_blocks {
+            y = block.forward(y, None);
+        }
+        // [b·l, n, d] -> [b, l, d, n] -> project the layer axis away.
+        let y = y.reshape([b, l, n, d]).swap_dims(2, 3);
+        let mut y: Tensor<B, 3> = self.projector.forward(y).squeeze_dim(3);
+        for block in &self.refiner_blocks {
+            y = block.forward(y, Some(mask.clone()));
+        }
+        y
+    }
+}
+
+/// One trunk block: modulated pre-norm attention + SwiGLU residuals.
+#[derive(Module, Debug)]
+pub struct SingleStreamBlock<B: Backend> {
+    /// The per-block modulation bias (`mod` in the checkpoint).
+    pub modulation: DoubleSharedModulation<B>,
+    /// Pre-attention norm.
+    pub prenorm: ZRmsNorm<B>,
+    /// Pre-MLP norm.
+    pub postnorm: ZRmsNorm<B>,
+    /// The gated GQA attention.
+    pub attn: MmditAttention<B>,
+    /// The feed-forward.
+    pub mlp: SwiGlu<B>,
+}
+
+impl<B: Backend> SingleStreamBlock<B> {
+    fn init(config: &MmditConfig, device: &B::Device) -> Self {
+        Self {
+            modulation: DoubleSharedModulation {
+                lin: Param::from_tensor(Tensor::zeros([6 * config.features], device)),
+            },
+            prenorm: ZRmsNorm::init(config.features, device),
+            postnorm: ZRmsNorm::init(config.features, device),
+            attn: MmditAttention::init(config.features, config.heads, config.kvheads, device),
+            mlp: SwiGlu::init(config.features, config.multiplier, device),
+        }
+    }
+
+    fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        tvec: Tensor<B, 3>,
+        rope: &RopeTables<B>,
+        mask: Tensor<B, 4>,
+        adapters: Option<&LoraAdapters<B>>,
+        prefix: &str,
+    ) -> Tensor<B, 3> {
+        let [prescale, preshift, pregate, postscale, postshift, postgate] =
+            self.modulation.forward(tvec);
+        let attn_in = (prescale + 1.0) * self.prenorm.forward(x.clone()) + preshift;
+        let x = x + pregate
+            * self.attn.forward(
+                attn_in,
+                Some(rope),
+                Some(mask),
+                adapters,
+                &format!("{prefix}.attn"),
+            );
+        let mlp_in = (postscale + 1.0) * self.postnorm.forward(x.clone()) + postshift;
+        x + postgate * self.mlp.forward(mlp_in, adapters, &format!("{prefix}.mlp"))
+    }
+}
+
+/// The output head: modulated norm + linear back to patch pixels.
+#[derive(Module, Debug)]
+pub struct LastLayer<B: Backend> {
+    /// Pre-head norm.
+    pub norm: ZRmsNorm<B>,
+    /// `features → patch² · channels` (with bias).
+    pub linear: Linear<B>,
+    /// The 2-way modulation.
+    pub modulation: SimpleModulation<B>,
+}
+
+impl<B: Backend> LastLayer<B> {
+    fn forward(&self, x: Tensor<B, 3>, t: Tensor<B, 3>) -> Tensor<B, 3> {
+        let (scale, shift) = self.modulation.forward(t);
+        let x = (scale + 1.0) * self.norm.forward(x) + shift;
+        self.linear.forward(x)
+    }
+}
+
+/// The timestep MLP (`tmlp`, a `Sequential` in the reference — indices
+/// remapped to fields at load).
+#[derive(Module, Debug)]
+pub struct TimestepMlp<B: Backend> {
+    /// `tdim → features` (the reference's `tmlp.0`).
+    pub fc1: Linear<B>,
+    /// `features → features` (`tmlp.2`).
+    pub fc2: Linear<B>,
+}
+
+/// The modulation projector (`tproj`): GELU then `features → 6·features`.
+#[derive(Module, Debug)]
+pub struct TimestepProj<B: Backend> {
+    /// The projection (`tproj.1`).
+    pub fc: Linear<B>,
+}
+
+/// The fused-text projector (`txtmlp`): norm, up, GELU, out.
+#[derive(Module, Debug)]
+pub struct TextMlp<B: Backend> {
+    /// `txtmlp.0` — the zero-centered norm.
+    pub norm: ZRmsNorm<B>,
+    /// `txtmlp.1` — `txtdim → features`.
+    pub fc1: Linear<B>,
+    /// `txtmlp.3` — `features → features`.
+    pub fc2: Linear<B>,
+}
+
+/// Intermediate activations captured by [`Mmdit::forward_trace`], for parity
+/// localization. Stages at masked/padded positions are attention garbage by
+/// contract — zero them (via the masks) before comparing to a golden.
+pub struct MmditTrace<B: Backend> {
+    /// After the patchified-input projection (`first`).
+    pub after_first: Tensor<B, 3>,
+    /// The 6-way modulation vector (`tproj` output), `[b, 1, 6·features]`.
+    pub tvec: Tensor<B, 3>,
+    /// The fused text after [`TextFusionTransformer`], `[b, txtlen, txtdim]`.
+    pub after_txtfusion: Tensor<B, 3>,
+    /// The fused text projected to trunk width, `[b, txtlen, features]`.
+    pub after_txtmlp: Tensor<B, 3>,
+    /// The combined (padded-to-256) sequence after trunk block 0.
+    pub after_block0: Tensor<B, 3>,
+    /// The final velocity prediction over the image tokens,
+    /// `[b, img_tokens, patch² · channels]`.
+    pub output: Tensor<B, 3>,
+}
+
+/// The Krea 2 single-stream MMDiT denoiser.
+///
+/// Build with [`Mmdit::init`], populate with `burn_store` using
+/// [`key_remap`](Self::key_remap) + the `PyTorchToBurnAdapter`, then run
+/// [`forward`](Self::forward) (or [`forward_with_adapters`](Self::forward_with_adapters)
+/// with an M6 LoRA set injected).
+#[derive(Module, Debug)]
+pub struct Mmdit<B: Backend> {
+    /// Patchified-latent input projection (`channels·patch² → features`).
+    pub first: Linear<B>,
+    /// Timestep MLP.
+    pub tmlp: TimestepMlp<B>,
+    /// Modulation projector.
+    pub tproj: TimestepProj<B>,
+    /// The text-fusion transformer.
+    pub txtfusion: TextFusionTransformer<B>,
+    /// The fused-text projector to trunk width.
+    pub txtmlp: TextMlp<B>,
+    /// The trunk.
+    pub blocks: Vec<SingleStreamBlock<B>>,
+    /// The output head.
+    pub last: LastLayer<B>,
+    /// The architecture — drives the forward, not a loadable parameter.
+    #[module(skip)]
+    pub config: MmditConfig,
+}
+
+impl<B: Backend> Mmdit<B> {
+    /// Build an MMDiT with placeholder weights of the right shapes, ready to
+    /// be overwritten by `load_from`.
+    pub fn init(config: MmditConfig, device: &B::Device) -> Self {
+        let f = config.features;
+        let lin = |d_in: usize, d_out: usize| LinearConfig::new(d_in, d_out).init(device);
+        let lin_nb = |d_in: usize, d_out: usize| {
+            LinearConfig::new(d_in, d_out).with_bias(false).init(device)
+        };
+        let fusion_block = || {
+            TextFusionBlock::init(
+                config.txtdim,
+                config.txtheads,
+                config.txtkvheads,
+                config.multiplier,
+                device,
+            )
+        };
+        Self {
+            first: lin(config.channels * config.patch * config.patch, f),
+            tmlp: TimestepMlp {
+                fc1: lin(config.tdim, f),
+                fc2: lin(f, f),
+            },
+            tproj: TimestepProj { fc: lin(f, 6 * f) },
+            txtfusion: TextFusionTransformer {
+                layerwise_blocks: vec![fusion_block(), fusion_block()],
+                projector: lin_nb(config.txtlayers, 1),
+                refiner_blocks: vec![fusion_block(), fusion_block()],
+            },
+            txtmlp: TextMlp {
+                norm: ZRmsNorm::init(config.txtdim, device),
+                fc1: lin(config.txtdim, f),
+                fc2: lin(f, f),
+            },
+            blocks: (0..config.layers)
+                .map(|_| SingleStreamBlock::init(&config, device))
+                .collect(),
+            last: LastLayer {
+                norm: ZRmsNorm::init(f, device),
+                linear: lin(f, config.patch * config.patch * config.channels),
+                modulation: SimpleModulation {
+                    lin: Param::from_tensor(Tensor::zeros([2, f], device)),
+                },
+            },
+            config,
+        }
+    }
+
+    /// The regex → replacement rename pairs mapping checkpoint keys to burn
+    /// module paths: the reference's `nn.Sequential` indices and its `mod`
+    /// field (a Rust keyword). Everything else loads by name (with the
+    /// `PyTorchToBurnAdapter` Linear transpose).
+    pub fn key_remap() -> [(&'static str, &'static str); 7] {
+        [
+            (r"^tmlp\.0\.(weight|bias)$", r"tmlp.fc1.${1}"),
+            (r"^tmlp\.2\.(weight|bias)$", r"tmlp.fc2.${1}"),
+            (r"^tproj\.1\.(weight|bias)$", r"tproj.fc.${1}"),
+            (r"^txtmlp\.0\.scale$", r"txtmlp.norm.scale"),
+            (r"^txtmlp\.1\.(weight|bias)$", r"txtmlp.fc1.${1}"),
+            (r"^txtmlp\.3\.(weight|bias)$", r"txtmlp.fc2.${1}"),
+            (r"\.mod\.lin$", r".modulation.lin"),
+        ]
+    }
+
+    /// Every injectable LoRA site: the trunk blocks' attention and MLP
+    /// projections, advertised to
+    /// [`build_adapters`](crate::adapters::build_adapters). Paths mirror the
+    /// checkpoint (`blocks.{i}.attn.wq`, …), so a config `targets` pattern
+    /// written against the reference naming matches.
+    pub fn injectable_sites(&self) -> Vec<LoraSite> {
+        let f = self.config.features;
+        let hd = self.config.head_dim();
+        let kv_out = hd * self.config.kvheads;
+        let inner = MmditConfig::swiglu_dim(f, self.config.multiplier);
+        let mut sites = Vec::with_capacity(self.config.layers * 7);
+        for i in 0..self.config.layers {
+            let p = format!("blocks.{i}");
+            for (name, d_in, d_out) in [
+                ("attn.wq", f, f),
+                ("attn.wk", f, kv_out),
+                ("attn.wv", f, kv_out),
+                ("attn.wo", f, f),
+                ("mlp.gate", f, inner),
+                ("mlp.up", f, inner),
+                ("mlp.down", inner, f),
+            ] {
+                sites.push(LoraSite {
+                    path: format!("{p}.{name}"),
+                    d_in,
+                    d_out,
+                });
+            }
+        }
+        sites
+    }
+
+    /// Denoise: `img` is the pre-patchified latent tokens
+    /// `[b, img_tokens, channels·patch²]`, `context` the M10 conditioner
+    /// stack `[b, txtlen, txtlayers, txtdim]`, `t` the per-sample timesteps
+    /// `[b]`, `pos` the 3-axis positions `[b, txtlen + img_tokens, 3]`
+    /// (text at the origin, image on the patch grid), and `mask` the 0/1
+    /// key mask over the combined sequence. Returns the velocity prediction
+    /// `[b, img_tokens, channels·patch²]`.
+    pub fn forward(
+        &self,
+        img: Tensor<B, 3>,
+        context: Tensor<B, 4>,
+        t: Tensor<B, 1>,
+        pos: Tensor<B, 3>,
+        mask: Tensor<B, 2>,
+    ) -> Tensor<B, 3> {
+        self.forward_inner(img, context, t, pos, mask, None).output
+    }
+
+    /// [`forward`](Self::forward) with the name-keyed M6 LoRA set injected at
+    /// every matching trunk site. Zero-initialized deltas make this
+    /// bit-identical to the plain forward — the free attach-integrity check.
+    pub fn forward_with_adapters(
+        &self,
+        img: Tensor<B, 3>,
+        context: Tensor<B, 4>,
+        t: Tensor<B, 1>,
+        pos: Tensor<B, 3>,
+        mask: Tensor<B, 2>,
+        adapters: &LoraAdapters<B>,
+    ) -> Tensor<B, 3> {
+        self.forward_inner(img, context, t, pos, mask, Some(adapters))
+            .output
+    }
+
+    /// [`forward`](Self::forward) capturing localizing intermediates.
+    pub fn forward_trace(
+        &self,
+        img: Tensor<B, 3>,
+        context: Tensor<B, 4>,
+        t: Tensor<B, 1>,
+        pos: Tensor<B, 3>,
+        mask: Tensor<B, 2>,
+    ) -> MmditTrace<B> {
+        self.forward_inner(img, context, t, pos, mask, None)
+    }
+
+    fn forward_inner(
+        &self,
+        img: Tensor<B, 3>,
+        context: Tensor<B, 4>,
+        t: Tensor<B, 1>,
+        pos: Tensor<B, 3>,
+        mask: Tensor<B, 2>,
+        adapters: Option<&LoraAdapters<B>>,
+    ) -> MmditTrace<B> {
+        let device = img.device();
+        let [b, imglen, _] = img.dims();
+        let txtlen = context.dims()[1];
+        let gelu = Gelu::new_approximate();
+
+        // 1. Patch tokens into the trunk width.
+        let img = self.first.forward(img);
+        let after_first = img.clone();
+
+        // 2. Timestep embedding -> per-sample [b, 1, features] -> 6-way vec.
+        let t = self
+            .tmlp
+            .fc2
+            .forward(
+                gelu.forward(
+                    self.tmlp
+                        .fc1
+                        .forward(temb::<B>(t, self.config.tdim, &device)),
+                ),
+            );
+        let tvec = self.tproj.fc.forward(gelu.forward(t.clone()));
+
+        // 3. Fuse the 12-layer conditioner stack, then project to trunk width.
+        let txtmask = mask.clone().narrow(1, 0, txtlen);
+        let after_txtfusion = self
+            .txtfusion
+            .forward(context, additive_mask(txtmask, &device));
+        let after_txtmlp = self.txtmlp.fc2.forward(
+            gelu.forward(
+                self.txtmlp
+                    .fc1
+                    .forward(self.txtmlp.norm.forward(after_txtfusion.clone())),
+            ),
+        );
+
+        // 4. Concatenate text + image and zero-pad to a multiple of 256
+        // (mask false, positions zero), exactly like the reference.
+        let mut combined = Tensor::cat(vec![after_txtmlp.clone(), img], 1);
+        let mut mask = mask;
+        let mut pos = pos;
+        let fulllen = combined.dims()[1];
+        let padlen = fulllen.div_ceil(256) * 256 - fulllen;
+        if padlen > 0 {
+            let f = self.config.features;
+            combined = Tensor::cat(vec![combined, Tensor::zeros([b, padlen, f], &device)], 1);
+            mask = Tensor::cat(vec![mask, Tensor::zeros([b, padlen], &device)], 1);
+            pos = Tensor::cat(vec![pos, Tensor::zeros([b, padlen, 3], &device)], 1);
+        }
+
+        let mask4 = additive_mask(mask, &device);
+        let rope = rope_tables(pos, self.config.head_dim(), self.config.theta, &device);
+
+        // 5. The trunk.
+        let mut after_block0 = combined.clone();
+        for (i, block) in self.blocks.iter().enumerate() {
+            combined = block.forward(
+                combined,
+                tvec.clone(),
+                &rope,
+                mask4.clone(),
+                adapters,
+                &format!("blocks.{i}"),
+            );
+            if i == 0 {
+                after_block0 = combined.clone();
+            }
+        }
+
+        // 6. Head, then slice the image tokens back out.
+        let final_ = self.last.forward(combined, t);
+        let output = final_.narrow(1, txtlen, imglen);
+
+        MmditTrace {
+            after_first,
+            tvec,
+            after_txtfusion,
+            after_txtmlp,
+            after_block0,
+            output,
+        }
+    }
+}
+
+/// The symmetric additive attention mask: `MASK_NEG` wherever the query⊗key
+/// outer product of the 0/1 key mask is 0 (the reference's `_mask` with bool
+/// semantics folded into an additive form).
+fn additive_mask<B: Backend>(mask: Tensor<B, 2>, _device: &B::Device) -> Tensor<B, 4> {
+    let [b, l] = mask.dims();
+    let outer = mask.clone().reshape([b, 1, l, 1]) * mask.reshape([b, 1, 1, l]);
+    (-outer + 1.0) * MASK_NEG
+}
+
+/// The sinusoidal timestep embedding (`temb`): cos-first, period 1e4, the
+/// timestep scaled ×1000, shaped `[b, 1, dim]` so downstream modulation
+/// broadcasts per sample.
+fn temb<B: Backend>(t: Tensor<B, 1>, dim: usize, device: &B::Device) -> Tensor<B, 3> {
+    let b = t.dims()[0];
+    let half = dim / 2;
+    let freqs: Vec<f32> = (0..half)
+        .map(|j| (-(1e4f64.ln()) * j as f64 / half as f64).exp() as f32)
+        .collect();
+    let freqs =
+        Tensor::<B, 1>::from_data(TensorData::new(freqs, [half]), device).reshape([1, 1, half]);
+    let args = t.mul_scalar(1e3).reshape([b, 1, 1]) * freqs;
+    Tensor::cat(vec![args.clone().cos(), args.sin()], 2)
+}

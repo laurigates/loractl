@@ -50,6 +50,10 @@ lint-vae-real:
 lint-qwen3vl-real:
     cargo clippy -p loractl-core --all-targets --features qwen3vl-real -- -D warnings
 
+# Lint the opt-in mmdit-real feature path (compiles the ignored real-MMDiT test).
+lint-mmdit-real:
+    cargo clippy -p loractl-core --all-targets --features mmdit-real -- -D warnings
+
 # Lint the opt-in wgpu GPU-backend path (M7). Compiles the cubecl/wgpu/naga
 # subtree + the gated wgpu smoke test; no GPU is needed to COMPILE and nothing
 # runs. Kept out of the default `just lint` so that stays offline and fast.
@@ -108,6 +112,11 @@ test-vae-real:
 # `just qwen3vl-real-reference` first). --release: a 4B-parameter forward.
 test-qwen3vl-real:
     cargo test --release -p loractl-core --features qwen3vl-real -- --ignored real_qwen3vl_conditioning_matches_transformers_golden
+
+# Run the opt-in real Krea-2-Raw MMDiT staged-parity test (needs
+# `just mmdit-real-reference` first). Depth-truncated real widths — see the test docs.
+test-mmdit-real:
+    cargo test --release -p loractl-core --features mmdit-real -- --ignored real_mmdit_truncated_forward_matches_krea2_golden
 
 # Run the wgpu GPU portability smoke (M7) on a real GPU — Metal on Apple Silicon.
 # The ONLY way the double-gated `#[ignore]`d smoke runs; never fires in CI.
@@ -175,3 +184,13 @@ qwen3vl-reference:
 # f32 ~18 GB) + generate its (uncommitted) goldens for the opt-in parity test.
 qwen3vl-real-reference:
     uv run reference/qwen3vl_reference.py --real --out crates/loractl-core/tests/fixtures
+
+# Regenerate the checked-in tiny MMDiT parity fixture (weights + golden;
+# downloads krea-ai/krea-2's mmdit.py at a pinned commit; torch via uv).
+mmdit-reference:
+    uv run reference/mmdit_reference.py --out crates/loractl-core/tests/fixtures
+
+# Download krea/Krea-2-Raw's raw.safetensors (26.3 GB, kept for M13/M14) +
+# generate the (uncommitted) depth-truncated real-width fixture + golden.
+mmdit-real-reference:
+    uv run reference/mmdit_reference.py --real --out crates/loractl-core/tests/fixtures
