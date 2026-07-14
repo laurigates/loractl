@@ -23,6 +23,7 @@ fn cfg(backend: BackendKind) -> TrainConfig {
         task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 2,
@@ -33,6 +34,7 @@ fn cfg(backend: BackendKind) -> TrainConfig {
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,

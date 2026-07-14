@@ -87,7 +87,7 @@ fn app_limited(
 }
 
 fn mock_app(base: &std::path::Path) -> Router {
-    let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
+    let factory: TrainerFactory = Arc::new(|_| Box::new(MockTrainer));
     app_with(factory, base)
 }
 
@@ -496,7 +496,7 @@ async fn live_tail_delivers_events_before_run_completes() {
     let _finish_guard = OpenOnDrop(finish_gate.clone());
     let factory_start = start_gate.clone();
     let factory_finish = finish_gate.clone();
-    let factory: TrainerFactory = Arc::new(move || {
+    let factory: TrainerFactory = Arc::new(move |_| {
         Box::new(GatedTrainer {
             start_gate: factory_start.clone(),
             finish_gate: factory_finish.clone(),
@@ -569,7 +569,7 @@ async fn live_tail_delivers_events_before_run_completes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn failing_trainer_emits_failed_event_then_closes() {
     let base = test_base("failing");
-    let factory: TrainerFactory = Arc::new(|| Box::new(FailingTrainer));
+    let factory: TrainerFactory = Arc::new(|_| Box::new(FailingTrainer));
     let app = app_with(factory, &base);
 
     let response = app
@@ -597,7 +597,7 @@ async fn failing_trainer_emits_failed_event_then_closes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn panicking_trainer_emits_failed_and_app_keeps_serving() {
     let base = test_base("panicking");
-    let factory: TrainerFactory = Arc::new(|| Box::new(PanickingTrainer));
+    let factory: TrainerFactory = Arc::new(|_| Box::new(PanickingTrainer));
     let app = app_with(factory, &base);
 
     let response = app
@@ -641,7 +641,7 @@ async fn client_disconnect_does_not_kill_run() {
     let _finish_guard = OpenOnDrop(finish_gate.clone());
     let factory_start = start_gate.clone();
     let factory_finish = finish_gate.clone();
-    let factory: TrainerFactory = Arc::new(move || {
+    let factory: TrainerFactory = Arc::new(move |_| {
         Box::new(GatedTrainer {
             start_gate: factory_start.clone(),
             finish_gate: factory_finish.clone(),
@@ -735,7 +735,7 @@ async fn concurrent_runs_are_independent() {
 #[tokio::test(flavor = "multi_thread")]
 async fn trainer_ok_without_finished_still_closes_stream() {
     let base = test_base("silent");
-    let factory: TrainerFactory = Arc::new(|| Box::new(SilentTrainer));
+    let factory: TrainerFactory = Arc::new(|_| Box::new(SilentTrainer));
     let app = app_with(factory, &base);
 
     let response = app
@@ -803,7 +803,7 @@ async fn post_invalid_config_is_422_and_creates_no_run() {
 async fn burst_of_events_is_delivered_without_loss_and_closes() {
     const N: u64 = 512;
     let base = test_base("burst");
-    let factory: TrainerFactory = Arc::new(|| Box::new(BurstTrainer { steps: N }));
+    let factory: TrainerFactory = Arc::new(|_| Box::new(BurstTrainer { steps: N }));
     let app = app_with(factory, &base);
 
     let response = app
@@ -936,7 +936,7 @@ async fn events_status(app: &Router, id: u64) -> StatusCode {
 #[tokio::test(flavor = "multi_thread")]
 async fn completed_runs_are_evicted_beyond_retention() {
     let base = test_base("evict");
-    let factory: TrainerFactory = Arc::new(|| Box::new(MockTrainer));
+    let factory: TrainerFactory = Arc::new(|_| Box::new(MockTrainer));
     let app = app_retaining(factory, &base, 2);
 
     // Retention 2: a run does not self-evict on its own completion, so it stays
@@ -979,7 +979,7 @@ async fn in_flight_runs_are_never_evicted() {
     let spawned = AtomicU64::new(0);
     let factory_start = start_gate.clone();
     let factory_finish = finish_gate.clone();
-    let factory: TrainerFactory = Arc::new(move || {
+    let factory: TrainerFactory = Arc::new(move |_| {
         if spawned.fetch_add(1, Ordering::Relaxed) == 0 {
             Box::new(GatedTrainer {
                 start_gate: factory_start.clone(),
@@ -1143,7 +1143,7 @@ async fn saturated_concurrency_cap_returns_429() {
     let spawned = AtomicU64::new(0);
     let factory_start = start_gate.clone();
     let factory_finish = finish_gate.clone();
-    let factory: TrainerFactory = Arc::new(move || {
+    let factory: TrainerFactory = Arc::new(move |_| {
         if spawned.fetch_add(1, Ordering::Relaxed) == 0 {
             Box::new(GatedTrainer {
                 start_gate: factory_start.clone(),

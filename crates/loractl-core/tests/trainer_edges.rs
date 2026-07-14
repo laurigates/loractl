@@ -44,6 +44,7 @@ fn config(out: &TempDir, steps: u64, lr: f64, compute: ComputeConfig) -> TrainCo
         task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 8,
@@ -54,6 +55,7 @@ fn config(out: &TempDir, steps: u64, lr: f64, compute: ComputeConfig) -> TrainCo
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr,

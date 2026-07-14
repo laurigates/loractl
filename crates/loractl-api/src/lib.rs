@@ -32,11 +32,14 @@ use std::sync::Arc;
 
 /// Builds a fresh trainer for each `POST /runs`.
 ///
-/// The seam that keeps the API testable offline: `main.rs` injects the one
-/// real `BurnTrainer` line, tests inject mocks. Note `Trainer` has no `Send`
-/// supertrait — the bound compiles because current impls are unit structs; a
-/// future `!Send` trainer breaks this seam at compile time.
-pub type TrainerFactory = Arc<dyn Fn() -> Box<dyn Trainer + Send> + Send + Sync>;
+/// The seam that keeps the API testable offline: `main.rs` injects
+/// [`loractl_core::select_trainer`] (which routes on the run's
+/// `model.base` — hence the `&TrainConfig` parameter), tests inject mocks
+/// that ignore the config. Note `Trainer` has no `Send` supertrait — the
+/// bound compiles because current impls are unit structs; a future `!Send`
+/// trainer breaks this seam at compile time.
+pub type TrainerFactory =
+    Arc<dyn Fn(&loractl_core::TrainConfig) -> Box<dyn Trainer + Send> + Send + Sync>;
 
 /// How many *completed* runs the registry retains by default.
 const DEFAULT_RUN_RETENTION: usize = 32;

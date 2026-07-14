@@ -5,7 +5,9 @@
 //! exercised today. Milestone 2 adds a burn-backed trainer behind this same
 //! trait — the CLI won't change, it'll just get a different `impl Trainer`.
 
+use crate::burn_trainer::BurnTrainer;
 use crate::config::TrainConfig;
+use crate::diffusion_trainer::DiffusionTrainer;
 use crate::event::TrainEvent;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -22,6 +24,27 @@ pub trait Trainer {
     /// written to disk. Implementors must not render or write to
     /// stdout/stderr — surfacing events is the caller's responsibility.
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf>;
+}
+
+/// Picks the concrete trainer for a run from `model.base` — the single
+/// routing seam both front-ends (the `loractl` CLI and `loractl-api`) call,
+/// so the mapping cannot drift between them.
+///
+/// - `"synthetic"` and `"mnist"` are [`BurnTrainer`]'s documented bases: the
+///   offline LoRA-MLP demo (M2) and its opt-in real-MNIST path
+///   (`--features mnist`; without the feature the trainer warns and falls
+///   back to the demo).
+/// - Anything else is treated as a path to a Krea-2-Raw-layout checkpoint
+///   directory and routes to the M14 [`DiffusionTrainer`].
+///
+/// Routing is pinned by `tests/trainer_routing.rs`, which discriminates the
+/// arms by their observable behavior (the demo's event stream, the mnist
+/// fallback warning, the diffusion trainer's flow-matching bail).
+pub fn select_trainer(config: &TrainConfig) -> Box<dyn Trainer + Send> {
+    match config.model.base.as_str() {
+        "synthetic" | "mnist" => Box::new(BurnTrainer),
+        _ => Box::new(DiffusionTrainer),
+    }
 }
 
 /// A stand-in trainer that exercises the event pipeline without any ML.

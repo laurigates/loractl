@@ -30,6 +30,9 @@
 //! - [`dataset`] — the image dataset pipeline: kohya-style folder scanning,
 //!   aspect-ratio bucketing, and one-time latent/conditioning caching
 //!   (milestone 12).
+//! - [`DiffusionTrainer`] — the end-to-end Krea 2 LoRA trainer composing all
+//!   of the above, exporting ComfyUI-loadable kohya-ss adapters
+//!   (milestone 14).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -62,6 +65,7 @@ pub mod adapters;
 pub mod burn_trainer;
 pub mod config;
 pub mod dataset;
+pub mod diffusion_trainer;
 pub mod event;
 pub mod export;
 pub mod flow;
@@ -76,7 +80,10 @@ pub mod train;
 
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
-pub use config::{BackendKind, ComputeConfig, FlowConfig, Precision, TaskKind, TrainConfig};
+pub use config::{
+    BackendKind, ComputeConfig, FlowConfig, ModelVariant, Precision, TaskKind, TrainConfig,
+};
+pub use diffusion_trainer::DiffusionTrainer;
 pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
@@ -85,7 +92,7 @@ pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};
 pub use qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
-pub use train::{MockTrainer, Trainer};
+pub use train::{MockTrainer, Trainer, select_trainer};
 
 // Re-exported so `loractl-cli` can name the concrete inference backend/device
 // (`sample()` in `cli.rs`) without needing its own direct `burn` dependency —

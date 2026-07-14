@@ -87,6 +87,7 @@ fn flow_training_converges() {
         task: TaskKind::FlowMatching,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 8,
@@ -98,6 +99,7 @@ fn flow_training_converges() {
             // The flow toy generates synthetic latents; the dataset is unused.
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,

@@ -74,6 +74,63 @@ impl AdapterNameMapper for KohyaMapper {
     }
 }
 
+/// Krea 2 diffusers-style naming — the convention **ComfyUI's Krea 2 LoRA
+/// loader actually accepts** (verified against `comfy/lora.py` +
+/// `comfy/utils.py::krea2_to_diffusers`): base names are the diffusers-style
+/// module paths (`transformer_blocks.{i}.attn.to_q`, `ff.up`, …), suffixed
+/// kohya-style (`.lora_down.weight` / `.lora_up.weight` / `.alpha`), which
+/// ComfyUI's weight adapters parse on top of its bare-key map. Native →
+/// diffusers renames mirror `krea2_to_diffusers` exactly:
+///
+/// | native (site path)        | diffusers key                       |
+/// |---------------------------|-------------------------------------|
+/// | `blocks.{i}`              | `transformer_blocks.{i}`            |
+/// | `txtfusion.*_blocks.{i}`  | `text_fusion.*_blocks.{i}`          |
+/// | `attn.wq` / `wk` / `wv`   | `attn.to_q` / `to_k` / `to_v`       |
+/// | `attn.gate` / `attn.wo`   | `attn.to_gate` / `attn.to_out.0`    |
+/// | `mlp.gate` / `up` / `down`| `ff.gate` / `ff.up` / `ff.down`     |
+pub struct Krea2DiffusersMapper;
+
+impl Krea2DiffusersMapper {
+    /// Translate a native injectable-site path into its diffusers-style name.
+    fn diffusers_path(path: &str) -> String {
+        let mut out = path.to_string();
+        if let Some(rest) = out.strip_prefix("blocks.") {
+            out = format!("transformer_blocks.{rest}");
+        } else if let Some(rest) = out.strip_prefix("txtfusion.") {
+            out = format!("text_fusion.{rest}");
+        }
+        for (native, diffusers) in [
+            ("attn.wq", "attn.to_q"),
+            ("attn.wk", "attn.to_k"),
+            ("attn.wv", "attn.to_v"),
+            ("attn.gate", "attn.to_gate"),
+            ("attn.wo", "attn.to_out.0"),
+            ("mlp.gate", "ff.gate"),
+            ("mlp.up", "ff.up"),
+            ("mlp.down", "ff.down"),
+        ] {
+            if out.ends_with(native) {
+                out = format!("{}{}", &out[..out.len() - native.len()], diffusers);
+                break;
+            }
+        }
+        out
+    }
+}
+
+impl AdapterNameMapper for Krea2DiffusersMapper {
+    fn down_key(&self, path: &str) -> String {
+        format!("{}.lora_down.weight", Self::diffusers_path(path))
+    }
+    fn up_key(&self, path: &str) -> String {
+        format!("{}.lora_up.weight", Self::diffusers_path(path))
+    }
+    fn alpha_key(&self, path: &str) -> String {
+        format!("{}.alpha", Self::diffusers_path(path))
+    }
+}
+
 /// The interop export format for [`export_adapters`].
 ///
 /// `KohyaSs` is the only variant implemented now; `PeftDiffusers` is reserved so
@@ -83,6 +140,9 @@ impl AdapterNameMapper for KohyaMapper {
 pub enum ExportFormat {
     /// kohya-ss `.lora_down`/`.lora_up`/`.alpha` naming (see [`KohyaMapper`]).
     KohyaSs,
+    /// Krea 2 diffusers-style naming — what ComfyUI's Krea 2 LoRA loader
+    /// accepts (see [`Krea2DiffusersMapper`]).
+    Krea2Diffusers,
 }
 
 impl ExportFormat {
@@ -90,6 +150,7 @@ impl ExportFormat {
     fn mapper(self) -> Box<dyn AdapterNameMapper> {
         match self {
             ExportFormat::KohyaSs => Box::new(KohyaMapper),
+            ExportFormat::Krea2Diffusers => Box::new(Krea2DiffusersMapper),
         }
     }
 }

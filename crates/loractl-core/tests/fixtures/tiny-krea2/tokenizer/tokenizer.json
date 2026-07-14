@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "<unk>": 0,
+      "<|endoftext|>": 1,
+      "a": 2,
+      "red": 3,
+      "fox": 4,
+      "green": 5,
+      "field": 6,
+      "blue": 7,
+      "sky": 8,
+      "gold": 9,
+      "sand": 10,
+      "photo": 11,
+      "of": 12
+    },
+    "unk_token": "<unk>"
+  }
+}

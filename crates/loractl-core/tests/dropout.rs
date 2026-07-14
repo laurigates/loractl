@@ -51,6 +51,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
         task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 8,
@@ -61,6 +62,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,

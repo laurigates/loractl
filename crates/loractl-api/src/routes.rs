@@ -80,7 +80,7 @@ async fn create_run(
         );
     };
 
-    let trainer = (state.factory)();
+    let trainer = (state.factory)(&config);
     state::spawn_run(Arc::clone(&state), id, run, config, trainer);
     (
         StatusCode::CREATED,

@@ -40,6 +40,7 @@ fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConfig, 
         task: TaskKind::Classification,
         model: ModelConfig {
             base: "synthetic".into(),
+            variant: Default::default(),
         },
         lora: LoraConfig {
             rank: 8,
@@ -50,6 +51,7 @@ fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConfig, 
         dataset: DatasetConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
+            batch_size: 1,
         },
         optim: OptimConfig {
             lr: 0.01,
