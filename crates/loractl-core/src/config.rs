@@ -69,6 +69,14 @@ pub struct ModelConfig {
     /// a clear error, not a creative misinterpretation of a checkpoint.
     #[serde(default)]
     pub variant: ModelVariant,
+    /// Optional denoiser filename **within `base`** overriding the variant
+    /// default (`raw.safetensors` / `turbo.safetensors`) — e.g. a local
+    /// scaled-fp8 repack like `krea2_turbo_fp8_scaled.safetensors` (M15,
+    /// #82). fp8-vs-bf16 handling is auto-detected from the file header,
+    /// not from this name. Env override: `LORACTL_MODEL__CHECKPOINT`
+    /// (figment's `__` nesting — no CLI flag needed).
+    #[serde(default)]
+    pub checkpoint: Option<String>,
 }
 
 /// The known Krea 2 architecture variants (M14).
@@ -78,6 +86,12 @@ pub enum ModelVariant {
     /// The real ~12B `krea/Krea-2-Raw` stack.
     #[default]
     Krea2,
+    /// Krea-2-Turbo (M15, #82) — architecturally identical to
+    /// [`Krea2`](Self::Krea2) (same 430 tensor keys, same configs); differs
+    /// only in the default denoiser filename (`turbo.safetensors`) and the
+    /// typical checkpoint dtype (bf16 official, scaled-fp8 community
+    /// repacks — auto-detected from the file header at load).
+    Krea2Turbo,
     /// The dimension-matched tiny test bundle
     /// (`reference/krea2_reference.py`).
     TinyKrea2,
@@ -91,9 +105,10 @@ impl FromStr for ModelVariant {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "krea2" | "krea-2" => Ok(Self::Krea2),
+            "krea2-turbo" | "krea2turbo" | "turbo" => Ok(Self::Krea2Turbo),
             "tiny-krea2" | "tinykrea2" => Ok(Self::TinyKrea2),
             other => Err(format!(
-                "unknown model variant {other:?} (krea2|tiny-krea2)"
+                "unknown model variant {other:?} (krea2|krea2-turbo|tiny-krea2)"
             )),
         }
     }

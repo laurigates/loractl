@@ -23,6 +23,13 @@ const BUNDLE: &str = "tests/fixtures/tiny-krea2";
 const DATASET: &str = "tests/fixtures/dataset-tiny";
 const STEPS: u64 = 12;
 
+/// burn's backend RNG is process-global (`B::seed` swaps one shared seed),
+/// so two trainings running in parallel interleave their draws and destroy
+/// the reseeded determinism this file asserts. Every training test in this
+/// binary serializes on this lock; a poisoned lock (a panicked sibling) is
+/// safe to reuse — the guard only orders execution, it protects no data.
+static TRAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A unique temp dir, removed on drop.
 struct TempDir(PathBuf);
 
@@ -99,6 +106,7 @@ fn config(out: &TempDir, dataset: PathBuf) -> TrainConfig {
         model: ModelConfig {
             base: BUNDLE.into(),
             variant: ModelVariant::TinyKrea2,
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 4,
@@ -132,6 +140,9 @@ fn config(out: &TempDir, dataset: PathBuf) -> TrainConfig {
 
 #[test]
 fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let out = TempDir::new("diffusion-e2e");
     let dataset = staged_dataset(&out);
 
@@ -296,6 +307,108 @@ fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
         kohya_keys(&adapter3),
         keys,
         "resumed export layout unchanged"
+    );
+}
+
+/// M15 (#82): the `model.checkpoint` override routes the SAME e2e run
+/// through the scaled-fp8 loader — `turbo_fp8.safetensors` is the fp8
+/// quantization of the bundle's own seed-14 MMDiT weights, auto-detected
+/// from the file header and dequantized at load. Two phases:
+///
+/// 1. A raw-checkpoint run populates the encoder cache.
+/// 2. The fp8-override run (fresh output dir, same staged dataset) must
+///    train end-to-end — Started/Step/Checkpoint/Finished, finite losses,
+///    the same kohya export layout — while leaving the encoder cache
+///    byte-untouched: the denoiser choice must not perturb the encode
+///    phase (the fingerprint is encoder-derived, not denoiser-derived).
+///
+/// Shorter than the main e2e (6 steps): the full contract — checkpoints,
+/// warm-cache determinism, resume — is pinned above; this test pins only
+/// what the fp8 path adds.
+#[test]
+fn tiny_krea2_fp8_checkpoint_override_trains_e2e() {
+    const FP8_STEPS: u64 = 6;
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("diffusion-fp8-e2e");
+    let dataset = staged_dataset(&out);
+
+    // Phase 1 — raw checkpoint, warming the encoder cache.
+    let mut config_raw = config(&out, dataset.clone());
+    config_raw.steps = FP8_STEPS;
+    let mut losses_raw = Vec::new();
+    DiffusionTrainer
+        .train(&config_raw, &mut |event| {
+            if let TrainEvent::Step { loss, .. } = event {
+                losses_raw.push(loss);
+            }
+        })
+        .expect("the raw-checkpoint run completes");
+    let cache = cache_snapshot(&dataset);
+    assert!(!cache.is_empty(), "the raw run must have written the cache");
+
+    // Phase 2 — the fp8 override, against the already-warm cache.
+    let mut config_fp8 = config(&out, dataset.clone());
+    config_fp8.steps = FP8_STEPS;
+    config_fp8.model.checkpoint = Some("turbo_fp8.safetensors".into());
+    config_fp8.output.dir = out.0.join("out-fp8");
+    let mut started = None;
+    let mut losses = Vec::new();
+    let mut checkpoints = Vec::new();
+    let mut finished = None;
+    let adapter = DiffusionTrainer
+        .train(&config_fp8, &mut |event| match event {
+            TrainEvent::Started { total_steps } => started = Some(total_steps),
+            TrainEvent::Step { loss, .. } => losses.push(loss),
+            TrainEvent::Checkpoint { step, path } => checkpoints.push((step, path)),
+            TrainEvent::Finished { adapter_path } => finished = Some(adapter_path),
+            _ => {}
+        })
+        .expect("the fp8-checkpoint run completes");
+
+    // The Trainer contract held through the fp8 load path.
+    assert_eq!(started, Some(FP8_STEPS));
+    assert_eq!(losses.len(), FP8_STEPS as usize, "one Step per step");
+    assert!(
+        losses.iter().all(|l| l.is_finite()),
+        "non-finite loss: {losses:?}"
+    );
+    assert_eq!(
+        checkpoints.len(),
+        1,
+        "step 5 (6 is the final save): {checkpoints:?}"
+    );
+
+    // The override actually took: fp8 quantization perturbs the weights, so
+    // the reseeded loss stream must DIFFER from the raw run's — if the
+    // checkpoint name were silently ignored (raw.safetensors loaded again),
+    // the warm-cache determinism pinned above would make the two streams
+    // bit-identical.
+    assert_ne!(
+        losses_raw, losses,
+        "the fp8 checkpoint must load different (quantized) weights"
+    );
+
+    // The kohya export is the same ComfyUI-loadable layout as the raw run's.
+    assert_eq!(finished.as_deref(), Some(adapter.as_path()));
+    let keys = kohya_keys(&adapter);
+    // 7 sites × 2 blocks × 3 tensors (down/up/alpha).
+    assert_eq!(keys.len(), 42, "unexpected export keys: {keys:?}");
+    for expect in [
+        "transformer_blocks.0.attn.to_q.lora_down.weight",
+        "transformer_blocks.0.attn.to_q.alpha",
+        "transformer_blocks.1.ff.down.lora_up.weight",
+    ] {
+        assert!(keys.contains(&expect.to_string()), "missing key {expect}");
+    }
+
+    // The denoiser choice must not touch the encoder cache: no file added,
+    // removed, or rewritten by the fp8 run.
+    assert_eq!(
+        cache_snapshot(&dataset),
+        cache,
+        "the fp8 run must reuse the raw run's encoder cache untouched"
     );
 }
 

@@ -8,7 +8,7 @@ date: 2026-07-08
 
 - **Status:** Accepted
 - **Date:** 2026-07-08
-- **Milestones:** M6–M14 (issues [#17](https://github.com/laurigates/loractl/issues/17)–[#25](https://github.com/laurigates/loractl/issues/25))
+- **Milestones:** M6–M14 (issues [#17](https://github.com/laurigates/loractl/issues/17)–[#25](https://github.com/laurigates/loractl/issues/25)); amended by M15 ([#82](https://github.com/laurigates/loractl/issues/82))
 - **Deciders:** loractl maintainers
 
 ## Context
@@ -179,6 +179,57 @@ encoders) if M10 proves a bottleneck — a fallback, not the plan.
   technical report (which gives shape, not truth).
 - *Scale intractability* → each milestone proves its piece on a small
   fixture/CPU before the full 12B run; QLoRA (M13) targets single-GPU VRAM.
+
+## Amendment — M15 (2026-07-15): training directly on Krea-2-Turbo
+
+The original decision took the official workflow at its word — **"train a LoRA
+on Raw, apply it to Turbo"** — and targeted `krea/Krea-2-Raw` exclusively. M15
+([#82](https://github.com/laurigates/loractl/issues/82)) amends that: training
+**directly on Krea-2-Turbo is now supported**. Raw remains the default and the
+recommended target; what changed is the recognition that the Turbo restriction
+was a *load seam*, not an architecture gap.
+
+**Why the amendment is cheap.** Turbo is architecturally identical to Raw —
+the same 430 tensor keys, with per-tensor distillation deltas of 3–11% — so
+the MMDiT port (M11), its key remap, and the flow-matching objective (M8)
+apply unchanged. All that blocked turbo training was loading: the denoiser
+filename was hardcoded to `raw.safetensors`, and the widely-distributed
+scaled-fp8 turbo repacks (13.1 GB vs 26.3 GB bf16) could not load at all.
+
+**What landed:**
+
+- **Variant seam + filename override.** `ModelVariant::Krea2Turbo`
+  (`variant: krea2-turbo`) reuses `MmditConfig::krea2()` and shares Raw's
+  encoder-cache fingerprint (no cache invalidation), defaulting the denoiser
+  filename to `turbo.safetensors`; an optional `model.checkpoint` overrides
+  the filename for any variant (e.g. a local
+  `krea2_turbo_fp8_scaled.safetensors`). Existing configs parse unchanged.
+- **Scaled-fp8 loading, auto-detected from the safetensors header.** The
+  ComfyUI-style repack stores `float8_e4m3fn` weights plus f32 0-d
+  `*.weight_scale` sidecars (the verified local file: 686 keys = 256 F8_E4M3 +
+  256 scalar scales + 174 BF16, quantization map in `__metadata__`).
+  burn-store 0.21 has **no `F8_E4M3` dtype arm** — it errors while building
+  snapshots, before any `ModuleAdapter` can intervene — so M15 adds a custom
+  snapshot source (`src/fp8.rs`) that lazily dequantizes
+  `LUT[byte] · weight_scale` to f32 per tensor (exact 256-entry e4m3fn LUT;
+  per-tensor scalar and per-output-channel scales) and hands the snapshots to
+  the same remap → transpose → cast → apply pipeline the bf16 path uses.
+  Non-fp8 headers keep the existing burn-store path untouched, and the
+  mmap-backed per-tensor-lazy streaming memory profile is preserved.
+- **Deliberate hard-error scope.** Out-of-contract files fail loudly rather
+  than half-load (the M7 no-silent-fallback rule): the legacy ComfyUI
+  `scaled_fp8` convention (marker key / `.scale_weight` keys), scale shapes
+  that are neither 0-d nor per-output-channel, and unexpected leftover keys —
+  e.g. the `Krea2_Turbo_fp8mixed` repack's baked-in `last.up`/`last.down`
+  LoRA — are all errors.
+
+**Scope note.** M15 is the load seam only; no real turbo training run is
+claimed — that remains future work alongside M14's open real-run checkbox.
+Deferred follow-ups, tracked separately: an optional Turbo training adapter
+(assistant-LoRA merge-at-load,
+[#83](https://github.com/laurigates/loractl/issues/83)) and dynamic
+resolution-based timestep-shift parity
+([#84](https://github.com/laurigates/loractl/issues/84)).
 
 ## References
 

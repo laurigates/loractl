@@ -48,6 +48,7 @@ fn config(compute: ComputeConfig, out: &TempDir) -> TrainConfig {
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 8,

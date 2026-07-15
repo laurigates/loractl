@@ -57,6 +57,7 @@ fn config(base: &str, out: &TempDir) -> TrainConfig {
         model: ModelConfig {
             base: base.into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 4,

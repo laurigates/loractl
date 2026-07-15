@@ -17,15 +17,21 @@
 //! The `krea/Krea-2-Raw` HF snapshot layout, consumed as-is:
 //!
 //! ```text
-//! <base>/raw.safetensors                          the MMDiT
+//! <base>/raw.safetensors                          the MMDiT (variant default; see below)
 //! <base>/text_encoder/model.safetensors           Qwen3-VL (vision tower dropped at load)
 //! <base>/tokenizer/tokenizer.json                 the Qwen tokenizer
 //! <base>/vae/diffusion_pytorch_model.safetensors  the Qwen-Image VAE
 //! ```
 //!
+//! The denoiser filename is the variant default — `raw.safetensors` for
+//! `krea2`/`tiny-krea2`, `turbo.safetensors` for `krea2-turbo` — unless
+//! `model.checkpoint` names another file within `base` (M15, #82); see
+//! [`denoiser_filename`]. Scaled-fp8 repacks are auto-detected from the
+//! file header and load through [`load_fp8_module`].
+//!
 //! [`ModelVariant`] names the architecture explicitly (`krea2` |
-//! `tiny-krea2`) — a config mistake is a clear error, never a creative
-//! shape inference.
+//! `krea2-turbo` | `tiny-krea2`) — a config mistake is a clear error, never
+//! a creative shape inference.
 //!
 //! ## Memory sequencing & encode precision
 //!
@@ -58,7 +64,7 @@
 //! two-armed factory on `model.base`).
 
 use crate::adapters::{LoraAdapters, build_adapters};
-use crate::config::{BackendKind, ModelVariant, Precision, TaskKind, TrainConfig};
+use crate::config::{BackendKind, ModelConfig, ModelVariant, Precision, TaskKind, TrainConfig};
 use crate::dataset::prepare_dataset;
 use crate::event::TrainEvent;
 use crate::export::{ExportFormat, export_adapters, import_adapters};
@@ -86,7 +92,9 @@ use burn::backend::Wgpu;
 /// The per-variant architecture bundle: (MMDiT, encoder, VAE, caption budget).
 fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
     match variant {
-        ModelVariant::Krea2 => (
+        // Turbo is architecturally identical to Krea2 (same 430 tensor
+        // keys); the variants differ only in the default denoiser filename.
+        ModelVariant::Krea2 | ModelVariant::Krea2Turbo => (
             MmditConfig::krea2(),
             Qwen3VlConfig::krea2_4b(),
             QwenVaeConfig::qwen_image(),
@@ -98,6 +106,20 @@ fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVa
             QwenVaeConfig::tiny(),
             16,
         ),
+    }
+}
+
+/// The denoiser filename inside [`ModelConfig::base`]: an explicit
+/// `model.checkpoint` always wins; otherwise the variant default
+/// (`raw.safetensors` for Krea2/TinyKrea2, `turbo.safetensors` for
+/// Krea2Turbo).
+pub fn denoiser_filename(model: &ModelConfig) -> &str {
+    match &model.checkpoint {
+        Some(name) => name.as_str(),
+        None => match model.variant {
+            ModelVariant::Krea2 | ModelVariant::TinyKrea2 => "raw.safetensors",
+            ModelVariant::Krea2Turbo => "turbo.safetensors",
+        },
     }
 }
 
@@ -120,9 +142,17 @@ const SCALE_GROWTH_INTERVAL: u32 = 50;
 /// The cache fingerprint for a variant's encoder outputs. The `enc32`
 /// marker records that the encode phase ran in f32 — caches produced by the
 /// earlier (numerically broken) reduced-precision encode path carry the old
-/// unmarked fingerprint and are invalidated by this rename.
-fn encoder_fingerprint(variant: ModelVariant, max_length: usize) -> String {
-    format!("{variant:?}-ml{max_length}-enc32").to_lowercase()
+/// unmarked fingerprint and are invalidated by this rename. Turbo maps onto
+/// the `krea2` fingerprint: it shares Krea2's encoders (the same files in
+/// the same `base`), so their caches are interchangeable — and the emitted
+/// strings stay byte-identical to the pre-M15 `{variant:?}`-derived form,
+/// keeping existing caches valid.
+pub fn encoder_fingerprint(variant: ModelVariant, max_length: usize) -> String {
+    let arch = match variant {
+        ModelVariant::Krea2 | ModelVariant::Krea2Turbo => "krea2",
+        ModelVariant::TinyKrea2 => "tinykrea2",
+    };
+    format!("{arch}-ml{max_length}-enc32")
 }
 
 /// The Krea 2 LoRA trainer — see the [module docs](self).
@@ -417,6 +447,65 @@ fn load_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
     Ok(module)
 }
 
+/// Load a scaled-fp8 checkpoint into a freshly-initialized module — the fp8
+/// twin of [`load_module`] (M15, #82). [`crate::fp8::load_fp8_snapshots`]
+/// supplies the lazily-dequantizing f32 snapshots; the remap, the
+/// `PyTorchToBurnAdapter` linear transpose, [`CastFloatsAdapter`], and
+/// `module.apply` are the exact machinery `SafetensorsStore::apply_to`
+/// drives on the bf16/f32 path, so both loads land byte-equivalent params.
+///
+/// Unlike [`load_module`], `unused` is a hard error: after fp8 weights and
+/// their consumed `*_scale` sidecars are accounted for, leftover tensors
+/// (e.g. an fp8mixed repack's baked-in LoRA) mean the file is not a clean
+/// repack of the model this config names. The guard is sound only while
+/// [`Mmdit`] contains no burn normalization modules: the Applier's
+/// alternative-param-name lookup (serving burn LayerNorm/RmsNorm's
+/// `weight`→`gamma` rename) deliberately does not mark the file-side key
+/// visited, so adopting those modules would land their keys in `unused` and
+/// false-positive this error. Mmdit's norms are custom `ZRmsNorm` with
+/// param `scale`, which loads by name.
+pub fn load_fp8_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
+    mut module: M,
+    path: &Path,
+    remap: &[(&str, &str)],
+    what: &str,
+) -> Result<M> {
+    let snapshots = crate::fp8::load_fp8_snapshots(path)
+        .with_context(|| format!("loading {what} (scaled fp8) from {}", path.display()))?;
+    let remapper = KeyRemapper::from_patterns(remap.to_vec())
+        .unwrap_or_else(|e| panic!("invalid {what} remap patterns: {e}"));
+    let (snapshots, _) = remapper.remap(snapshots);
+    // Same adapter chain as [`load_module`]'s transpose_linears=true arm.
+    let cast = CastFloatsAdapter {
+        target: <B::FloatElem as Element>::dtype(),
+    };
+    let adapter: Box<dyn ModuleAdapter> = Box::new(PyTorchToBurnAdapter.chain(cast));
+    let result = module.apply(snapshots, None, Some(adapter), false);
+    if !result.errors.is_empty() {
+        bail!(
+            "{what} load errors from {}: {:?}",
+            path.display(),
+            result.errors
+        );
+    }
+    if !result.missing.is_empty() {
+        bail!(
+            "{what} at {} is missing parameters: {:?}",
+            path.display(),
+            result.missing
+        );
+    }
+    if !result.unused.is_empty() {
+        bail!(
+            "{what} at {} contains tensors the model does not consume \
+             (not a clean scaled-fp8 repack of this architecture): {:?}",
+            path.display(),
+            result.unused
+        );
+    }
+    Ok(module)
+}
+
 /// One training job on backend `AB`: re-read the cache [`encode_phase`]
 /// populated, load the MMDiT, and train the injected LoRA.
 fn run_diffusion<AB: AutodiffBackend>(
@@ -463,14 +552,23 @@ fn run_diffusion<AB: AutodiffBackend>(
     // tensors peaking at ~2× the ~25 GB model — observed as "Failed to
     // create metal resource: Buffer"). `to_device` then migrates tensor by
     // tensor inside unified memory, so peak stays ~one model.
-    let mmdit = load_module(
-        Mmdit::<AB>::init(mmdit_cfg, &AB::Device::default()),
-        &base.join("raw.safetensors"),
-        &Mmdit::<AB>::key_remap(),
-        true,
-        None,
-        "MMDiT",
-    )?
+    let denoiser = base.join(denoiser_filename(&config.model));
+    let init = Mmdit::<AB>::init(mmdit_cfg, &AB::Device::default());
+    // Scaled-fp8 repacks are auto-detected from the file header, never from
+    // the variant or the filename — a bf16 official checkpoint and a local
+    // fp8 repack both route to the right loader under any name.
+    let mmdit = if crate::fp8::is_fp8_checkpoint(&denoiser)? {
+        load_fp8_module(init, &denoiser, &Mmdit::<AB>::key_remap(), "MMDiT")?
+    } else {
+        load_module(
+            init,
+            &denoiser,
+            &Mmdit::<AB>::key_remap(),
+            true,
+            None,
+            "MMDiT",
+        )?
+    }
     .to_device(&device)
     .no_grad();
 

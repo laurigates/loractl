@@ -52,6 +52,7 @@ fn periodic_validation_samples_are_emitted_and_written() {
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 4,

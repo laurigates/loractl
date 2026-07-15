@@ -46,6 +46,11 @@ safetensors = "0.7"
 # through the krea-2 chat template. Pure offline — file-based loading only,
 # no hub/HTTP features.
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+# Scaled-fp8 checkpoint loading (M15, #82): `fp8.rs` mmaps the safetensors
+# file once and shares it across its lazy dequant closures — the same crate
+# (and pattern) burn-store's own lazy file path uses, so this already rides
+# in transitively at this exact version via burn-store's `std` feature.
+memmap2 = "0.9"
 # Image dataset pipeline (M12, #23): decode + resize the training images.
 # Default features off — only the two formats the kohya-style folder
 # convention actually uses; no HDR/EXR/AVIF subtree.

@@ -52,6 +52,7 @@ fn run_losses(weight_decay: f64, out: &TempDir) -> Vec<f32> {
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 8,
