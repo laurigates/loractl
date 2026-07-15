@@ -28,6 +28,47 @@ install features="detect":
         cargo install --path crates/loractl-cli --features "$features"
     fi
 
+# Install the NVIDIA CUDA toolkit (nvcc — what the `cuda` build feature needs)
+# from NVIDIA's official apt repo, on the GPU host itself. The version is
+# detected from the installed driver's ceiling (`nvidia-smi`'s "CUDA Version"),
+# overridable: `just install-cuda 12.9`. Installs `cuda-toolkit-X-Y` ONLY —
+# never the `cuda`/`cuda-drivers` metapackages, which would replace a
+# distro-managed driver (on Pop!_OS that breaks the system76 driver stack; its
+# own repo is no alternative, system76-cuda-latest is stuck at 11.2 < sm_89).
+# Ends by symlinking nvcc into /usr/local/bin so `command -v nvcc` (and
+# `just install`'s detection) sees it without shell-profile surgery.
+install-cuda version="detect":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "$(uname -s)" = "Linux" ] || { echo "install-cuda: Linux-only — run it on the GPU host, not from a Mac" >&2; exit 1; }
+    command -v nvidia-smi >/dev/null || { echo "install-cuda: nvidia-smi not found — install the NVIDIA driver first" >&2; exit 1; }
+    command -v apt-get >/dev/null || { echo "install-cuda: apt-based distros only; see https://developer.nvidia.com/cuda-downloads" >&2; exit 1; }
+    version="{{version}}"
+    if [ "$version" = "detect" ]; then
+        if command -v nvcc >/dev/null; then
+            echo "install-cuda: nvcc already present ($(nvcc --version | grep -o 'release [0-9.]*')) — pass a version explicitly to install another"
+            exit 0
+        fi
+        version=$(nvidia-smi | grep -o 'CUDA Version: [0-9.]*' | grep -o '[0-9.]*')
+        [ -n "$version" ] || { echo "install-cuda: could not read the driver's CUDA ceiling from nvidia-smi" >&2; exit 1; }
+        echo "install-cuda: driver supports up to CUDA $version"
+    fi
+    major="${version%%.*}"; minor="${version#*.}"; minor="${minor%%.*}"
+    . /etc/os-release
+    case " $ID ${ID_LIKE:-} " in
+        *ubuntu*) repo="ubuntu$(echo "${VERSION_ID}" | tr -d .)" ;;
+        *) echo "install-cuda: only Ubuntu-family distros are mapped to an NVIDIA repo (got ID=$ID); see https://developer.nvidia.com/cuda-downloads" >&2; exit 1 ;;
+    esac
+    if ! dpkg -s cuda-keyring >/dev/null 2>&1; then
+        wget -qO /tmp/cuda-keyring.deb "https://developer.download.nvidia.com/compute/cuda/repos/${repo}/x86_64/cuda-keyring_1.1-1_all.deb"
+        sudo dpkg -i /tmp/cuda-keyring.deb
+    fi
+    sudo apt-get update
+    sudo apt-get install -y "cuda-toolkit-${major}-${minor}"
+    sudo ln -sf "/usr/local/cuda-${major}.${minor}/bin/nvcc" /usr/local/bin/nvcc
+    nvcc --version
+    echo "install-cuda: done — 'just install' will now detect the cuda feature"
+
 # Clean build artifacts.
 clean:
     cargo clean

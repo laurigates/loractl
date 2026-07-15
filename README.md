@@ -110,6 +110,11 @@ for your hardware:
 `just install` runs this detection for you and prints what it picked;
 override with `just install <features>` or `just install cpu`.
 
+On a Linux/NVIDIA host that lacks the CUDA toolkit, `just install-cuda`
+(run on that host) installs it from NVIDIA's official apt repo — toolkit
+only, never the driver — with the version auto-matched to the installed
+driver's ceiling (`just install-cuda 12.9` overrides).
+
 A compiled-in feature only makes that backend *available* — the backend a run
 actually uses is selected at runtime by `compute.backend` (see
 [Compute backend (M7)](#compute-backend-m7)), and selecting a backend the
