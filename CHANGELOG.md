@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/laurigates/loractl/compare/v0.6.0...v0.7.0) (2026-07-15)
+
+
+### Features
+
+* **trainer:** train on Krea-2-Turbo — variant seam + scaled-fp8 checkpoint loader (M15) ([#85](https://github.com/laurigates/loractl/issues/85)) ([856d85f](https://github.com/laurigates/loractl/commit/856d85fdf8f275e46713b7b210543f28f3c391a1))
+
 ## [0.6.0](https://github.com/laurigates/loractl/compare/v0.5.1...v0.6.0) (2026-07-15)
 
 
