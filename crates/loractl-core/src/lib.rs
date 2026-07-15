@@ -33,6 +33,9 @@
 //! - [`DiffusionTrainer`] — the end-to-end Krea 2 LoRA trainer composing all
 //!   of the above, exporting ComfyUI-loadable kohya-ss adapters
 //!   (milestone 14).
+//! - [`fp8`] — scaled-fp8 (e4m3fn + `weight_scale`) safetensors loading for
+//!   ComfyUI-style Krea-2-Turbo repacks: lazy dequant snapshots feeding the
+//!   same apply machinery as a stock checkpoint (milestone 15).
 //!
 //! The design rule that keeps a GUI honest: **core emits events, the
 //! caller renders them.** A trainer never draws a progress bar and never
@@ -69,6 +72,7 @@ pub mod diffusion_trainer;
 pub mod event;
 pub mod export;
 pub mod flow;
+pub mod fp8;
 pub mod gpt2;
 pub mod lora;
 pub mod mmdit;

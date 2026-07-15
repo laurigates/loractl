@@ -14,7 +14,12 @@ task: flow-matching
 
 model:
   base: /path/to/krea-2-raw    # the snapshot directory described above
-  variant: krea2
+  variant: krea2               # or krea2-turbo (same architecture; the denoiser
+                               # then defaults to turbo.safetensors) | tiny-krea2
+  # checkpoint: krea2_turbo_fp8_scaled.safetensors
+  #                            # optional denoiser filename within base, overriding
+  #                            # the variant default; scaled-fp8 repacks are
+  #                            # auto-detected from the file header (M15)
 
 dataset:
   path: /path/to/dataset       # images + same-named .txt captions

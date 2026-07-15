@@ -75,6 +75,7 @@ fn mnist_lora_converges() {
         model: ModelConfig {
             base: "mnist".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: RANK as u32,

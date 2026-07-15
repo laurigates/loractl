@@ -116,6 +116,7 @@ fn config(out_dir: &Path, weight_decay: f64) -> TrainConfig {
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: RANK,

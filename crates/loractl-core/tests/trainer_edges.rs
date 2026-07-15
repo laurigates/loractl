@@ -45,6 +45,7 @@ fn config(out: &TempDir, steps: u64, lr: f64, compute: ComputeConfig) -> TrainCo
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 8,

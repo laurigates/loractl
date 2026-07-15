@@ -69,7 +69,15 @@ optimizer state is adapter-only) and int8/NF4 is the tracked follow-up on
 core's `select_trainer` factory on `model.base` ("synthetic"/"mnist" →
 `BurnTrainer`, a Krea-2-Raw-layout dir → the diffusion trainer), proven
 offline on the composed tiny-krea2 bundle (`just krea2-reference`,
-`tests/diffusion_trainer.rs`); kohya-ss exports at every checkpoint. See
+`tests/diffusion_trainer.rs`); kohya-ss exports at every checkpoint.
+M15 (#82) opened direct Krea-2-Turbo training (amending ADR-0004's
+"train on Raw" decision — Turbo is architecturally identical, same 430 keys):
+`variant: krea2-turbo` (default denoiser `turbo.safetensors`), an optional
+`model.checkpoint` filename override, and auto-detected loading of
+ComfyUI-style scaled-fp8 checkpoints (`float8_e4m3fn` + `weight_scale`) via
+a lazy `LUT[byte] · scale` dequant source (`src/fp8.rs`; burn-store 0.21 has
+no fp8 dtype) — legacy/malformed fp8 files fail loudly; follow-ups: training
+adapter (#83), timestep-shift parity (#84). See
 the roadmap in `README.md`.
 
 **Next direction (M14's remaining checkbox, #25):** the real run — train a

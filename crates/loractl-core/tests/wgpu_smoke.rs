@@ -41,6 +41,7 @@ fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConfig, 
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 8,

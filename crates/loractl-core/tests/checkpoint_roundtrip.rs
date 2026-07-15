@@ -53,6 +53,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
         model: ModelConfig {
             base: "synthetic".into(),
             variant: Default::default(),
+            checkpoint: None,
         },
         lora: LoraConfig {
             rank: 8,

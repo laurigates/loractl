@@ -148,6 +148,12 @@ test-qwen3vl-real:
 test-mmdit-real:
     cargo test --release -p loractl-core --features mmdit-real -- --ignored real_mmdit_truncated_forward_matches_krea2_golden
 
+# Run the opt-in real scaled-fp8 turbo proof (M15; depth-truncated like
+# test-mmdit-real). Pass the path to a ComfyUI-style scaled-fp8 checkpoint,
+# e.g. the local krea2_turbo_fp8_scaled.safetensors (13.1 GB).
+test-turbo-real fp8_path:
+    LORACTL_TURBO_FP8={{fp8_path}} cargo test --release -p loractl-core --features mmdit-real -- --ignored turbo_fp8_real
+
 # Run the wgpu GPU smokes (M7 portability + the M13 f16/grad-checkpointing
 # variant) on a real GPU — Metal on Apple Silicon. The ONLY way the
 # double-gated `#[ignore]`d smokes run; never fires in CI.
@@ -230,3 +236,9 @@ mmdit-real-reference:
 # torch/diffusers/transformers via uv, no network).
 krea2-reference:
     uv run reference/krea2_reference.py
+
+# Regenerate the checked-in fp8 goldens + fp8 tiny fixtures (M15: LUT, dequant
+# cases, fp8 tiny-mmdit + golden, tiny-krea2 turbo_fp8 twins). Downloads the
+# pinned mmdit.py at regen time only; torch/transformers/diffusers via uv.
+fp8-reference:
+    uv run reference/fp8_reference.py --out crates/loractl-core/tests/fixtures

@@ -3733,6 +3733,7 @@ dependencies = [
  "burn",
  "burn-store",
  "image",
+ "memmap2",
  "regex",
  "safetensors 0.7.0",
  "serde",
