@@ -1,12 +1,13 @@
 //! Diagnostic (wgpu feature): bisect the Metal gradient corruption that
 //! `grad_compare` exposes, separating the burn-store load path from the
 //! compute graph and localizing which backward variant breaks. This is the
-//! fixture-free reproduction backing the upstream burn report (see issue
-//! #25's upstream-tracking comment): on Apple Silicon, `no-load` reports
-//! every LoRA gradient as NaN on wgpu (f16 AND f32) in a fresh process while
-//! ndarray is finite — and the same graph is clean when the model input also
-//! requires grad (`adapters` mode, `igrad` rows), so the defect is confined
-//! to the pruned params-only backward kernel path.
+//! fixture-free reproduction backing the upstream burn report
+//! (tracel-ai/burn#5162, tracked on issue #25): on Apple Silicon, `no-load`
+//! reports every LoRA gradient as NaN on wgpu (f16 AND f32) in a fresh
+//! process while ndarray is finite. Whether tracking the model input avoids
+//! the defect depends on the weight values — see `adapters` (random init:
+//! yes) vs `workaround` (loaded weights: f32 becomes exactly correct, f16
+//! shifts to a *wrong forward* with exactly-zero grads).
 //!
 //! Modes:
 //!   verify-load <bundle>  — load the tiny MMDiT on wgpu-f32 AND ndarray-f32,
@@ -21,10 +22,20 @@
 //!                           backward to the *inputs* (img/context/t).
 //!                           (Observed finite everywhere on every backend.)
 //!   adapters              — single-site adapter patterns × input-grad
-//!                           on/off. (Observed: with the input tracked, all
-//!                           grads are finite; a prior same-dtype full
-//!                           backward in the same process also "heals" the
-//!                           params-only run — kernel/pool state dependent.)
+//!                           on/off, random init. (Observed: with the input
+//!                           tracked, all grads are finite; a prior
+//!                           same-dtype full backward in the same process
+//!                           also "heals" the params-only run — kernel/pool
+//!                           state dependent.)
+//!   workaround <bundle>   — loaded weights + input tracking, grads compared
+//!                           NUMERICALLY vs CPU at two loss scales.
+//!                           (Observed: wgpu-f32+tracking matches CPU to
+//!                           ratio 1.000 on all 14 sites with a bit-identical
+//!                           loss — while params-only f32 NaNs its forward.
+//!                           wgpu-f16+tracking returns exactly-zero grads and
+//!                           a wrong forward, 0.777 vs CPU 0.803, unchanged
+//!                           at S=64 vs S=16384 — dropped values, not f16
+//!                           range overflow.)
 //!
 //! Run: cargo run --release -p loractl-core --features wgpu \
 //!        --example metal_bisect -- <mode> [bundle]
@@ -128,6 +139,155 @@ mod run {
     /// Random-init forward+backward on one backend; no file I/O at all.
     fn no_load_step<AB: AutodiffBackend>(label: &str) -> Result<()> {
         no_load_step_on::<AB>(label, r"blocks\.", false)
+    }
+
+    /// (site path, max |grad A|, max |grad B|) per adapter site.
+    type SiteGrads = Vec<(String, f32, f32)>;
+
+    /// Loaded-weights deterministic step (grad_compare's setup) with the
+    /// input optionally tracked; returns per-site (path, max|dA|, max|dB|)
+    /// so the input-tracking workaround can be verified *numerically*
+    /// against CPU ground truth, not just for finiteness.
+    fn loaded_step<AB: AutodiffBackend>(
+        base: &Path,
+        input_grad: bool,
+        loss_scale: f32,
+    ) -> Result<(f32, SiteGrads)> {
+        let device = AB::Device::default();
+        let patch = MmditConfig::tiny_krea2().patch;
+        let mmdit: Mmdit<AB> = load_mmdit(base, &device)?;
+        let mmdit = mmdit.no_grad();
+
+        let lora = LoraConfig {
+            rank: 4,
+            alpha: 8.0,
+            dropout: 0.0,
+            targets: vec![TargetSpec {
+                pattern: r"blocks\.".into(),
+                rank: None,
+                alpha: None,
+            }],
+        };
+        let sites = mmdit.injectable_sites();
+        let mut set = build_adapters::<AB>(&sites, &lora, &device);
+        for (i, delta) in set.deltas.iter_mut().enumerate() {
+            let [d_in, rank] = delta.lora_a.weight.dims();
+            let vals: Vec<f32> = det_vals(d_in * rank, 100 + i as u32)
+                .iter()
+                .map(|v| v * 0.05)
+                .collect();
+            delta.lora_a.weight = burn::module::Param::from_tensor(Tensor::from_data(
+                TensorData::new(vals, [d_in, rank]),
+                &device,
+            ));
+        }
+
+        let (b, z, h, w) = (1usize, 4usize, 8usize, 8usize);
+        let latent = Tensor::<AB, 4>::from_data(
+            TensorData::new(det_vals(b * z * h * w, 7), [b, z, h, w]),
+            &device,
+        );
+        let latent = if input_grad {
+            latent.require_grad()
+        } else {
+            latent
+        };
+        let cond = Tensor::<AB, 4>::from_data(
+            TensorData::new(det_vals(16 * 2 * 32, 11), [b, 16, 2, 32]),
+            &device,
+        );
+        let eps = Tensor::<AB, 4>::from_data(
+            TensorData::new(det_vals(b * z * h * w, 13), [b, z, h, w]),
+            &device,
+        );
+        let t_frac = 0.5f32;
+        let xt = latent.clone() * (1.0 - t_frac) + eps.clone() * t_frac;
+        let target = patchify(eps - latent, patch);
+        let img = patchify(xt, patch);
+        let (gh, gw) = (h / patch, w / patch);
+        let pos = krea2_positions::<AB>(16, gh, gw, b, &device);
+        let mask = Tensor::ones([b, 16 + gh * gw], &device);
+        let t = Tensor::<AB, 1>::from_data(TensorData::new(vec![t_frac; b], [b]), &device);
+
+        let pred = mmdit.forward_with_adapters(img, cond, t, pos, mask, &set);
+        let diff = pred - target;
+        let loss = diff.clone().mul(diff).mean();
+        let loss_v: f32 = loss
+            .clone()
+            .into_data()
+            .convert::<f32>()
+            .into_vec::<f32>()
+            .unwrap()[0];
+
+        let s = loss_scale;
+        let grads = GradientsParams::from_grads((loss * s).backward(), &set);
+        let mut out = Vec::new();
+        for (delta, site) in set.deltas.iter().zip(&set.targets) {
+            let m = |id| {
+                grads
+                    .get::<AB::InnerBackend, 2>(id)
+                    .map(|g| {
+                        g.abs()
+                            .max()
+                            .into_data()
+                            .convert::<f32>()
+                            .into_vec::<f32>()
+                            .unwrap()[0]
+                            / s
+                    })
+                    .unwrap_or(f32::NAN)
+            };
+            out.push((
+                site.clone(),
+                m(delta.lora_a.weight.id),
+                m(delta.lora_b.weight.id),
+            ));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok((loss_v, out))
+    }
+
+    fn workaround(base: &Path) -> Result<()> {
+        println!("ndarray f32 (ground truth), input tracked, S=16384...");
+        let (loss_cpu, g_cpu) = loaded_step::<Autodiff<NdArray>>(base, true, 16384.0)?;
+        println!("wgpu f32, input tracked, S=16384...");
+        let (loss_32t, g_32t) = loaded_step::<Autodiff<Wgpu>>(base, true, 16384.0)?;
+        println!("wgpu f16, input tracked, S=16384...");
+        let (loss_16t, g_16t) =
+            loaded_step::<Autodiff<Wgpu<burn::tensor::f16>>>(base, true, 16384.0)?;
+        println!("wgpu f16, input tracked, S=64 (rule out f16 range overflow)...");
+        let (loss_16s, g_16s) = loaded_step::<Autodiff<Wgpu<burn::tensor::f16>>>(base, true, 64.0)?;
+
+        println!(
+            "\nloss: cpu={loss_cpu:.6}  wgpu-f32(ig)={loss_32t:.6}  wgpu-f16(ig)={loss_16t:.6}  wgpu-f16(ig,S64)={loss_16s:.6}"
+        );
+        println!(
+            "\n{:24} {:>11} {:>11} {:>11} {:>11} | {:>9} {:>9} {:>9}",
+            "site", "B cpu", "B wf32+ig", "B wf16+ig", "B wf16+igS64", "r32", "r16", "r16s"
+        );
+        let mut bad32 = 0usize;
+        for (((s, _a_c, b_c), (_, _, b_3)), ((_, _, b_t), (_, _, b_s))) in g_cpu
+            .iter()
+            .zip(g_32t.iter())
+            .zip(g_16t.iter().zip(g_16s.iter()))
+        {
+            let (r3, rt, rs) = (b_3 / b_c, b_t / b_c, b_s / b_c);
+            println!(
+                "{s:24} {b_c:>11.3e} {b_3:>11.3e} {b_t:>11.3e} {b_s:>11.3e} | {r3:>9.3} {rt:>9.3} {rs:>9.3}"
+            );
+            if !r3.is_finite() || (r3 - 1.0).abs() > 0.05 {
+                bad32 += 1;
+            }
+        }
+        println!(
+            "\nwgpu-f32 + input tracking vs CPU: {}",
+            if bad32 == 0 {
+                "MATCHES (any f16 NaN above is then range, not kernel)".to_string()
+            } else {
+                format!("{bad32} site(s) diverge — kernel defect persists with input tracking")
+            }
+        );
+        Ok(())
     }
 
     fn no_load_step_on<AB: AutodiffBackend>(
@@ -388,7 +548,13 @@ mod run {
                 }
                 Ok(())
             }
-            _ => bail!("mode: verify-load <bundle> | no-load | stages | adapters"),
+            Some("workaround") => {
+                let base = PathBuf::from(args.get(2).context("arg 2: bundle dir")?);
+                workaround(&base)
+            }
+            _ => bail!(
+                "mode: verify-load <bundle> | no-load | stages | adapters | workaround <bundle>"
+            ),
         }
     }
 }
