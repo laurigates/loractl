@@ -36,6 +36,13 @@ clean:
 run *ARGS:
     cargo run -p loractl-cli -- {{ARGS}}
 
+# Scaffold a starter training config from a template to stdout — redirect to a
+# file, e.g. `just init krea2 > config/my.yaml`. Presets: synthetic (default),
+# wgpu, flow, krea2. To write directly with an overwrite guard, call the binary:
+# `loractl init --preset krea2 -o config/my.yaml`.
+init preset="synthetic":
+    cargo run -q -p loractl-cli -- init --preset {{preset}}
+
 # Train from a config with the real BurnTrainer (synthetic LoRA-MLP demo by default).
 train config="config/examples/lora.yaml":
     cargo run -p loractl-cli -- train {{config}}
