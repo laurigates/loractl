@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/laurigates/loractl/compare/v0.5.1...v0.6.0) (2026-07-15)
+
+
+### Features
+
+* **core:** DiffusionTrainer — the end-to-end Krea 2 LoRA trainer (M14) ([#73](https://github.com/laurigates/loractl/issues/73)) ([9188909](https://github.com/laurigates/loractl/commit/9188909b8c12c3a59c80ab322ca0adf08a3fd68b))
+* **core:** image dataset pipeline — aspect buckets + latent/conditioning cache (M12) ([#71](https://github.com/laurigates/loractl/issues/71)) ([88972d9](https://github.com/laurigates/loractl/commit/88972d9519d10b4bb43d1b8b397cf0bfd0ebac3d))
+* **core:** Krea 2 MMDiT denoiser with official-implementation parity + LoRA attach (M11) ([#70](https://github.com/laurigates/loractl/issues/70)) ([b17d5eb](https://github.com/laurigates/loractl/commit/b17d5eb73b348ee8d2468ab4f4331729989164ea))
+* **core:** M13 memory knobs — f16 precision (wgpu) + gradient checkpointing ([#72](https://github.com/laurigates/loractl/issues/72)) ([5c86fcc](https://github.com/laurigates/loractl/commit/5c86fcc5c97996db132660b2eb24c53d493b6a53))
+* **core:** Qwen3-VL text-conditioning encoder with transformers parity (M10) ([#69](https://github.com/laurigates/loractl/issues/69)) ([0a36056](https://github.com/laurigates/loractl/commit/0a360562acec9a55cb9b2db7e7983591037425c6))
+
+
+### Bug Fixes
+
+* **core:** real-run fixes — f16 numerics, adapter resume, candle arm, torch reference trainer (M14) ([#75](https://github.com/laurigates/loractl/issues/75)) ([6078bfd](https://github.com/laurigates/loractl/commit/6078bfdec373a33621f54c071eddbff7387d9dc0))
+
 ## [0.5.1](https://github.com/laurigates/loractl/compare/v0.5.0...v0.5.1) (2026-07-12)
 
 
