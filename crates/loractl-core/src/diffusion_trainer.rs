@@ -27,12 +27,31 @@
 //! `tiny-krea2`) — a config mistake is a clear error, never a creative
 //! shape inference.
 //!
-//! ## Memory sequencing
+//! ## Memory sequencing & encode precision
 //!
 //! The VAE and text encoder run only during dataset preparation (everything
 //! they produce is cached by M12), so they are loaded, used, and **dropped
 //! before the MMDiT loads** — peak memory holds either the encoders or the
 //! denoiser, never both.
+//!
+//! The encode phase **always runs on the CPU ndarray backend in f32,
+//! regardless of `compute.backend`/`compute.precision`** — the exact path
+//! the M9/M10 parity tests pin against diffusers/transformers. Two observed
+//! failure modes force this:
+//!
+//! - **f16 overflow**: the frozen Qwen-family encoders exceed f16's numeric
+//!   range on the real weights (activation overflow turned every cached
+//!   latent and conditioning tensor Inf/NaN);
+//! - **wgpu f32 corruption**: burn 0.21's wgpu kernels progressively
+//!   corrupted *sequential* encoder outputs (the first caption encoded
+//!   clean, later identical calls degraded to ~1e32 magnitudes and then
+//!   NaN — a buffer-reuse/kernel bug beneath this crate, not model math).
+//!
+//! The encoders never benefit from the GPU knobs anyway — they run once,
+//! alone, are cached, and are dropped; the f16 knob exists to fit the
+//! *MMDiT*. The cache fingerprint carries an `enc32` marker so caches
+//! written by the earlier reduced-precision encode path are invalidated
+//! rather than silently reused.
 //!
 //! Like every trainer, this emits [`TrainEvent`]s through the sink and never
 //! renders; the front-ends changed only at their constructor seam (a
@@ -42,7 +61,7 @@ use crate::adapters::{LoraAdapters, build_adapters};
 use crate::config::{BackendKind, ModelVariant, Precision, TaskKind, TrainConfig};
 use crate::dataset::prepare_dataset;
 use crate::event::TrainEvent;
-use crate::export::{ExportFormat, export_adapters};
+use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, sample_timesteps, velocity_target};
 use crate::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
@@ -53,9 +72,13 @@ use burn::backend::{Autodiff, NdArray};
 use burn::module::Module;
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::{Distribution, ElementConversion, Tensor};
-use burn_store::{KeyRemapper, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
+use burn::tensor::{DType, Distribution, Element, ElementConversion, Tensor};
+use burn_store::{
+    KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
+    TensorSnapshot,
+};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 #[cfg(feature = "wgpu")]
 use burn::backend::Wgpu;
@@ -76,6 +99,30 @@ fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVa
             16,
         ),
     }
+}
+
+/// Dynamic loss scaling (see the optimizer step). The initial factor lifts
+/// f16 gradients out of underflow across the 28-block backward; on
+/// non-finite gradients the step is skipped and the scale halves, and after
+/// [`SCALE_GROWTH_INTERVAL`] consecutive clean steps it doubles again —
+/// the standard mixed-precision sawtooth. Both directions were observed on
+/// the real model: at S=1 gradients underflow to exactly zero (adapters
+/// never train), and a static S=16384 overflowed around step 13 as the
+/// growing LoRA path amplified early-layer gradients past f16's max.
+const INITIAL_LOSS_SCALE: f32 = 16384.0;
+/// Ceiling/floor for the dynamic scale.
+const MAX_LOSS_SCALE: f32 = 65536.0;
+/// See [`INITIAL_LOSS_SCALE`].
+const MIN_LOSS_SCALE: f32 = 1.0;
+/// Clean steps before the scale doubles.
+const SCALE_GROWTH_INTERVAL: u32 = 50;
+
+/// The cache fingerprint for a variant's encoder outputs. The `enc32`
+/// marker records that the encode phase ran in f32 — caches produced by the
+/// earlier (numerically broken) reduced-precision encode path carry the old
+/// unmarked fingerprint and are invalidated by this rename.
+fn encoder_fingerprint(variant: ModelVariant, max_length: usize) -> String {
+    format!("{variant:?}-ml{max_length}-enc32").to_lowercase()
 }
 
 /// The Krea 2 LoRA trainer — see the [module docs](self).
@@ -105,14 +152,57 @@ impl Trainer for DiffusionTrainer {
             );
         }
 
+        // Started frames the whole run, encode phase included, so SSE/bar
+        // consumers see the run begin before the (potentially long) one-time
+        // dataset encode rather than after it.
+        sink(TrainEvent::Started {
+            total_steps: config.steps.max(1),
+        });
+        std::fs::create_dir_all(&config.output.dir)
+            .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
+
+        // Backend validity first, so a misconfigured run fails before the
+        // (potentially long) encode phase rather than after it.
+        match (config.compute.backend, config.compute.precision) {
+            (BackendKind::Ndarray, p) if p != Precision::F32 => bail!(
+                "compute.precision = {p:?} is not supported on the ndarray backend \
+                 (f16 needs wgpu, bf16 needs candle)"
+            ),
+            (BackendKind::Wgpu, Precision::Bf16) => bail!(
+                "compute.precision = bf16 is only supported on the candle backend \
+                 (selected backend: wgpu — burn-wgpu has no bf16 support)"
+            ),
+            (BackendKind::Candle, Precision::F16) => bail!(
+                "compute.precision = f16 on candle is not wired; use bf16 (same \
+                 memory, f32-like range) or f32"
+            ),
+            #[cfg(not(feature = "wgpu"))]
+            (BackendKind::Wgpu, _) => bail!(
+                "config selected the 'wgpu' backend but this binary was built without it; \
+                 rebuild with `--features wgpu`"
+            ),
+            #[cfg(not(feature = "candle"))]
+            (BackendKind::Candle, _) => bail!(
+                "config selected the 'candle' backend but this binary was built without it; \
+                 rebuild with `--features candle`"
+            ),
+            (BackendKind::Cuda | BackendKind::Tch, _) => bail!(
+                "the diffusion trainer currently wires ndarray, wgpu, and candle; \
+                 cuda/tch land once they can be verified on real hardware"
+            ),
+            _ => {}
+        }
+
+        // The one-time dataset encode ALWAYS runs on the CPU ndarray backend
+        // in f32 — the parity-proven encoder path. See the module docs: f16
+        // overflows the Qwen encoders' range, and burn 0.21's wgpu f32
+        // kernels corrupted sequential encoder outputs progressively (clean
+        // → ~1e32 magnitudes → NaN across identical calls). The cache makes
+        // this a one-time cost per dataset.
+        encode_phase::<NdArray>(config, Default::default())?;
+
         match config.compute.backend {
             BackendKind::Ndarray => {
-                if config.compute.precision != Precision::F32 {
-                    bail!(
-                        "compute.precision = f16 is only supported on the wgpu backend \
-                         (selected backend: ndarray)"
-                    );
-                }
                 dispatch_checkpointing::<NdArray>(config, Default::default(), sink)
             }
             #[cfg(feature = "wgpu")]
@@ -123,18 +213,96 @@ impl Trainer for DiffusionTrainer {
                     Default::default(),
                     sink,
                 ),
+                Precision::Bf16 => unreachable!("validated above"),
             },
-            #[cfg(not(feature = "wgpu"))]
-            BackendKind::Wgpu => bail!(
-                "config selected the 'wgpu' backend but this binary was built without it; \
-                 rebuild with `--features wgpu`"
-            ),
-            BackendKind::Cuda | BackendKind::Tch => bail!(
-                "the diffusion trainer currently wires ndarray and wgpu; \
-                 cuda/tch land once they can be verified on real hardware"
-            ),
+            // burn deprecates burn-candle in favor of burn-cubecl — but
+            // cubecl's Metal kernels are precisely what produces the NaN
+            // gradients this arm exists to dodge (examples/grad_compare.rs:
+            // candle-metal bf16 matches CPU ground truth where both wgpu
+            // arms NaN). Revisit when a burn release fixes wgpu autodiff on
+            // Apple Silicon.
+            #[cfg(feature = "candle")]
+            #[allow(deprecated)]
+            BackendKind::Candle => {
+                let device = burn::backend::candle::CandleDevice::metal(config.compute.device);
+                match config.compute.precision {
+                    Precision::F32 => {
+                        dispatch_checkpointing::<burn::backend::Candle>(config, device, sink)
+                    }
+                    Precision::Bf16 => dispatch_checkpointing::<
+                        burn::backend::Candle<burn::tensor::bf16>,
+                    >(config, device, sink),
+                    Precision::F16 => unreachable!("validated above"),
+                }
+            }
+            _ => unreachable!("backend validated above"),
         }
     }
+}
+
+/// The one-time dataset encode: load the frozen encoders on an **f32**
+/// backend, run the M12 cache pass, and drop everything — the cache on disk
+/// is the only output. The training phase re-reads it on its own backend
+/// and never touches the encoders (its cache-miss closures bail).
+///
+/// Encoder loading is **lazy** — the closures load a model on their first
+/// cache miss. A fully warm cache therefore never loads the encoders at
+/// all (on the real model that skips a ~16 GB f32 text-encoder load per
+/// warm rerun), pinned by the e2e's encoders-deleted warm-rerun test.
+fn encode_phase<B: burn::tensor::backend::Backend>(
+    config: &TrainConfig,
+    device: B::Device,
+) -> Result<()> {
+    let base = PathBuf::from(&config.model.base);
+    let (_, enc_cfg, vae_cfg, max_length) = variant_configs(config.model.variant);
+    let fingerprint = encoder_fingerprint(config.model.variant, max_length);
+
+    let mut vae: Option<QwenVae<B>> = None;
+    let mut conditioner: Option<Qwen3VlConditioner<B>> = None;
+    prepare_dataset::<B>(
+        &config.dataset,
+        &fingerprint,
+        &device,
+        |image| {
+            if vae.is_none() {
+                vae = Some(
+                    load_module(
+                        QwenVae::<B>::init(vae_cfg.clone(), &device),
+                        &base.join("vae/diffusion_pytorch_model.safetensors"),
+                        &QwenVae::<B>::key_remap(),
+                        false,
+                        None,
+                        "VAE",
+                    )?
+                    .no_grad(),
+                );
+            }
+            Ok(vae.as_ref().expect("just initialized").encode(image))
+        },
+        |caption| {
+            if conditioner.is_none() {
+                let encoder = load_module(
+                    Qwen3VlEncoder::<B>::init(enc_cfg.clone(), &device),
+                    &base.join("text_encoder/model.safetensors"),
+                    &[],
+                    true,
+                    Some(Qwen3VlEncoder::<B>::load_filter()),
+                    "text encoder",
+                )?
+                .no_grad();
+                conditioner = Some(Qwen3VlConditioner::new(
+                    encoder,
+                    &base.join("tokenizer/tokenizer.json"),
+                    max_length,
+                )?);
+            }
+            conditioner
+                .as_ref()
+                .expect("just initialized")
+                .encode_captions(&[caption], &device)
+        },
+    )?;
+    Ok(())
 }
 
 /// The M13 checkpointing split, mirroring `BurnTrainer`'s.
@@ -156,6 +324,53 @@ fn dispatch_checkpointing<B: burn::tensor::backend::Backend>(
     }
 }
 
+/// A burn-store adapter that casts every float snapshot to `target` before
+/// it is applied.
+///
+/// burn-store's applier deliberately **preserves the file's dtype** on the
+/// created param tensor (`Tensor::from_data(data, (device, snapshot.dtype))`).
+/// On a backend whose working dtype differs — `Wgpu<f16>` loading a stock
+/// Krea-2-Raw checkpoint (174 F32 + 256 BF16 tensors) — that leaves params
+/// in dtypes the backend either doesn't support at all (burn-wgpu asserts
+/// `!supports_dtype(BF16)`) or mis-executes in mixed-dtype kernels: observed
+/// on the real model as `first.forward` saturating to f16-max from O(2.6)
+/// inputs and O(0.6) file weights, NaN'ing the whole forward. burn-store's
+/// own `HalfPrecisionAdapter` can't close this (it passes BF16 through and
+/// only covers a fixed module-type list), so this adapter converts every
+/// float tensor unconditionally.
+#[derive(Clone)]
+pub struct CastFloatsAdapter {
+    /// The dtype every float snapshot is converted to (the loading module's
+    /// working float dtype).
+    pub target: DType,
+}
+
+impl ModuleAdapter for CastFloatsAdapter {
+    fn adapt(&self, snapshot: &TensorSnapshot) -> TensorSnapshot {
+        let is_float = matches!(
+            snapshot.dtype,
+            DType::F64 | DType::F32 | DType::Flex32 | DType::F16 | DType::BF16
+        );
+        if !is_float || snapshot.dtype == self.target {
+            return snapshot.clone();
+        }
+        let original = snapshot.clone_data_fn();
+        let target = self.target;
+        TensorSnapshot::from_closure(
+            Rc::new(move || Ok(original()?.convert_dtype(target))),
+            target,
+            snapshot.shape.clone(),
+            snapshot.path_stack.clone().unwrap_or_default(),
+            snapshot.container_stack.clone().unwrap_or_default(),
+            snapshot.tensor_id.unwrap_or_default(),
+        )
+    }
+
+    fn clone_box(&self) -> Box<dyn ModuleAdapter> {
+        Box::new(self.clone())
+    }
+}
+
 /// Load a component checkpoint into a freshly-initialized module.
 fn load_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
     mut module: M,
@@ -171,9 +386,17 @@ fn load_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
     if let Some(pattern) = filter {
         store = store.with_regex(pattern).allow_partial(true);
     }
-    if transpose_linears {
-        store = store.with_from_adapter(PyTorchToBurnAdapter);
-    }
+    // Every float tensor is cast to the backend's working float dtype — see
+    // [`CastFloatsAdapter`]: a stock checkpoint's F32/BF16 tensors must not
+    // survive as-is into an f16 module's params.
+    let cast = CastFloatsAdapter {
+        target: <B::FloatElem as Element>::dtype(),
+    };
+    store = if transpose_linears {
+        store.with_from_adapter(PyTorchToBurnAdapter.chain(cast))
+    } else {
+        store.with_from_adapter(cast)
+    };
     let result = module
         .load_from(&mut store)
         .with_context(|| format!("loading {what} from {}", path.display()))?;
@@ -194,8 +417,8 @@ fn load_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
     Ok(module)
 }
 
-/// One training job on backend `AB`: prepare (and cache) the dataset with the
-/// frozen encoders, drop them, load the MMDiT, and train the injected LoRA.
+/// One training job on backend `AB`: re-read the cache [`encode_phase`]
+/// populated, load the MMDiT, and train the injected LoRA.
 fn run_diffusion<AB: AutodiffBackend>(
     config: &TrainConfig,
     device: AB::Device,
@@ -204,60 +427,51 @@ fn run_diffusion<AB: AutodiffBackend>(
     AB::seed(&device, config.seed);
 
     let total = config.steps.max(1);
-    sink(TrainEvent::Started { total_steps: total });
-    std::fs::create_dir_all(&config.output.dir)
-        .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
-
     let base = PathBuf::from(&config.model.base);
     let variant = config.model.variant;
-    let (mmdit_cfg, enc_cfg, vae_cfg, max_length) = variant_configs(variant);
+    let (mmdit_cfg, _, _, max_length) = variant_configs(variant);
     let patch = mmdit_cfg.patch;
 
-    // ---- Phase 1: encode + cache the dataset; encoders dropped after. ----
-    let fingerprint = format!("{variant:?}-ml{max_length}").to_lowercase();
-    let prepared = {
-        let vae = load_module(
-            QwenVae::<AB>::init(vae_cfg, &device),
-            &base.join("vae/diffusion_pytorch_model.safetensors"),
-            &QwenVae::<AB>::key_remap(),
-            false,
-            None,
-            "VAE",
-        )?
-        .no_grad();
-        let encoder = load_module(
-            Qwen3VlEncoder::<AB>::init(enc_cfg, &device),
-            &base.join("text_encoder/model.safetensors"),
-            &[],
-            true,
-            Some(Qwen3VlEncoder::<AB>::load_filter()),
-            "text encoder",
-        )?
-        .no_grad();
-        let conditioner =
-            Qwen3VlConditioner::new(encoder, &base.join("tokenizer/tokenizer.json"), max_length)?;
-        prepare_dataset::<AB>(
-            &config.dataset,
-            &fingerprint,
-            &device,
-            |image| Ok(vae.encode(image)),
-            |caption| conditioner.encode_captions(&[caption], &device),
-        )?
-    };
+    // ---- Phase 1: read the cache the f32 encode phase just wrote. The
+    // closures only fire on a cache miss, which after `encode_phase` means
+    // the dataset changed mid-run — bail rather than re-encoding at the
+    // training precision (f16 encoders are exactly the bug this split
+    // exists to prevent).
+    let fingerprint = encoder_fingerprint(variant, max_length);
+    let prepared = prepare_dataset::<AB>(
+        &config.dataset,
+        &fingerprint,
+        &device,
+        |_| bail!("latent cache miss after the encode phase — did the dataset change mid-run?"),
+        |_| {
+            bail!(
+                "conditioning cache miss after the encode phase — did the dataset change mid-run?"
+            )
+        },
+    )?;
     let batches = prepared.batches(config.dataset.batch_size.max(1) as usize);
     if batches.is_empty() {
         bail!("the dataset produced no batches");
     }
 
     // ---- Phase 2: the denoiser + adapters. ----
+    //
+    // Load on the backend's DEFAULT device, then move to the target device.
+    // For ndarray/wgpu the default IS the target (a no-op move); for candle
+    // the default is the CPU, which sidesteps a load-time double allocation
+    // on Metal (the freshly-initialized params plus the store's replacement
+    // tensors peaking at ~2× the ~25 GB model — observed as "Failed to
+    // create metal resource: Buffer"). `to_device` then migrates tensor by
+    // tensor inside unified memory, so peak stays ~one model.
     let mmdit = load_module(
-        Mmdit::<AB>::init(mmdit_cfg, &device),
+        Mmdit::<AB>::init(mmdit_cfg, &AB::Device::default()),
         &base.join("raw.safetensors"),
         &Mmdit::<AB>::key_remap(),
         true,
         None,
         "MMDiT",
     )?
+    .to_device(&device)
     .no_grad();
 
     let sites = mmdit.injectable_sites();
@@ -271,14 +485,32 @@ fn run_diffusion<AB: AutodiffBackend>(
         );
     }
 
-    let mut optim = AdamWConfig::new()
-        .with_weight_decay(config.optim.weight_decay as f32)
-        .init::<AB, LoraAdapters<AB>>();
-    let checkpoint_every = config.output.checkpoint_every.max(1);
     let adapter_path = config
         .output
         .dir
         .join(format!("{}.safetensors", config.output.name));
+
+    // Resume: an existing final artifact is loaded back into the fresh
+    // adapters and training continues from it — running the same config
+    // again extends the adapter rather than restarting it. (The export
+    // carries no optimizer state, so AdamW re-warms its moments.)
+    if adapter_path.exists() {
+        let loaded = import_adapters(&mut set, ExportFormat::Krea2Diffusers, &adapter_path)
+            .with_context(|| format!("resuming from {}", adapter_path.display()))?;
+        sink(TrainEvent::Warning {
+            message: format!(
+                "resuming from existing adapter {} ({loaded} deltas loaded)",
+                adapter_path.display()
+            ),
+        });
+    }
+
+    let mut optim = AdamWConfig::new()
+        .with_weight_decay(config.optim.weight_decay as f32)
+        .init::<AB, LoraAdapters<AB>>();
+    let mut loss_scale = INITIAL_LOSS_SCALE;
+    let mut clean_streak = 0u32;
+    let checkpoint_every = config.output.checkpoint_every.max(1);
 
     for step in 1..=total {
         let batch = &batches[((step - 1) as usize) % batches.len()];
@@ -319,14 +551,75 @@ fn run_diffusion<AB: AutodiffBackend>(
         let diff = pred - target;
         let loss = diff.clone().mul(diff).mean();
         let loss_value: f32 = loss.clone().into_scalar().elem();
+        // Fail fast on numeric divergence: a non-finite loss poisons the
+        // adapters within one optimizer step, and silently "training" NaNs
+        // for the remaining steps only wastes hours and exports garbage
+        // (observed with f16 on the real 12B before the f32 encode split).
+        if !loss_value.is_finite() {
+            bail!(
+                "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
+                 With compute.precision: f16 this means an activation exceeded \
+                 f16's range; try f32, or report the model/config combination"
+            );
+        }
         sink(TrainEvent::Step {
             step,
             loss: loss_value,
             lr: config.optim.lr,
         });
 
-        let grads = GradientsParams::from_grads(loss.backward(), &set);
-        set = optim.step(config.optim.lr, set, grads);
+        // Loss scaling: backprop S·loss instead of loss. In f16 the
+        // per-element loss gradient starts at 2·diff/N (~1e-4 at 256²) and
+        // shrinks through 28 blocks, underflowing f16's normal range (6e-5)
+        // to EXACTLY zero — observed on the real model as `lora_up` never
+        // moving off its zero init while the loss stayed healthy. AdamW's
+        // update is scale-invariant (m̂ and √v̂ both carry S, which cancels),
+        // so scaling needs no un-scaling step and is a numeric no-op on f32
+        // backends — it purely keeps f16 gradients representable.
+        let scaled = loss * loss_scale;
+        let grads = GradientsParams::from_grads(scaled.backward(), &set);
+
+        // Dynamic-scale guard: one reduced scalar over every adapter
+        // gradient (Inf/NaN propagate through the abs-sum). Non-finite ⇒
+        // the scaled backward overflowed f16 — skip this update, halve the
+        // scale, and continue; the loss itself was finite, so the run is
+        // healthy. Identity-cost on f32 backends (always finite).
+        let grads_finite = if std::env::var_os("LORACTL_SKIP_GRAD_CHECK").is_some() {
+            true
+        } else {
+            let mut acc: Option<Tensor<AB::InnerBackend, 1>> = None;
+            for delta in &set.deltas {
+                for id in [delta.lora_a.weight.id, delta.lora_b.weight.id] {
+                    if let Some(g) = grads.get::<AB::InnerBackend, 2>(id) {
+                        let s = g.abs().sum();
+                        acc = Some(match acc {
+                            Some(a) => a + s,
+                            None => s,
+                        });
+                    }
+                }
+            }
+            acc.map(|a| a.into_scalar().elem::<f32>().is_finite())
+                .unwrap_or(true)
+        };
+
+        if grads_finite {
+            set = optim.step(config.optim.lr, set, grads);
+            clean_streak += 1;
+            if clean_streak >= SCALE_GROWTH_INTERVAL && loss_scale < MAX_LOSS_SCALE {
+                loss_scale = (loss_scale * 2.0).min(MAX_LOSS_SCALE);
+                clean_streak = 0;
+            }
+        } else {
+            clean_streak = 0;
+            loss_scale = (loss_scale / 2.0).max(MIN_LOSS_SCALE);
+            sink(TrainEvent::Warning {
+                message: format!(
+                    "step {step}: non-finite f16 gradients — update skipped, \
+                     loss scale halved to {loss_scale}"
+                ),
+            });
+        }
 
         if step % checkpoint_every == 0 && step != total {
             let path = config

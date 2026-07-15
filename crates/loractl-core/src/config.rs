@@ -232,6 +232,10 @@ pub enum BackendKind {
     Ndarray,
     /// wgpu (Metal on macOS, Vulkan/DX12 elsewhere). Requires `--features wgpu`.
     Wgpu,
+    /// candle-core (Metal kernels on macOS) — an independent kernel stack
+    /// from wgpu/cubecl, and the only backend offering **bf16** on Metal.
+    /// Requires `--features candle`.
+    Candle,
     /// CUDA (NVIDIA). Requires `--features cuda`; not runnable on macOS.
     Cuda,
     /// libtorch. Requires `--features tch`; needs a linked libtorch binary.
@@ -248,9 +252,12 @@ impl FromStr for BackendKind {
         match s.to_ascii_lowercase().as_str() {
             "ndarray" => Ok(Self::Ndarray),
             "wgpu" => Ok(Self::Wgpu),
+            "candle" => Ok(Self::Candle),
             "cuda" => Ok(Self::Cuda),
             "tch" | "libtorch" => Ok(Self::Tch),
-            other => Err(format!("unknown backend {other:?} (ndarray|wgpu|cuda|tch)")),
+            other => Err(format!(
+                "unknown backend {other:?} (ndarray|wgpu|candle|cuda|tch)"
+            )),
         }
     }
 }
@@ -286,6 +293,9 @@ pub enum Precision {
     F32,
     /// Half precision (wgpu only).
     F16,
+    /// bfloat16 — f32's exponent range in 16 bits, the dtype most modern
+    /// checkpoints ship in (candle backend only; Metal via candle-core).
+    Bf16,
 }
 
 // No `clap::ValueEnum` here for the same reason as `BackendKind`: core never
@@ -297,7 +307,8 @@ impl FromStr for Precision {
         match s.to_ascii_lowercase().as_str() {
             "f32" | "fp32" | "full" => Ok(Self::F32),
             "f16" | "fp16" | "half" => Ok(Self::F16),
-            other => Err(format!("unknown precision {other:?} (f32|f16)")),
+            "bf16" | "bfloat16" => Ok(Self::Bf16),
+            other => Err(format!("unknown precision {other:?} (f32|f16|bf16)")),
         }
     }
 }

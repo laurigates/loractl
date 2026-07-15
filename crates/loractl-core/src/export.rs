@@ -28,9 +28,10 @@
 //! early interop lock (see the milestone plan / ADR-0004).
 
 use crate::adapters::LoraAdapters;
-use anyhow::{Context, Result};
-use burn::tensor::Tensor;
+use anyhow::{Context, Result, bail};
+use burn::module::Param;
 use burn::tensor::backend::Backend;
+use burn::tensor::{Tensor, TensorData};
 use safetensors::tensor::{Dtype, View};
 use std::borrow::Cow;
 use std::path::Path;
@@ -257,4 +258,78 @@ pub fn export_adapters<B: Backend>(
         .with_context(|| format!("writing adapter export to {}", path.display()))?;
 
     Ok(())
+}
+
+/// Load a previously [`export_adapters`]-written file back into a freshly
+/// built [`LoraAdapters`] set — the resume path: A/B round-trip through the
+/// export's transposed layout, and each site's `.alpha` is checked against
+/// the set's configured scaling (a drifted config must fail loudly, not
+/// silently train at the wrong scale). Optimizer state is not part of the
+/// export, so a resumed run re-warms its moments from zero.
+///
+/// Every target in `set` must be present in the file with matching shapes;
+/// extra tensors in the file are ignored.
+pub fn import_adapters<B: Backend>(
+    set: &mut LoraAdapters<B>,
+    fmt: ExportFormat,
+    path: &Path,
+) -> Result<usize> {
+    let mapper = fmt.mapper();
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading adapter export {}", path.display()))?;
+    let st = safetensors::SafeTensors::deserialize(&bytes)
+        .with_context(|| format!("parsing adapter export {}", path.display()))?;
+
+    let read_matrix = |key: &str| -> Result<Tensor<B, 2>> {
+        let view = st
+            .tensor(key)
+            .with_context(|| format!("adapter export is missing tensor {key}"))?;
+        if view.dtype() != Dtype::F32 {
+            bail!("tensor {key} is {:?}, expected F32", view.dtype());
+        }
+        let shape: Vec<usize> = view.shape().to_vec();
+        let vals: Vec<f32> = view
+            .data()
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        // `from_data` converts to the backend's working float dtype.
+        Ok(Tensor::from_data(
+            TensorData::new(vals, [shape[0], shape[1]]),
+            &Default::default(),
+        ))
+    };
+
+    for (delta, target) in set.deltas.iter_mut().zip(&set.targets) {
+        // File layout is the export's: down `[rank, d_in]`, up `[d_out, rank]`
+        // — transpose back to burn's `A: [d_in, rank]`, `B: [rank, d_out]`.
+        let a = read_matrix(&mapper.down_key(target))?.transpose();
+        let b = read_matrix(&mapper.up_key(target))?.transpose();
+        if a.dims() != delta.lora_a.weight.dims() || b.dims() != delta.lora_b.weight.dims() {
+            bail!(
+                "resume shape mismatch at {target}: file A {:?} / B {:?} vs \
+                 configured A {:?} / B {:?} — did lora.rank change?",
+                a.dims(),
+                b.dims(),
+                delta.lora_a.weight.dims(),
+                delta.lora_b.weight.dims()
+            );
+        }
+        let alpha_key = mapper.alpha_key(target);
+        let alpha_view = st
+            .tensor(&alpha_key)
+            .with_context(|| format!("adapter export is missing tensor {alpha_key}"))?;
+        let alpha = f32::from_le_bytes(alpha_view.data()[..4].try_into().unwrap());
+        let rank = delta.lora_a.weight.dims()[1];
+        let expected = (delta.scaling * rank as f64) as f32;
+        if (alpha - expected).abs() > 1e-3 {
+            bail!(
+                "resume alpha mismatch at {target}: file {alpha} vs configured \
+                 {expected} — did lora.alpha change?"
+            );
+        }
+        delta.lora_a.weight = Param::from_tensor(a);
+        delta.lora_b.weight = Param::from_tensor(b);
+    }
+    Ok(set.deltas.len())
 }

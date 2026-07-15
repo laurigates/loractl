@@ -83,9 +83,9 @@ pub use burn_trainer::BurnTrainer;
 pub use config::{
     BackendKind, ComputeConfig, FlowConfig, ModelVariant, Precision, TaskKind, TrainConfig,
 };
-pub use diffusion_trainer::DiffusionTrainer;
+pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
 pub use event::TrainEvent;
-pub use export::{ExportFormat, export_adapters};
+pub use export::{ExportFormat, export_adapters, import_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};
 pub use mmdit::{Mmdit, MmditConfig};

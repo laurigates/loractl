@@ -60,6 +60,13 @@ lint-mmdit-real:
 lint-wgpu:
     cargo clippy -p loractl-core --all-targets --features wgpu -- -D warnings
 
+# Lint the opt-in candle GPU-backend path (Metal via candle-core; the bf16
+# arm). macOS-ONLY: candle-metal pulls objc2, which refuses to compile on
+# non-Apple platforms — so this recipe is local-only, not mirrored in CI
+# (the inverse of the cuda/tch situation).
+lint-candle:
+    cargo clippy -p loractl-core --all-targets --features candle -- -D warnings
+
 # NOTE: cuda/tch are intentionally NOT local recipes — burn-cuda needs the CUDA
 # toolkit/nvcc and burn-tch a linked libtorch, neither present on this Mac. They
 # are build-verifiable only on a Linux+NVIDIA / libtorch host.

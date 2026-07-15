@@ -234,24 +234,68 @@ fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
     // cannot distinguish a hit from a deterministic re-encode, so a
     // run-unstable fingerprint would otherwise go unnoticed): no cache file
     // may be added, removed, or rewritten by the second run.
+    //
+    // The rerun's bundle holds ONLY the MMDiT: with a warm cache the lazy
+    // encode phase must never load the VAE / text encoder / tokenizer, and
+    // the training phase reads the cache exclusively — so deleting them all
+    // must not matter. (This pins the f32-encode/train split: the training
+    // backend cannot quietly re-encode at its own precision.)
     let cache = cache_snapshot(&dataset);
     assert!(
         !cache.is_empty(),
         "the first run must have written the cache"
     );
+    let stripped = out.0.join("bundle-stripped");
+    std::fs::create_dir_all(&stripped).unwrap();
+    std::fs::copy(
+        Path::new(BUNDLE).join("raw.safetensors"),
+        stripped.join("raw.safetensors"),
+    )
+    .unwrap();
+    let mut config2 = config(&out, dataset.clone());
+    config2.model.base = stripped.to_string_lossy().into_owned();
+    // A fresh output dir: reusing run 1's would trigger the resume path
+    // (exercised separately below) and break bit-identity.
+    config2.output.dir = out.0.join("out2");
     let mut losses2 = Vec::new();
     DiffusionTrainer
-        .train(&config(&out, dataset.clone()), &mut |event| {
+        .train(&config2, &mut |event| {
             if let TrainEvent::Step { loss, .. } = event {
                 losses2.push(loss);
             }
         })
-        .expect("warm-cache rerun completes");
+        .expect("warm-cache rerun completes without any encoder files present");
     assert_eq!(losses, losses2, "reseeded rerun must be bit-identical");
     assert_eq!(
         cache_snapshot(&dataset),
         cache,
         "the rerun must hit the cache, not re-encode it"
+    );
+
+    // Resume: re-running against run 1's output dir loads the existing
+    // adapter (announced via a Warning) and continues from it — the loss
+    // stream must DIFFER from the fresh-start stream (the adapters no
+    // longer begin at B = 0), and the export must stay loadable.
+    let mut config3 = config(&out, dataset.clone());
+    config3.model.base = stripped.to_string_lossy().into_owned();
+    let mut resumed = false;
+    let mut losses3 = Vec::new();
+    let adapter3 = DiffusionTrainer
+        .train(&config3, &mut |event| match event {
+            TrainEvent::Warning { message } if message.contains("resuming") => resumed = true,
+            TrainEvent::Step { loss, .. } => losses3.push(loss),
+            _ => {}
+        })
+        .expect("the resume run completes");
+    assert!(resumed, "the resume path must announce itself");
+    assert_ne!(
+        losses, losses3,
+        "a resumed run continues from trained adapters, not from scratch"
+    );
+    assert_eq!(
+        kohya_keys(&adapter3),
+        keys,
+        "resumed export layout unchanged"
     );
 }
 
