@@ -7,7 +7,7 @@
 //! only the one line that constructs it.
 
 use anyhow::{Context, Result};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use figment::{
     Figment,
@@ -40,11 +40,76 @@ enum Command {
     /// Run one deterministic sample forward pass from a trained adapter.
     Sample(SampleCmd),
 
+    /// Scaffold a starter training config from a template (to stdout, or a file
+    /// with `-o`). Presets: `synthetic` (default), `wgpu`, `flow`, `krea2`.
+    Init(InitCmd),
+
     /// Print shell completions to stdout (e.g. `loractl completions zsh`).
     Completions {
         /// Shell to generate completions for.
         shell: Shell,
     },
+}
+
+/// A starter config template selectable by `loractl init --preset`. Each maps
+/// to one of the canonical `config/examples/*.yaml` files, embedded verbatim at
+/// build time via `include_str!` — so `init` *serves* the same files the docs
+/// and tests reference rather than carrying a second, driftable copy of them.
+///
+/// This is a CLI-side packaging concern (which example to emit), not a config
+/// *value*, so — unlike `BackendKind`/`TaskKind`/`Precision` — it lives here and
+/// does not belong in core.
+#[derive(Clone, Copy, ValueEnum)]
+enum Preset {
+    /// Offline synthetic LoRA-MLP demo (CPU/ndarray). No dataset or GPU needed.
+    Synthetic,
+    /// The synthetic demo on the wgpu GPU backend (Metal on macOS). Build with
+    /// `--features wgpu`.
+    Wgpu,
+    /// Rectified-flow (flow-matching) synthetic latent toy (M8).
+    Flow,
+    /// A real Krea 2 image-diffusion LoRA run through the DiffusionTrainer
+    /// (M14). Edit the placeholder `model.base`/`dataset.path` before running.
+    Krea2,
+}
+
+impl Preset {
+    /// The embedded template body for this preset.
+    fn template(self) -> &'static str {
+        match self {
+            Preset::Synthetic => include_str!("../../../config/examples/lora.yaml"),
+            Preset::Wgpu => include_str!("../../../config/examples/lora-wgpu.yaml"),
+            Preset::Flow => include_str!("../../../config/examples/flow.yaml"),
+            Preset::Krea2 => include_str!("../../../config/examples/krea2-lora.yaml"),
+        }
+    }
+
+    /// The name clap parses/prints for this preset (e.g. `krea2`), for status
+    /// messages. Kept in step with the `ValueEnum` derive's default kebab-casing.
+    fn name(self) -> &'static str {
+        match self {
+            Preset::Synthetic => "synthetic",
+            Preset::Wgpu => "wgpu",
+            Preset::Flow => "flow",
+            Preset::Krea2 => "krea2",
+        }
+    }
+}
+
+#[derive(Args)]
+struct InitCmd {
+    /// Which starter template to emit.
+    #[arg(long, value_enum, default_value_t = Preset::Synthetic)]
+    preset: Preset,
+
+    /// Write the config to this file instead of stdout. Refuses to overwrite an
+    /// existing file unless `--force`.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Overwrite the `--output` file if it already exists.
+    #[arg(long)]
+    force: bool,
 }
 
 /// Parse a `--backend` value through core's [`BackendKind`] `FromStr`, keeping
@@ -167,6 +232,7 @@ pub fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Train(cmd) => train(cmd),
         Command::Sample(cmd) => sample(cmd),
+        Command::Init(cmd) => init(cmd),
         Command::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
@@ -301,6 +367,39 @@ fn sample(cmd: SampleCmd) -> Result<()> {
     Ok(())
 }
 
+/// Emit a starter config from the selected [`Preset`] — to stdout by default,
+/// or to `--output` (creating parent dirs, refusing to clobber without
+/// `--force`). Non-destructive by default and pipeable
+/// (`loractl init --preset krea2 > config/my.yaml`); the template is the
+/// canonical example file, embedded at build time, so `init` cannot drift from
+/// the documented examples.
+fn init(cmd: InitCmd) -> Result<()> {
+    let template = cmd.preset.template();
+    match &cmd.output {
+        None => {
+            print!("{template}");
+            Ok(())
+        }
+        Some(path) => {
+            if path.exists() && !cmd.force {
+                anyhow::bail!(
+                    "{} already exists; pass --force to overwrite, or -o a different path",
+                    path.display()
+                );
+            }
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating parent dir {}", parent.display()))?;
+            }
+            std::fs::write(path, template)
+                .with_context(|| format!("writing config to {}", path.display()))?;
+            // Status to stderr so a piped stdout stays clean even with -o.
+            eprintln!("wrote {} config to {}", cmd.preset.name(), path.display());
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Config-layering precedence (issue #47): YAML file < `LORACTL_` env <
@@ -396,6 +495,25 @@ mod tests {
             assert!(config.compute.grad_checkpointing);
             Ok(())
         });
+    }
+
+    /// Every `loractl init` preset's embedded template must parse into a
+    /// `TrainConfig`. Only `lora.yaml` was parse-pinned before (by
+    /// `tests/example_config.rs`); this covers `wgpu`/`flow`/`krea2` too, so a
+    /// schema change that breaks one of those example files fails here instead
+    /// of silently handing users an un-parseable starter config.
+    #[test]
+    fn every_init_preset_template_parses() {
+        for preset in Preset::value_variants() {
+            let name = preset.name();
+            let config: TrainConfig = Figment::new()
+                .merge(Yaml::string(preset.template()))
+                .extract()
+                .unwrap_or_else(|e| panic!("preset `{name}` template must parse: {e}"));
+            // A sanity check that the embedded body is the real example, not
+            // empty: every example ships a non-zero step count.
+            assert!(config.steps > 0, "preset `{name}` should set steps");
+        }
     }
 
     #[test]

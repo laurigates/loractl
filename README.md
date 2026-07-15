@@ -77,6 +77,9 @@ what makes "someone can build a GUI later" true instead of aspirational.
 # Build
 cargo build
 
+# Scaffold a starter config from a template (presets: synthetic, wgpu, flow, krea2)
+cargo run -p loractl-cli -- init --preset krea2 -o config/my-lora.yaml
+
 # Train the default synthetic LoRA-MLP demo from the example config
 cargo run -p loractl-cli -- train config/examples/lora.yaml
 
@@ -90,8 +93,8 @@ LORACTL_OPTIM__LR=5e-5 cargo run -p loractl-cli -- train config/examples/lora.ya
 cargo run -p loractl-cli -- completions zsh > ~/.zfunc/_loractl
 ```
 
-Recipes live in the `justfile` (`just` to list): `just build`, `just train`,
-`just completions fish`, `just lint`, `just fmt`, `just test`.
+Recipes live in the `justfile` (`just` to list): `just build`, `just init`,
+`just train`, `just completions fish`, `just lint`, `just fmt`, `just test`.
 
 ### Install
 
