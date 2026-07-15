@@ -19,6 +19,7 @@ path = "src/main.rs"
 # (without this the flag/config is a runtime no-op that bails). cuda/tch are
 # passthrough-only and not runnable on this machine.
 wgpu = ["loractl-core/wgpu"]
+candle = ["loractl-core/candle"]
 cuda = ["loractl-core/cuda"]
 tch = ["loractl-core/tch"]
 

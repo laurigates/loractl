@@ -65,6 +65,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 wgpu = ["burn/wgpu"]
 cuda = ["burn/cuda"]
 tch = ["burn/tch"]
+# candle: burn's candle-core backend with Metal kernels — an alternative GPU
+# path on macOS with a completely independent kernel stack from cubecl/wgpu,
+# and the only burn backend offering bf16 on Metal (the Krea-2 checkpoint's
+# native dtype, with f32-like range). Added while isolating wgpu autodiff
+# numeric corruption on Apple Silicon (see examples/grad_compare.rs).
+candle = ["burn/candle", "burn/candle-metal"]
 # Opt-in real-MNIST training. `burn/dataset` pulls burn-dataset (where
 # `MnistDataset` lives) and `burn/vision` activates its vision datasets. This
 # pulls reqwest/tokio and downloads MNIST over the network at runtime, so it is

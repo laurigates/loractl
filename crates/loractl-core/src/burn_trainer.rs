@@ -179,12 +179,23 @@ impl Trainer for BurnTrainer {
                     Precision::F16 => {
                         dispatch_checkpointing::<Wgpu<burn::tensor::f16>>(config, device, sink)
                     }
+                    Precision::Bf16 => anyhow::bail!(
+                        "compute.precision = bf16 is only supported on the candle backend \
+                         (selected backend: wgpu — burn-wgpu has no bf16 support)"
+                    ),
                 }
             }
             #[cfg(not(feature = "wgpu"))]
             BackendKind::Wgpu => anyhow::bail!(
                 "config selected the 'wgpu' backend but this binary was built without it; \
                  rebuild with `--features wgpu` (Metal on macOS, Vulkan/DX12 elsewhere)"
+            ),
+            // The synthetic demo has no need for candle's Metal kernels —
+            // it exists for the M14 diffusion trainer. Wire it here if a
+            // use case appears; a silent fallback is never an option.
+            BackendKind::Candle => anyhow::bail!(
+                "the candle backend is wired for the diffusion trainer only; \
+                 use ndarray or wgpu for the synthetic/mnist demo"
             ),
             #[cfg(feature = "cuda")]
             BackendKind::Cuda => {

@@ -163,18 +163,31 @@ impl Trainer for DiffusionTrainer {
 
         // Backend validity first, so a misconfigured run fails before the
         // (potentially long) encode phase rather than after it.
-        match config.compute.backend {
-            BackendKind::Ndarray if config.compute.precision != Precision::F32 => bail!(
-                "compute.precision = f16 is only supported on the wgpu backend \
-                 (selected backend: ndarray)"
+        match (config.compute.backend, config.compute.precision) {
+            (BackendKind::Ndarray, p) if p != Precision::F32 => bail!(
+                "compute.precision = {p:?} is not supported on the ndarray backend \
+                 (f16 needs wgpu, bf16 needs candle)"
+            ),
+            (BackendKind::Wgpu, Precision::Bf16) => bail!(
+                "compute.precision = bf16 is only supported on the candle backend \
+                 (selected backend: wgpu — burn-wgpu has no bf16 support)"
+            ),
+            (BackendKind::Candle, Precision::F16) => bail!(
+                "compute.precision = f16 on candle is not wired; use bf16 (same \
+                 memory, f32-like range) or f32"
             ),
             #[cfg(not(feature = "wgpu"))]
-            BackendKind::Wgpu => bail!(
+            (BackendKind::Wgpu, _) => bail!(
                 "config selected the 'wgpu' backend but this binary was built without it; \
                  rebuild with `--features wgpu`"
             ),
-            BackendKind::Cuda | BackendKind::Tch => bail!(
-                "the diffusion trainer currently wires ndarray and wgpu; \
+            #[cfg(not(feature = "candle"))]
+            (BackendKind::Candle, _) => bail!(
+                "config selected the 'candle' backend but this binary was built without it; \
+                 rebuild with `--features candle`"
+            ),
+            (BackendKind::Cuda | BackendKind::Tch, _) => bail!(
+                "the diffusion trainer currently wires ndarray, wgpu, and candle; \
                  cuda/tch land once they can be verified on real hardware"
             ),
             _ => {}
@@ -200,7 +213,28 @@ impl Trainer for DiffusionTrainer {
                     Default::default(),
                     sink,
                 ),
+                Precision::Bf16 => unreachable!("validated above"),
             },
+            // burn deprecates burn-candle in favor of burn-cubecl — but
+            // cubecl's Metal kernels are precisely what produces the NaN
+            // gradients this arm exists to dodge (examples/grad_compare.rs:
+            // candle-metal bf16 matches CPU ground truth where both wgpu
+            // arms NaN). Revisit when a burn release fixes wgpu autodiff on
+            // Apple Silicon.
+            #[cfg(feature = "candle")]
+            #[allow(deprecated)]
+            BackendKind::Candle => {
+                let device = burn::backend::candle::CandleDevice::metal(config.compute.device);
+                match config.compute.precision {
+                    Precision::F32 => {
+                        dispatch_checkpointing::<burn::backend::Candle>(config, device, sink)
+                    }
+                    Precision::Bf16 => dispatch_checkpointing::<
+                        burn::backend::Candle<burn::tensor::bf16>,
+                    >(config, device, sink),
+                    Precision::F16 => unreachable!("validated above"),
+                }
+            }
             _ => unreachable!("backend validated above"),
         }
     }
@@ -421,14 +455,23 @@ fn run_diffusion<AB: AutodiffBackend>(
     }
 
     // ---- Phase 2: the denoiser + adapters. ----
+    //
+    // Load on the backend's DEFAULT device, then move to the target device.
+    // For ndarray/wgpu the default IS the target (a no-op move); for candle
+    // the default is the CPU, which sidesteps a load-time double allocation
+    // on Metal (the freshly-initialized params plus the store's replacement
+    // tensors peaking at ~2× the ~25 GB model — observed as "Failed to
+    // create metal resource: Buffer"). `to_device` then migrates tensor by
+    // tensor inside unified memory, so peak stays ~one model.
     let mmdit = load_module(
-        Mmdit::<AB>::init(mmdit_cfg, &device),
+        Mmdit::<AB>::init(mmdit_cfg, &AB::Device::default()),
         &base.join("raw.safetensors"),
         &Mmdit::<AB>::key_remap(),
         true,
         None,
         "MMDiT",
     )?
+    .to_device(&device)
     .no_grad();
 
     let sites = mmdit.injectable_sites();

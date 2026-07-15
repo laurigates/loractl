@@ -70,7 +70,7 @@ use burn::module::{Module, Param};
 use burn::nn::{Gelu, Linear, LinearConfig};
 use burn::tensor::activation::{sigmoid, silu, softmax};
 use burn::tensor::backend::Backend;
-use burn::tensor::{FloatDType, Tensor, TensorData};
+use burn::tensor::{DType, Tensor, TensorData};
 
 /// Additive-mask sentinel — finite **in f16 too** (f16 max ≈ 65504, so a
 /// larger magnitude saturates to `-inf`, and a fully-masked row's
@@ -229,19 +229,40 @@ impl<B: Backend> ZRmsNorm<B> {
 
     /// Normalize the last dimension of a rank-`D` tensor.
     ///
-    /// Computed in **f32 regardless of the backend's float dtype**: the
-    /// squared-magnitude reduction overflows f16 for any |x| > ~256, and
-    /// Qwen-family hidden states routinely carry outlier channels in the
-    /// hundreds (observed max ~395 on real Krea-2-Raw conditioning — every
-    /// f16 run NaN'd in this norm before the upcast). On an f32 backend the
-    /// casts are identity, so the always-run parity goldens are unaffected.
+    /// On an f16 backend this uses **range-safe pre-scaled algebra** rather
+    /// than the literal formula: `x²` overflows f16 for any |x| > ~256 and
+    /// Qwen-family hidden states carry outlier channels in the hundreds
+    /// (observed ~600 post-projection on real Krea-2-Raw), so the input is
+    /// scaled down by a constant first — `x/√(mean(x²)+ε) ≡
+    /// (x/c)/√(mean((x/c)²)+ε/c²)` — keeping every intermediate
+    /// representable. Deliberately NOT computed via f32 casts: burn 0.21's
+    /// wgpu **f32** kernels are the numerically broken ones on this
+    /// platform (NaN/corruption; see `examples/grad_compare.rs`), while the
+    /// f16 kernels verify against CPU ground truth. The f32/f64 path is the
+    /// literal formula, byte-identical to the parity goldens.
     pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
-        let dtype: FloatDType = x.dtype().into();
-        let x = x.cast(FloatDType::F32);
-        let variance = x.clone().powi_scalar(2).mean_dim(D - 1);
-        let x = x / (variance + 1e-5).sqrt();
-        let scaled = x * (self.scale.val().cast(FloatDType::F32) + 1.0).unsqueeze::<D>();
-        scaled.cast(dtype)
+        let gain = (self.scale.val() + 1.0).unsqueeze::<D>();
+        if x.dtype() == DType::F16 {
+            // Constant-inner-scale variance — exact algebra
+            // `mean(x²) = mean((x/16)²)·256`: the literal x² overflows f16
+            // for |x| > ~256 and Qwen-family activations carry outlier
+            // channels to ~600 (observed on real Krea-2-Raw), while
+            // (600/16)² ≈ 1400 is comfortably representable. A CONSTANT
+            // scale keeps the backward free of data-dependent amplifiers
+            // (a row-max prescale was tried and its max/clamp backward
+            // NaN'd under loss scaling). ε is raised to the smallest
+            // f16 NORMAL value: the true 1e-5 is subnormal, and GPU
+            // flush-to-zero would turn an all-zero row's `0/√(0+ε)` into
+            // 0/0 = NaN. Deliberately not an f32-cast island: burn 0.21's
+            // wgpu f32 kernels are the broken ones on this platform (see
+            // `examples/grad_compare.rs`).
+            const C: f32 = 16.0;
+            let variance = (x.clone() / C).powi_scalar(2).mean_dim(D - 1) * (C * C);
+            x / (variance + 6.1e-5).sqrt() * gain
+        } else {
+            let variance = x.clone().powi_scalar(2).mean_dim(D - 1);
+            x / (variance + 1e-5).sqrt() * gain
+        }
     }
 }
 
@@ -418,24 +439,31 @@ impl<B: Backend> MmditAttention<B> {
         let k = expand_kv(k);
         let v = expand_kv(v);
 
-        // Scores in f32 regardless of the backend dtype: the post-norm q/k
-        // carry Qwen-style outlier channels (observed ~600 on the real
-        // weights), so raw q·k products (~3.6e5) exceed f16's range before
-        // the head-dim reduction even completes — torch's SDPA makes the
-        // same internal upcast, which is why official f16 inference works.
-        // The softmaxed weights are ≤ 1 and the value mix is convex
-        // (bounded by max |v|), so the ctx matmul is f16-safe. Identity on
-        // f32 backends, so parity goldens are unaffected.
-        let dtype: FloatDType = q.dtype().into();
+        // Attention scores. On an f16 backend the raw q·k products overflow
+        // (post-norm q/k carry ~600-magnitude Qwen outlier channels →
+        // products ~3.6e5 > f16 max), so both operands are pre-scaled down
+        // and the score rescaled after the reduction — the TRUE scores
+        // (observed ≤ ~800 on the real model) fit f16 comfortably; only the
+        // intermediates don't. Deliberately NOT an f32-cast island: burn
+        // 0.21's wgpu f32 kernels are the broken ones on this platform (see
+        // `examples/grad_compare.rs`), while all-f16 gradients verify
+        // against CPU ground truth. The softmaxed weights are ≤ 1 and the
+        // value mix is convex (bounded by max |v|), so the ctx matmul needs
+        // no treatment. f32/f64 backends take the literal formula,
+        // byte-identical to the parity goldens.
         let scale = (hd as f64).sqrt();
-        let mut scores = q
-            .cast(FloatDType::F32)
-            .matmul(k.swap_dims(2, 3).cast(FloatDType::F32))
-            .div_scalar(scale);
+        let mut scores = if q.dtype() == DType::F16 {
+            const QC: f64 = 32.0;
+            (q / QC)
+                .matmul(k.swap_dims(2, 3) / QC)
+                .mul_scalar(QC * QC / scale)
+        } else {
+            q.matmul(k.swap_dims(2, 3)).div_scalar(scale)
+        };
         if let Some(m) = mask {
-            scores = scores + m.cast(FloatDType::F32);
+            scores = scores + m;
         }
-        let ctx = softmax(scores, 3).cast(dtype).matmul(v); // [b, heads, l, hd]
+        let ctx = softmax(scores, 3).matmul(v); // [b, heads, l, hd]
         let merged = ctx.swap_dims(1, 2).reshape([b, l, heads * hd]);
 
         // The gated-sigmoid: gate the merged attention output, then project.
