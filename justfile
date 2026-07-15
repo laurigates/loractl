@@ -5,6 +5,29 @@ default:
 build:
     cargo build
 
+# Install the `loractl` binary via `cargo install`, with the GPU backend
+# feature detected from the host: macOS → wgpu (Metal); Linux with nvcc →
+# cuda,wgpu; otherwise wgpu (Vulkan/DX12). Override with an explicit feature
+# list (`just install cuda`) or `just install cpu` for the ndarray-only build.
+# Runtime backend selection stays in config (`compute.backend`) — the feature
+# only compiles the backend in. Feature matrix: README § Install.
+install features="detect":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    features="{{features}}"
+    if [ "$features" = "detect" ]; then
+        case "$(uname -s)" in
+            Darwin) features="wgpu" ;;
+            *) if command -v nvcc >/dev/null 2>&1; then features="cuda,wgpu"; else features="wgpu"; fi ;;
+        esac
+        echo "install: detected features: $features (override: just install <features> | cpu)"
+    fi
+    if [ "$features" = "cpu" ]; then
+        cargo install --path crates/loractl-cli
+    else
+        cargo install --path crates/loractl-cli --features "$features"
+    fi
+
 # Clean build artifacts.
 clean:
     cargo clean

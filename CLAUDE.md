@@ -86,6 +86,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Task | Command |
 |---|---|
 | Build the workspace | `just build` (`cargo build`) |
+| Install the `loractl` binary | `just install` — GPU feature auto-detected per host (macOS → `wgpu`; Linux+nvcc → `cuda,wgpu`; else `wgpu`); override: `just install <features>` / `just install cpu` |
 | Run the CLI | `just run <args>` (`cargo run -p loractl-cli -- <args>`) |
 | Run on the GPU (M7, Metal) | `just run-wgpu [config]` — end-to-end train through the CLI, backend selected from `compute.backend: wgpu`; defaults to `config/examples/lora-wgpu.yaml` |
 | Train from a config (synthetic demo) | `just train [config]` — defaults to `config/examples/lora.yaml` |

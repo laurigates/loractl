@@ -93,6 +93,31 @@ cargo run -p loractl-cli -- completions zsh > ~/.zfunc/_loractl
 Recipes live in the `justfile` (`just` to list): `just build`, `just train`,
 `just completions fish`, `just lint`, `just fmt`, `just test`.
 
+### Install
+
+The workspace root is a virtual manifest, so `cargo install` must point at the
+CLI crate. Default features are **empty** (CPU/ndarray only — this is what
+keeps `just test` and CI offline and GPU-free), so pick the backend feature
+for your hardware:
+
+| Host | Features | Command |
+|---|---|---|
+| Any (CPU only) | — | `cargo install --path crates/loractl-cli` |
+| macOS / Apple Silicon | `wgpu` (Metal) | `cargo install --path crates/loractl-cli --features wgpu` |
+| Linux + NVIDIA, CUDA toolkit (`nvcc`) installed | `cuda,wgpu` | `cargo install --path crates/loractl-cli --features cuda,wgpu` |
+| Linux without the CUDA toolkit | `wgpu` (Vulkan) | `cargo install --path crates/loractl-cli --features wgpu` |
+
+`just install` runs this detection for you and prints what it picked;
+override with `just install <features>` or `just install cpu`.
+
+A compiled-in feature only makes that backend *available* — the backend a run
+actually uses is selected at runtime by `compute.backend` (see
+[Compute backend (M7)](#compute-backend-m7)), and selecting a backend the
+binary wasn't built with fails loudly rather than falling back to CPU.
+`cuda` requires the CUDA toolkit at **build** time; `tch` (libtorch) also
+exists but needs a linked libtorch. The HTTP/SSE server is a separate,
+CPU-only binary: `cargo install --path crates/loractl-api`.
+
 ### Trainer, checkpoints, and the correctness harness
 
 - **Default trainer.** `loractl train` runs the real `BurnTrainer` on a seeded
