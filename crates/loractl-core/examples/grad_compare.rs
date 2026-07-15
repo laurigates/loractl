@@ -174,12 +174,28 @@ mod run {
         let (loss_cpu, grads_cpu) = one_step::<Autodiff<NdArray>>(&base)?;
         println!("wgpu f16...");
         let (loss_f16, grads_f16) = one_step::<Autodiff<Wgpu<burn::tensor::f16>>>(&base)?;
-        println!("candle-metal bf16...");
-        #[allow(deprecated)]
-        type CandleBf16 = burn::backend::Candle<burn::tensor::bf16>;
-        #[allow(deprecated)]
-        let device_cb = burn::backend::candle::CandleDevice::metal(0);
-        let (loss_cb, grads_cb) = one_step_on::<Autodiff<CandleBf16>>(&base, device_cb)?;
+        // The candle arm needs its own feature; without it, report NaN
+        // placeholders so the table stays comparable.
+        #[cfg(feature = "candle")]
+        let (loss_cb, grads_cb) = {
+            println!("candle-metal bf16...");
+            #[allow(deprecated)]
+            type CandleBf16 = burn::backend::Candle<burn::tensor::bf16>;
+            #[allow(deprecated)]
+            let device_cb = burn::backend::candle::CandleDevice::metal(0);
+            one_step_on::<Autodiff<CandleBf16>>(&base, device_cb)?
+        };
+        #[cfg(not(feature = "candle"))]
+        let (loss_cb, grads_cb) = {
+            println!("candle-metal bf16... SKIPPED (build with --features candle)");
+            (
+                f32::NAN,
+                grads_cpu
+                    .iter()
+                    .map(|(s, _, _)| (s.clone(), f32::NAN, f32::NAN))
+                    .collect::<Vec<_>>(),
+            )
+        };
         println!("wgpu f32...");
         let (loss_wf32, grads_wf32) = one_step::<Autodiff<Wgpu>>(&base)?;
 

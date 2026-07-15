@@ -59,6 +59,9 @@ jobs:
         run: cargo clippy -p loractl-core --all-targets --features mmdit-real -- -D warnings
       - name: clippy (wgpu)
         run: cargo clippy -p loractl-core --all-targets --features wgpu -- -D warnings
+      # NOTE: the `candle` feature is NOT linted here — candle-metal pulls
+      # objc2, which only compiles on Apple platforms (the inverse of the
+      # cuda/tch situation). Lint locally with `just lint-candle` on macOS.
 
   # Supply-chain gate: allowed licenses + banned/duplicate crates + crate
   # sources, configured by deny.toml. Advisories are intentionally NOT here —
