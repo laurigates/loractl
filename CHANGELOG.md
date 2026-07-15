@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/laurigates/loractl/compare/v0.7.0...v0.8.0) (2026-07-15)
+
+
+### Features
+
+* **cli:** add `loractl init` — scaffold a config from a template ([#89](https://github.com/laurigates/loractl/issues/89)) ([7e3a19c](https://github.com/laurigates/loractl/commit/7e3a19c871870d77ee8eb3566dc5950de6465dbf))
+
 ## [0.7.0](https://github.com/laurigates/loractl/compare/v0.6.0...v0.7.0) (2026-07-15)
 
 
