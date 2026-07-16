@@ -120,6 +120,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Real Krea text-encoder parity proof (M10) | `just test-qwen3vl-real` (opt-in; run `just qwen3vl-real-reference` first) |
 | Real Krea MMDiT staged-parity proof (M11) | `just test-mmdit-real` (opt-in; run `just mmdit-real-reference` first — 26 GB download) |
 | GPU smokes (M7 + M13 f16/ckpt, Metal) | `just test-wgpu` (opt-in; runs both wgpu smokes on a real GPU) |
+| GPU smoke (cuda, Linux+NVIDIA host) | `just test-cuda` (opt-in; f32 + grad-checkpointing on a real NVIDIA GPU — needs the CUDA toolkit at build time) |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
 | Regenerate the BurnTrainer step-loss golden | `just burn-trainer-reference` (dumps burn's real init + batches, replays the loop in `torch` via `uv`; needs `torch`) |
 | Regenerate the kohya-ss export golden | `just export-reference` (numpy only, no torch/network) |

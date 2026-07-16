@@ -287,9 +287,11 @@ compute:
   `cargo run -p loractl-cli --features wgpu -- train …` (or `just run-wgpu`) —
   and is the one GPU path runnable and verified on the dev machine
   (`just test-wgpu`).
-- **`cuda`** (NVIDIA; needs the CUDA toolkit) and **`tch`** (libtorch) are
-  compile-gated behind their own features and are **not runnable on macOS** —
-  build-verifiable only on the appropriate host.
+- **`cuda`** (NVIDIA; needs the CUDA toolkit at **build** time) and **`tch`**
+  (libtorch) are compile-gated behind their own features and are **not
+  runnable on macOS**. On a Linux+NVIDIA host, `just test-cuda` runs the cuda
+  smoke, and building the `grad_compare` example with `--features cuda,wgpu`
+  adds cuda f32/f16 arms to the backend-numerics comparison.
 - Selecting a GPU backend in a binary built **without** its feature fails
   loudly (never a silent CPU fallback). Layer it like any other field:
   `LORACTL_COMPUTE__BACKEND=wgpu` / `LORACTL_COMPUTE__DEVICE=0`, or the
