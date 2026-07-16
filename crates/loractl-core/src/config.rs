@@ -63,6 +63,14 @@ pub struct ModelConfig {
     /// `vae/diffusion_pytorch_model.safetensors`) — which routes the run to
     /// the M14 [`DiffusionTrainer`](crate::DiffusionTrainer). The routing
     /// itself is [`select_trainer`](crate::select_trainer).
+    ///
+    /// The four `*_path` overrides below let each component live **outside**
+    /// this directory — so a ComfyUI install's scattered layout
+    /// (`models/diffusion_models/…`, `models/text_encoders/…`,
+    /// `models/vae/…`) works with no restructuring, duplicate files, or
+    /// symlinks. When every component is overridden, `base` is used only as
+    /// the root that relative overrides join onto and (until each is
+    /// overridden) for the default component locations.
     pub base: String,
     /// Which architecture the checkpoint directory holds (M14). Explicit
     /// rather than inferred from tensor shapes — a config mistake should be
@@ -74,9 +82,36 @@ pub struct ModelConfig {
     /// scaled-fp8 repack like `krea2_turbo_fp8_scaled.safetensors` (M15,
     /// #82). fp8-vs-bf16 handling is auto-detected from the file header,
     /// not from this name. Env override: `LORACTL_MODEL__CHECKPOINT`
-    /// (figment's `__` nesting — no CLI flag needed).
+    /// (figment's `__` nesting — no CLI flag needed). Superseded by
+    /// [`denoiser`](Self::denoiser) when that full-path override is set.
     #[serde(default)]
     pub checkpoint: Option<String>,
+    /// Full path to the **denoiser** file, pointing directly at a scattered
+    /// ComfyUI file (e.g. `models/diffusion_models/krea2/…fp8_scaled.safetensors`)
+    /// instead of `base/<variant default | checkpoint>`. Absolute paths are
+    /// used verbatim; relative paths join onto `base`. fp8-vs-bf16 (including
+    /// ComfyUI's scaled-fp8 with `comfy_quant` markers) is auto-detected from
+    /// the header. Env: `LORACTL_MODEL__DENOISER`.
+    #[serde(default)]
+    pub denoiser: Option<PathBuf>,
+    /// Full path to the **text encoder** file (Qwen3-VL), overriding
+    /// `base/text_encoder/model.safetensors`. Absolute verbatim; relative
+    /// joins onto `base`. Env: `LORACTL_MODEL__TEXT_ENCODER`.
+    #[serde(default)]
+    pub text_encoder: Option<PathBuf>,
+    /// Full path to the **VAE** file (Qwen-Image), overriding
+    /// `base/vae/diffusion_pytorch_model.safetensors`. Absolute verbatim;
+    /// relative joins onto `base`. Env: `LORACTL_MODEL__VAE`.
+    #[serde(default)]
+    pub vae: Option<PathBuf>,
+    /// Full path to the **tokenizer** `tokenizer.json`, overriding
+    /// `base/tokenizer/tokenizer.json`. Absolute verbatim; relative joins
+    /// onto `base`. Env: `LORACTL_MODEL__TOKENIZER`. (ComfyUI installs have
+    /// no tokenizer file; a later milestone fetches the model-invariant
+    /// Qwen3-VL tokenizer when neither this override nor the base-dir file
+    /// exists.)
+    #[serde(default)]
+    pub tokenizer: Option<PathBuf>,
 }
 
 /// The known Krea 2 architecture variants (M14).

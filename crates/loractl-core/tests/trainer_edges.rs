@@ -46,6 +46,10 @@ fn config(out: &TempDir, steps: u64, lr: f64, compute: ComputeConfig) -> TrainCo
             base: "synthetic".into(),
             variant: Default::default(),
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: 8,

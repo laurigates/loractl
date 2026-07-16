@@ -53,6 +53,10 @@ fn run_losses(weight_decay: f64, out: &TempDir) -> Vec<f32> {
             base: "synthetic".into(),
             variant: Default::default(),
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: 8,

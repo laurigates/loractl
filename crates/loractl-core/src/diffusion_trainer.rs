@@ -29,6 +29,13 @@
 //! [`denoiser_filename`]. Scaled-fp8 repacks are auto-detected from the
 //! file header and load through [`load_fp8_module`].
 //!
+//! Each component can also live **outside** `base` via the
+//! `model.{denoiser,text_encoder,vae,tokenizer}` path overrides — so a
+//! ComfyUI install's scattered `models/{diffusion_models,text_encoders,vae}/…`
+//! layout works with no restructuring, duplicate files, or symlinks (an
+//! absolute override is used verbatim, a relative one joins onto `base`; see
+//! [`resolve_component`]).
+//!
 //! [`ModelVariant`] names the architecture explicitly (`krea2` |
 //! `krea2-turbo` | `tiny-krea2`) — a config mistake is a clear error, never
 //! a creative shape inference.
@@ -128,6 +135,58 @@ pub fn denoiser_filename(model: &ModelConfig) -> &str {
             ModelVariant::Krea2Turbo => "turbo.safetensors",
         },
     }
+}
+
+/// Resolve a component path from an optional override against the base dir.
+///
+/// The seam that makes a scattered ComfyUI layout work with no restructuring:
+/// an **absolute** override is used verbatim (point straight at
+/// `…/ComfyUI/models/vae/…`), a **relative** override joins onto `base` (so a
+/// `base` of the ComfyUI `models/` root plus `vae/qwen/…` reads cleanly), and
+/// **no** override falls back to the historical `base/<default_rel>` layout —
+/// so every pre-existing snapshot-dir config resolves byte-identically.
+fn resolve_component(override_path: Option<&Path>, base: &Path, default_rel: &str) -> PathBuf {
+    match override_path {
+        Some(p) if p.is_absolute() => p.to_path_buf(),
+        Some(p) => base.join(p),
+        None => base.join(default_rel),
+    }
+}
+
+/// The denoiser path: the full-path [`denoiser`](ModelConfig::denoiser)
+/// override wins (absolute verbatim, relative onto `base`); otherwise
+/// `base/<denoiser_filename>` (which still honors `checkpoint`).
+fn denoiser_path(model: &ModelConfig, base: &Path) -> PathBuf {
+    match &model.denoiser {
+        Some(p) if p.is_absolute() => p.clone(),
+        Some(p) => base.join(p),
+        None => base.join(denoiser_filename(model)),
+    }
+}
+
+/// The text-encoder path — override or `base/text_encoder/model.safetensors`.
+fn text_encoder_path(model: &ModelConfig, base: &Path) -> PathBuf {
+    resolve_component(
+        model.text_encoder.as_deref(),
+        base,
+        "text_encoder/model.safetensors",
+    )
+}
+
+/// The VAE path — override or `base/vae/diffusion_pytorch_model.safetensors`.
+fn vae_path(model: &ModelConfig, base: &Path) -> PathBuf {
+    resolve_component(
+        model.vae.as_deref(),
+        base,
+        "vae/diffusion_pytorch_model.safetensors",
+    )
+}
+
+/// The tokenizer path — override or `base/tokenizer/tokenizer.json`. (Fetching
+/// the model-invariant Qwen3-VL tokenizer when neither exists is a later
+/// milestone; today an absent file surfaces as a clear load error.)
+fn tokenizer_path(model: &ModelConfig, base: &Path) -> PathBuf {
+    resolve_component(model.tokenizer.as_deref(), base, "tokenizer/tokenizer.json")
 }
 
 /// Dynamic loss scaling (see the optimizer step). The initial factor lifts
@@ -359,7 +418,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 vae = Some(
                     load_module(
                         QwenVae::<B>::init(vae_cfg.clone(), &device),
-                        &base.join("vae/diffusion_pytorch_model.safetensors"),
+                        &vae_path(&config.model, &base),
                         &QwenVae::<B>::key_remap(),
                         false,
                         None,
@@ -374,7 +433,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
             if conditioner.is_none() {
                 let encoder = load_module(
                     Qwen3VlEncoder::<B>::init(enc_cfg.clone(), &device),
-                    &base.join("text_encoder/model.safetensors"),
+                    &text_encoder_path(&config.model, &base),
                     &[],
                     true,
                     Some(Qwen3VlEncoder::<B>::load_filter()),
@@ -383,7 +442,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 .no_grad();
                 conditioner = Some(Qwen3VlConditioner::new(
                     encoder,
-                    &base.join("tokenizer/tokenizer.json"),
+                    &tokenizer_path(&config.model, &base),
                     max_length,
                 )?);
             }
@@ -774,7 +833,7 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
     }
 
     // ---- Phase 2: the denoiser + adapters. ----
-    let denoiser = base.join(denoiser_filename(&config.model));
+    let denoiser = denoiser_path(&config.model, &base);
     let mmdit = if config.compute.quant == Quant::Int8 {
         // int8 frozen base (#96). Build + load + quantize on the NON-autodiff
         // INNER backend, at the TARGET device directly — NOT default+to_device:
@@ -988,4 +1047,125 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         adapter_path: adapter_path.clone(),
     });
     Ok(adapter_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ModelConfig, ModelVariant};
+
+    fn model(
+        base: &str,
+        denoiser: Option<&str>,
+        text_encoder: Option<&str>,
+        vae: Option<&str>,
+        tokenizer: Option<&str>,
+    ) -> ModelConfig {
+        ModelConfig {
+            base: base.into(),
+            variant: ModelVariant::Krea2,
+            checkpoint: None,
+            denoiser: denoiser.map(PathBuf::from),
+            text_encoder: text_encoder.map(PathBuf::from),
+            vae: vae.map(PathBuf::from),
+            tokenizer: tokenizer.map(PathBuf::from),
+        }
+    }
+
+    /// No override → the historical `base/<default>` layout, byte-identical to
+    /// before this feature (the back-compat guarantee).
+    #[test]
+    fn no_override_uses_the_base_dir_layout() {
+        let base = Path::new("/models/krea2-raw");
+        let m = model("/models/krea2-raw", None, None, None, None);
+        assert_eq!(
+            vae_path(&m, base),
+            base.join("vae/diffusion_pytorch_model.safetensors")
+        );
+        assert_eq!(
+            text_encoder_path(&m, base),
+            base.join("text_encoder/model.safetensors")
+        );
+        assert_eq!(
+            tokenizer_path(&m, base),
+            base.join("tokenizer/tokenizer.json")
+        );
+        assert_eq!(denoiser_path(&m, base), base.join("raw.safetensors"));
+    }
+
+    /// An **absolute** override is used verbatim — the scattered-ComfyUI case
+    /// (each component in its own `models/<kind>/…` tree).
+    #[test]
+    fn absolute_overrides_are_verbatim() {
+        let base = Path::new("/anything");
+        let m = model(
+            "/anything",
+            Some("/comfy/models/diffusion_models/krea2/raw_fp8.safetensors"),
+            Some("/comfy/models/text_encoders/qwen/enc_fp8.safetensors"),
+            Some("/comfy/models/vae/qwen/vae.safetensors"),
+            Some("/comfy/models/tokenizers/qwen/tokenizer.json"),
+        );
+        assert_eq!(
+            denoiser_path(&m, base),
+            Path::new("/comfy/models/diffusion_models/krea2/raw_fp8.safetensors")
+        );
+        assert_eq!(
+            vae_path(&m, base),
+            Path::new("/comfy/models/vae/qwen/vae.safetensors")
+        );
+        assert_eq!(
+            text_encoder_path(&m, base),
+            Path::new("/comfy/models/text_encoders/qwen/enc_fp8.safetensors")
+        );
+        assert_eq!(
+            tokenizer_path(&m, base),
+            Path::new("/comfy/models/tokenizers/qwen/tokenizer.json")
+        );
+    }
+
+    /// A **relative** override joins onto `base` — so a `base` of the ComfyUI
+    /// `models/` root plus relative subpaths reads cleanly.
+    #[test]
+    fn relative_overrides_join_onto_base() {
+        let base = Path::new("/comfy/models");
+        let m = model(
+            "/comfy/models",
+            Some("diffusion_models/krea2/raw_fp8.safetensors"),
+            Some("text_encoders/qwen/enc_fp8.safetensors"),
+            Some("vae/qwen/vae.safetensors"),
+            None,
+        );
+        assert_eq!(
+            denoiser_path(&m, base),
+            base.join("diffusion_models/krea2/raw_fp8.safetensors")
+        );
+        assert_eq!(vae_path(&m, base), base.join("vae/qwen/vae.safetensors"));
+        assert_eq!(
+            text_encoder_path(&m, base),
+            base.join("text_encoders/qwen/enc_fp8.safetensors")
+        );
+        // The un-overridden tokenizer still falls back to the base-dir layout.
+        assert_eq!(
+            tokenizer_path(&m, base),
+            base.join("tokenizer/tokenizer.json")
+        );
+    }
+
+    /// `denoiser` (full path) and `checkpoint` (filename-in-base) coexist:
+    /// `denoiser` wins when set, else `checkpoint` still steers the filename.
+    #[test]
+    fn denoiser_override_supersedes_checkpoint() {
+        let base = Path::new("/models");
+        let mut m = model("/models", None, None, None, None);
+        m.checkpoint = Some("turbo_fp8_scaled.safetensors".into());
+        assert_eq!(
+            denoiser_path(&m, base),
+            base.join("turbo_fp8_scaled.safetensors")
+        );
+        m.denoiser = Some(PathBuf::from("/elsewhere/my.safetensors"));
+        assert_eq!(
+            denoiser_path(&m, base),
+            Path::new("/elsewhere/my.safetensors")
+        );
+    }
 }

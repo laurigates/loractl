@@ -108,7 +108,7 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Install the `loractl` binary | `just install` — GPU feature auto-detected per host (macOS → `wgpu`; Linux+nvcc → `cuda,wgpu`; else `wgpu`); override: `just install <features>` / `just install cpu` |
 | Install the CUDA toolkit (on the GPU host) | `just install-cuda` — NVIDIA apt repo, toolkit-only (never the driver), version matched to the driver's ceiling; override: `just install-cuda <version>` |
 | Run the CLI | `just run <args>` (`cargo run -p loractl-cli -- <args>`) |
-| Scaffold a config from a template | `just init [preset]` → stdout (`synthetic`/`wgpu`/`flow`/`krea2`); or `loractl init --preset <p> -o <path>` to write a file (overwrite-guarded). Templates are the `config/examples/*.yaml`, embedded via `include_str!` |
+| Scaffold a config from a template | `just init [preset]` → stdout (`synthetic`/`wgpu`/`flow`/`krea2`/`krea2-comfyui`); or `loractl init --preset <p> -o <path>` to write a file (overwrite-guarded). Templates are the `config/examples/*.yaml`, embedded via `include_str!` |
 | Run on the GPU (M7, Metal) | `just run-wgpu [config]` — end-to-end train through the CLI, backend selected from `compute.backend: wgpu`; defaults to `config/examples/lora-wgpu.yaml` |
 | Train from a config (synthetic demo) | `just train [config]` — defaults to `config/examples/lora.yaml` |
 | Serve the HTTP/SSE API | `just serve` (`cargo run -p loractl-api`; bind addr via `LORACTL_API_ADDR`, default `127.0.0.1:3000`) |

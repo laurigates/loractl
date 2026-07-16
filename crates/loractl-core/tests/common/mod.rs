@@ -27,6 +27,10 @@ pub fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConf
             base: "synthetic".into(),
             variant: Default::default(),
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: 8,

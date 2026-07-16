@@ -53,6 +53,10 @@ fn periodic_validation_samples_are_emitted_and_written() {
             base: "synthetic".into(),
             variant: Default::default(),
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: 4,

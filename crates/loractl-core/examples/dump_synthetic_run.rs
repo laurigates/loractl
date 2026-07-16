@@ -62,6 +62,10 @@ fn config(out_dir: &Path) -> TrainConfig {
             base: "synthetic".into(),
             variant: Default::default(),
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: RANK,
