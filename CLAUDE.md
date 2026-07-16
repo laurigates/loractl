@@ -81,10 +81,15 @@ adapter (#83), timestep-shift parity (#84). See
 the roadmap in `README.md`.
 
 **Next direction (M14's remaining checkbox, #25):** the real run — train a
-LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer`
-(`config/examples/krea2-lora.yaml`, wgpu f16 + grad checkpointing) and
-prove the exported adapter loads and visibly conditions generation in
-ComfyUI / Krea-2-Turbo. Strategy and gap analysis:
+LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer` and prove
+the exported adapter loads and visibly conditions generation in ComfyUI /
+Krea-2-Turbo. Two routes, both currently blocked on memory-vs-numerics:
+wgpu f16 + grad checkpointing (`config/examples/krea2-lora.yaml`) fits the
+48 GiB Metal host but burn's GPU autodiff is broken (burn#5162, all
+platforms); **cuda f32 is numerically clean and wired into
+`DiffusionTrainer` (f32-only), but full-depth f32 (~49 GB) exceeds the
+24 GB RTX 4090 host — the int8 frozen-base quantization (#24's follow-up)
+is the practical route.** Strategy and gap analysis:
 [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 ## Commands
@@ -120,7 +125,8 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Real Krea text-encoder parity proof (M10) | `just test-qwen3vl-real` (opt-in; run `just qwen3vl-real-reference` first) |
 | Real Krea MMDiT staged-parity proof (M11) | `just test-mmdit-real` (opt-in; run `just mmdit-real-reference` first — 26 GB download) |
 | GPU smokes (M7 + M13 f16/ckpt, Metal) | `just test-wgpu` (opt-in; runs both wgpu smokes on a real GPU) |
-| GPU smoke (cuda, Linux+NVIDIA host) | `just test-cuda` (opt-in; f32 + grad-checkpointing on a real NVIDIA GPU — needs the CUDA toolkit at build time) |
+| GPU smokes (cuda, Linux+NVIDIA host) | `just test-cuda` (opt-in; the synthetic f32+ckpt smoke and the tiny-krea2 diffusion e2e — needs the CUDA toolkit at build time) |
+| Train on cuda through the CLI | `just run-cuda [config]` — f32-only (burn#5162); defaults to `config/examples/lora.yaml` with `--backend cuda` |
 | Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
 | Regenerate the BurnTrainer step-loss golden | `just burn-trainer-reference` (dumps burn's real init + batches, replays the loop in `torch` via `uv`; needs `torch`) |
 | Regenerate the kohya-ss export golden | `just export-reference` (numpy only, no torch/network) |

@@ -209,11 +209,17 @@ test-turbo-real fp8_path:
 test-wgpu:
     cargo test -p loractl-core --features wgpu -- --ignored wgpu
 
-# Run the cuda GPU smoke (f32 + grad-checkpointing) on a real NVIDIA GPU —
-# Linux + CUDA toolkit at build time; NOT runnable on this Mac (see the
-# cuda/tch note above). The ONLY way the double-gated `#[ignore]`d smoke runs.
+# Run the cuda GPU smokes (the synthetic f32 + grad-checkpointing smoke and
+# the tiny-krea2 diffusion e2e) on a real NVIDIA GPU — Linux + CUDA toolkit
+# at build time; NOT runnable on this Mac (see the cuda/tch note above). The
+# ONLY way the double-gated `#[ignore]`d cuda tests run.
 test-cuda:
     cargo test -p loractl-core --features cuda -- --ignored cuda
+
+# Train on an NVIDIA GPU through the real CLI, backend selected purely from
+# config/flags. f32-only (burn#5162 breaks non-f32 autodiff on cuda).
+run-cuda config="config/examples/lora.yaml":
+    cargo run --release -p loractl-cli --features cuda -- train {{config}} --backend cuda
 
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.
