@@ -74,6 +74,7 @@ pub mod export;
 pub mod flow;
 pub mod fp8;
 pub mod gpt2;
+pub mod hf;
 pub mod lora;
 pub mod mmdit;
 pub mod model;

@@ -16,9 +16,10 @@ model:
   denoiser:     diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
   text_encoder: text_encoders/qwen/qwen3vl_4b_fp8_scaled.safetensors
   vae:          vae/qwen/qwen_image_vae.safetensors
-  # tokenizer: omitted — ComfyUI ships no tokenizer.json; a later milestone
-  #            fetches the model-invariant Qwen3-VL tokenizer automatically.
-  #            Until then, point this at a tokenizer.json you have:
+  # tokenizer: omitted — ComfyUI ships no tokenizer.json, so loractl fetches
+  #            the model-invariant Qwen3-VL tokenizer once (SHA-256 pinned,
+  #            cached under HF_HOME) automatically. Set this only to use a
+  #            tokenizer.json you already have:
   # tokenizer:  /path/to/qwen3vl/tokenizer.json
 
 dataset:

@@ -182,11 +182,38 @@ fn vae_path(model: &ModelConfig, base: &Path) -> PathBuf {
     )
 }
 
-/// The tokenizer path — override or `base/tokenizer/tokenizer.json`. (Fetching
-/// the model-invariant Qwen3-VL tokenizer when neither exists is a later
-/// milestone; today an absent file surfaces as a clear load error.)
+/// The tokenizer's nominal path — override or `base/tokenizer/tokenizer.json`
+/// — resolved by the same rules as the other components (absolute verbatim,
+/// relative onto `base`), WITHOUT checking existence. [`resolve_tokenizer`]
+/// adds the existence/fetch policy on top.
 fn tokenizer_path(model: &ModelConfig, base: &Path) -> PathBuf {
     resolve_component(model.tokenizer.as_deref(), base, "tokenizer/tokenizer.json")
+}
+
+/// Resolve the tokenizer to a concrete on-disk `tokenizer.json`, fetching the
+/// model-invariant Qwen3-VL tokenizer when a ComfyUI layout ships none.
+///
+/// - An explicit `model.tokenizer` override **must exist** — a user who named
+///   a path gets a clear error if it's wrong, never a surprise download.
+/// - The `base/tokenizer/tokenizer.json` snapshot-dir file is used when
+///   present (back-compat, no network).
+/// - Otherwise (the ComfyUI case: no override, no base-dir file) the pinned
+///   Qwen3-VL tokenizer is fetched once and cached (see [`crate::hf`]).
+fn resolve_tokenizer(model: &ModelConfig, base: &Path) -> Result<PathBuf> {
+    let path = tokenizer_path(model, base);
+    if path.exists() {
+        return Ok(path);
+    }
+    if model.tokenizer.is_some() {
+        bail!(
+            "model.tokenizer points at {} but no file is there",
+            path.display()
+        );
+    }
+    crate::hf::fetch_qwen3vl_tokenizer().context(
+        "no tokenizer found (no model.tokenizer override, no tokenizer/tokenizer.json under \
+         base) and fetching the Qwen3-VL tokenizer failed",
+    )
 }
 
 /// Dynamic loss scaling (see the optimizer step). The initial factor lifts
@@ -442,7 +469,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 .no_grad();
                 conditioner = Some(Qwen3VlConditioner::new(
                     encoder,
-                    &tokenizer_path(&config.model, &base),
+                    &resolve_tokenizer(&config.model, &base)?,
                     max_length,
                 )?);
             }

@@ -55,6 +55,16 @@ memmap2 = "0.9"
 # Default features off — only the two formats the kohya-style folder
 # convention actually uses; no HDR/EXR/AVIF subtree.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# On-demand tokenizer fetch (ComfyUI support): a ComfyUI install ships no
+# `tokenizer.json`, so when neither `model.tokenizer` nor the base-dir file
+# exists, `hf.rs` fetches the model-invariant Qwen3-VL tokenizer once, verifies
+# a pinned SHA-256, and caches it under `HF_HOME`. `ureq` is a minimal
+# pure-Rust blocking client over the rustls stack already in the workspace
+# tree; `sha2` (already transitive via burn-store) does the integrity check.
+# The fetch is lazy — a run with a local tokenizer never touches the network,
+# so offline CI is unaffected.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.10"
 
 [features]
 # GPU compute backends (M7, #18). None are in `default`, so `cargo build`/
