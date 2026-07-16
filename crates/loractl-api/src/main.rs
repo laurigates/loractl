@@ -23,10 +23,18 @@ async fn main() -> anyhow::Result<()> {
     // the first request against an already-listening socket.
     let app = loractl_api::app(factory, config.clone())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    // Checked against the *bound* address (ground truth, after any hostname
+    // resolution), before a single connection is accepted: an unauthenticated
+    // server on a public interface refuses to start (#62).
+    loractl_api::enforce_loopback_or_token(
+        listener.local_addr()?.ip(),
+        config.api_token.is_some(),
+    )?;
     tracing::info!(
         run_retention = config.run_retention,
         max_concurrent_runs = config.max_concurrent_runs,
         output_base = %config.output_base.display(),
+        auth = if config.api_token.is_some() { "bearer token" } else { "off (loopback only)" },
         "loractl-api listening on http://{addr}"
     );
     axum::serve(listener, app).await?;

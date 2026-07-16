@@ -156,7 +156,7 @@ break the byte-for-byte golden strings and a GUI can timestamp on receipt.
 | `GET /runs/{id}` (status) | Not expected — replay-from-start makes the stream the status; revisit only if replay cost ever matters |
 | `DELETE /runs/{id}` (cancel) | Needs a core cancellation hook first — `Trainer::train` has no way to be interrupted; wrong milestone to change that contract |
 | CORS | The first browser-origin GUI (a non-localhost `Origin`) |
-| Auth / TLS | The first non-localhost bind (`LORACTL_API_ADDR` beyond 127.0.0.1) |
+| Auth / TLS | The first non-localhost bind (`LORACTL_API_ADDR` beyond 127.0.0.1) — **auth revived and landed** (#62): optional `LORACTL_API_TOKEN` bearer gate on every route, and a non-loopback bind without a token refuses to start. TLS remains cut — front with a reverse proxy for genuinely remote use |
 | History eviction / persistence | A long-lived server deployment — today history is unbounded and process-local (dev tool; restart clears it), and this is the first thing such a deployment must revisit |
 | Health endpoint | The first deployment behind a probe/load balancer |
 | Graceful shutdown / drain | Same long-lived-deployment trigger as eviction |

@@ -24,6 +24,9 @@ async-stream.workspace = true
 # Names the `Stream` trait for `state::subscribe`'s axum-free return type
 # (async-stream produces a futures-core `Stream`).
 futures-core = "0.3"
+# Constant-time token compare for the bearer-auth gate (#62) — already in the
+# resolved tree (and in deny.toml's license allow-list) via burn's deps.
+subtle = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]

@@ -10,13 +10,15 @@ GUI (or any HTTP client) builds against. Design rationale lives in
 
 | Endpoint | Request | Success | Errors |
 |---|---|---|---|
-| `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `400` `{"error":"…"}` — `output.dir`/`output.name` escape the [output base](#output-paths-are-confined)<br>`422` invalid body — plain-text diagnostic, see below<br>`429` `{"error":"…"}` — the [concurrency cap](#concurrency-cap) is saturated<br>(none of these create a run, and none burn an id) |
-| `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `404` `{"error":"unknown run id"}` — the id was never issued **or its run has been evicted** (see [Run retention](#run-retention)) |
+| `POST /runs` | `Content-Type: application/json`, body = a JSON `TrainConfig` (same schema as the YAML config file) | `201` `{"id":1,"events_url":"/runs/1/events"}` | `401` `{"error":"missing or invalid bearer token"}` — [auth](#authentication) is enabled and the request lacks the token<br>`400` `{"error":"…"}` — `output.dir`/`output.name` escape the [output base](#output-paths-are-confined)<br>`422` invalid body — plain-text diagnostic, see below<br>`429` `{"error":"…"}` — the [concurrency cap](#concurrency-cap) is saturated<br>(none of these create a run, and none burn an id) |
+| `GET /runs/{id}/events` | — | `200` `text/event-stream`: full replay from event 0, then live tail, with keep-alive comments | `401` — same [auth](#authentication) gate as `POST /runs`<br>`404` `{"error":"unknown run id"}` — the id was never issued **or its run has been evicted** (see [Run retention](#run-retention)) |
 
 That is the whole M5 surface. There is no run listing, no status endpoint, no
-cancellation, **no auth** — see ADR-0003's cut list and revive triggers. The
-default `127.0.0.1` bind is what keeps an unauthenticated `POST /runs` safe;
-the confinement and cap below are the guards that hold if you move that bind.
+cancellation — see ADR-0003's cut list and revive triggers. Auth is **optional
+and off by default** (see [Authentication](#authentication)); the default
+`127.0.0.1` bind is what keeps the unauthenticated default safe, and a
+non-loopback bind without a token now refuses to start. The confinement and
+cap below are the guards that hold in every configuration.
 
 Error bodies are **not uniform**. `400` (path rejection), `404`, and `429` are
 JSON `{"error": "…"}`, but the `422` comes from axum's `Json` extractor and is
@@ -31,6 +33,47 @@ Do not parse `422` bodies as JSON — surface them as a human-readable
 diagnostic. A syntactically malformed body — not even valid JSON — is also a
 **plain-text** `400` from the extractor, so a client that wants to distinguish
 "bad path" from "bad JSON" must check `content-type`, not just the status.
+
+## Authentication
+
+Auth is a single optional bearer token, gated on one env var (#62):
+
+| | |
+|---|---|
+| Env var | `LORACTL_API_TOKEN` |
+| Default | unset — **no auth** (the zero-config localhost dev loop) |
+
+With the token set, **every** request — both endpoints, and any endpoint
+added later — must carry it:
+
+```sh
+curl -sX POST localhost:3000/runs -H "Authorization: Bearer $LORACTL_API_TOKEN" -H 'content-type: application/json' -d @/tmp/run.json
+```
+
+The rules:
+
+- A missing, malformed, or wrong token is `401` with the JSON body
+  `{"error":"missing or invalid bearer token"}` and a `WWW-Authenticate:
+  Bearer` challenge. The message is deliberately the same in all three cases.
+- The scheme is case-insensitive (`bearer x` works); the token itself is
+  compared byte-exact, in constant time.
+- A rejected request does no work and leaves no trace: the body is never
+  parsed, no run is created, no id is burned.
+- The read side is gated too — event streams carry run configuration and
+  resolved output paths, so `GET /runs/{id}/events` without the token is a
+  `401`, checked **before** the run lookup (an unauthorized caller cannot
+  probe which ids exist).
+- Setting `LORACTL_API_TOKEN` to an **empty** string is a startup error, not
+  "auth off" — unset it to disable auth.
+- **A non-loopback bind requires a token.** `LORACTL_API_ADDR` beyond
+  `127.0.0.1`/`::1` with no token configured refuses to start, turning
+  "localhost is the guard" from a convention into an enforced invariant.
+
+Browser note: the native `EventSource` API cannot set request headers, so a
+browser GUI talking to a token-protected server should consume the SSE stream
+via `fetch` + `ReadableStream` (or proxy the token server-side). The wire
+format is unchanged either way. TLS remains out of scope — put a reverse
+proxy in front for genuinely remote use.
 
 ## Output paths are confined
 
