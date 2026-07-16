@@ -86,7 +86,7 @@ pub mod train;
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
 pub use config::{
-    BackendKind, ComputeConfig, FlowConfig, ModelVariant, Precision, TaskKind, TrainConfig,
+    BackendKind, ComputeConfig, FlowConfig, ModelVariant, Precision, Quant, TaskKind, TrainConfig,
 };
 pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
 pub use event::TrainEvent;

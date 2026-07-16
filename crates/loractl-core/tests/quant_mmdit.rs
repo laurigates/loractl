@@ -301,3 +301,72 @@ fn base_linears_mut_paths_match_injectable_sites() {
         "base_linears_mut paths must equal injectable_sites paths (same set and order)"
     );
 }
+
+/// `all_base_linears_mut` (PR-B3's comprehensive accessor) must cover **every**
+/// site `into_quantized` touches — a strict superset of the injectable subset.
+/// If it missed a `Quant` site the streaming loader would leave that site's
+/// placeholder int8 weight unfilled (and the fp8/plain applier would then apply
+/// an f32 tensor to a QFloat param, panicking the forward), so this pins the
+/// accessor and `into_quantized` to the same set.
+#[test]
+fn all_base_linears_mut_covers_every_into_quantized_site() {
+    use loractl_core::mmdit::BaseLinear;
+    let device = Default::default();
+
+    let mut model = Mmdit::<B>::init(MmditConfig::tiny_krea2(), &device);
+    let injectable: std::collections::HashSet<String> = model
+        .base_linears_mut()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    let all: Vec<String> = model
+        .all_base_linears_mut()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    let all_set: std::collections::HashSet<String> = all.iter().cloned().collect();
+
+    assert_eq!(
+        all.len(),
+        all_set.len(),
+        "all_base_linears_mut keys must be unique: {all:?}"
+    );
+    // tiny_krea2: (2 trunk + 2 layerwise + 2 refiner) blocks × (5 attn + 3 mlp)
+    // = 48, plus tmlp.fc1/fc2 + tproj.fc + txtmlp.fc1/fc2 = 53.
+    assert_eq!(all.len(), 53, "unexpected base-linear count: {all:?}");
+    assert!(
+        injectable.is_subset(&all_set),
+        "injectable sites must be a subset of all base linears"
+    );
+    for expect in [
+        "blocks.0.attn.gate", // quantized but NOT injectable (no LoRA on gates)
+        "txtfusion.layerwise_blocks.0.attn.wq",
+        "txtfusion.refiner_blocks.1.mlp.down",
+        "tmlp.fc1",
+        "tproj.fc",
+        "txtmlp.fc2",
+    ] {
+        assert!(
+            all_set.contains(expect),
+            "all_base_linears_mut must include {expect}"
+        );
+    }
+
+    // After into_quantized, every comprehensive site is `Quant` except those
+    // whose d_in is not block-aligned — on tiny_krea2 that is exactly `tmlp.fc1`
+    // (tdim = 16). This is the agreement between the accessor and into_quantized.
+    let mut quantized =
+        Mmdit::<B>::init(MmditConfig::tiny_krea2(), &device).into_quantized(&device);
+    let mut plain_sites: Vec<String> = quantized
+        .all_base_linears_mut()
+        .into_iter()
+        .filter(|(_, base)| matches!(base, BaseLinear::Plain(_)))
+        .map(|(p, _)| p)
+        .collect();
+    plain_sites.sort();
+    assert_eq!(
+        plain_sites,
+        vec!["tmlp.fc1".to_string()],
+        "only the unaligned tmlp.fc1 (tdim=16) may stay Plain after into_quantized"
+    );
+}

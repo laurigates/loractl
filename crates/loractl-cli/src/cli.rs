@@ -15,7 +15,8 @@ use figment::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use loractl_core::{
-    BackendKind, Device, NdArray, Precision, TaskKind, TrainConfig, TrainEvent, select_trainer,
+    BackendKind, Device, NdArray, Precision, Quant, TaskKind, TrainConfig, TrainEvent,
+    select_trainer,
 };
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
@@ -132,6 +133,12 @@ fn parse_precision(s: &str) -> Result<Precision, String> {
     s.parse()
 }
 
+/// Parse a `--quant` value through core's [`Quant`] `FromStr` — the same
+/// core-owns-the-vocabulary pattern as [`parse_backend`].
+fn parse_quant(s: &str) -> Result<Quant, String> {
+    s.parse()
+}
+
 #[derive(Args)]
 struct TrainCmd {
     /// Path to the training config (YAML).
@@ -165,6 +172,12 @@ struct TrainCmd {
     /// `f16` (wgpu only — halves resident weight memory; M13).
     #[arg(long, value_parser = parse_precision)]
     precision: Option<Precision>,
+
+    /// Override frozen-base quantization from the config: `none` (default) or
+    /// `int8` (the diffusion trainer's MMDiT base as per-block int8; ndarray
+    /// or cuda + f32 only — #96).
+    #[arg(long, value_parser = parse_quant)]
+    quant: Option<Quant>,
 
     /// Override activation checkpointing from the config (M13): recompute
     /// activations during backward instead of storing them — numerically
@@ -279,6 +292,9 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     }
     if let Some(precision) = cmd.precision {
         config.compute.precision = precision;
+    }
+    if let Some(quant) = cmd.quant {
+        config.compute.quant = quant;
     }
     if let Some(grad_checkpointing) = cmd.grad_checkpointing {
         config.compute.grad_checkpointing = grad_checkpointing;
@@ -434,6 +450,7 @@ mod tests {
             device: None,
             task: None,
             precision: None,
+            quant: None,
             grad_checkpointing: None,
         }
     }
@@ -481,6 +498,7 @@ mod tests {
             cmd.backend = Some(BackendKind::Wgpu); // flag-only override
             cmd.task = Some(TaskKind::FlowMatching); // flag-only override
             cmd.precision = Some(Precision::F16); // M13 flag-only override
+            cmd.quant = Some(Quant::Int8); // #96 flag-only override
             cmd.grad_checkpointing = Some(true); // M13 flag-only override
 
             let config = resolve_config(&cmd).expect("resolve");
@@ -493,6 +511,9 @@ mod tests {
             // and checkpointing is bit-identical by design).
             assert_eq!(config.compute.precision, Precision::F16);
             assert!(config.compute.grad_checkpointing);
+            // The #96 quant knob reaches the config the same way (the trainer
+            // guard restricts the legal backend/precision combos in core).
+            assert_eq!(config.compute.quant, Quant::Int8);
             Ok(())
         });
     }

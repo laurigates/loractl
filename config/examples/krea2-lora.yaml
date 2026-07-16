@@ -12,8 +12,15 @@
 #
 # cuda alternative (Linux + NVIDIA): `compute.backend: cuda` with
 # `precision: f32` — the numerically-clean GPU path (burn#5162 breaks non-f32
-# autodiff on every GPU backend) — but full-depth f32 is ~49 GB, beyond a
-# 24 GB card until the int8 frozen-base quantization lands (#24 follow-up).
+# autodiff on every GPU backend). Full-depth f32 is ~49 GB (beyond a 24 GB
+# card), so add `quant: int8` (#96) to load the frozen base as per-block int8
+# (~17-19 GB total) — the practical route on a 24 GB RTX 4090. Swap the
+# `compute:` block at the bottom for this commented one:
+#
+#   compute:
+#     backend: cuda
+#     precision: f32        # int8 dequantizes to f32; f16/bf16 are rejected
+#     quant: int8           # frozen-base int8 (QLoRA); adapters stay f32
 
 task: flow-matching
 

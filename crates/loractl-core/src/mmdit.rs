@@ -1017,6 +1017,84 @@ impl<B: Backend> Mmdit<B> {
         }
         out
     }
+
+    /// **Every** quantizable frozen-base [`BaseLinear`] site paired with its
+    /// remapped-checkpoint-key path — the superset of
+    /// [`base_linears_mut`](Self::base_linears_mut) that PR-B3's streaming
+    /// quantized loader must overwrite.
+    ///
+    /// [`base_linears_mut`](Self::base_linears_mut) advertises only the
+    /// LoRA-*injectable* trunk subset
+    /// ([`injectable_sites`](Self::injectable_sites): 7 sites per trunk block,
+    /// **no** `attn.gate`), because that is the surface adapters attach to. But
+    /// [`into_quantized`](Self::into_quantized) quantizes every base linear —
+    /// the trunk blocks' `attn.gate` too, plus the four text-fusion blocks and
+    /// the `tmlp`/`tproj`/`txtmlp` projections — so a loader that fills the
+    /// int8 weights from a checkpoint must enumerate **all** of them, or those
+    /// `Quant` sites keep their placeholder random weights (a silent,
+    /// catastrophic load bug on the real model, where every base linear is
+    /// block-aligned and therefore quantized). This is that enumeration; its
+    /// order mirrors `into_quantized`'s traversal and its coverage is pinned
+    /// against `into_quantized` in `tests/quant_mmdit.rs`.
+    ///
+    /// Keys are **remapped module paths** (post-[`key_remap`](Self::key_remap)):
+    /// `blocks.{i}.attn.gate`, `txtfusion.layerwise_blocks.{i}.mlp.up`,
+    /// `tmlp.fc1`, `tproj.fc`, `txtmlp.fc2`, … — the keys a checkpoint snapshot
+    /// carries once [`key_remap`](Self::key_remap) has been applied, so the
+    /// loader looks up `{path}.weight` directly.
+    pub fn all_base_linears_mut(&mut self) -> Vec<(String, &mut BaseLinear<B>)> {
+        // Push an attention block's five projections (wq, wk, wv, gate, wo) —
+        // the order `quantize_attention` uses. Disjoint field reborrows of the
+        // `&mut attn`, exactly as `base_linears_mut` does inline.
+        fn push_attn<'a, B: Backend>(
+            out: &mut Vec<(String, &'a mut BaseLinear<B>)>,
+            prefix: &str,
+            attn: &'a mut MmditAttention<B>,
+        ) {
+            out.push((format!("{prefix}.attn.wq"), &mut attn.wq));
+            out.push((format!("{prefix}.attn.wk"), &mut attn.wk));
+            out.push((format!("{prefix}.attn.wv"), &mut attn.wv));
+            out.push((format!("{prefix}.attn.gate"), &mut attn.gate));
+            out.push((format!("{prefix}.attn.wo"), &mut attn.wo));
+        }
+        // Push a SwiGLU's three projections (gate, up, down) —
+        // `quantize_swiglu`'s order.
+        fn push_swiglu<'a, B: Backend>(
+            out: &mut Vec<(String, &'a mut BaseLinear<B>)>,
+            prefix: &str,
+            mlp: &'a mut SwiGlu<B>,
+        ) {
+            out.push((format!("{prefix}.mlp.gate"), &mut mlp.gate));
+            out.push((format!("{prefix}.mlp.up"), &mut mlp.up));
+            out.push((format!("{prefix}.mlp.down"), &mut mlp.down));
+        }
+
+        let mut out: Vec<(String, &mut BaseLinear<B>)> = Vec::new();
+        for (i, block) in self.blocks.iter_mut().enumerate() {
+            let p = format!("blocks.{i}");
+            let SingleStreamBlock { attn, mlp, .. } = block;
+            push_attn(&mut out, &p, attn);
+            push_swiglu(&mut out, &p, mlp);
+        }
+        for (i, block) in self.txtfusion.layerwise_blocks.iter_mut().enumerate() {
+            let p = format!("txtfusion.layerwise_blocks.{i}");
+            let TextFusionBlock { attn, mlp, .. } = block;
+            push_attn(&mut out, &p, attn);
+            push_swiglu(&mut out, &p, mlp);
+        }
+        for (i, block) in self.txtfusion.refiner_blocks.iter_mut().enumerate() {
+            let p = format!("txtfusion.refiner_blocks.{i}");
+            let TextFusionBlock { attn, mlp, .. } = block;
+            push_attn(&mut out, &p, attn);
+            push_swiglu(&mut out, &p, mlp);
+        }
+        out.push(("tmlp.fc1".to_string(), &mut self.tmlp.fc1));
+        out.push(("tmlp.fc2".to_string(), &mut self.tmlp.fc2));
+        out.push(("tproj.fc".to_string(), &mut self.tproj.fc));
+        out.push(("txtmlp.fc1".to_string(), &mut self.txtmlp.fc1));
+        out.push(("txtmlp.fc2".to_string(), &mut self.txtmlp.fc2));
+        out
+    }
 }
 
 /// Quantize one base site in place: a block-aligned [`BaseLinear::Plain`]
