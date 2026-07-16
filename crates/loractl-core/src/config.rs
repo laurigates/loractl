@@ -106,10 +106,12 @@ pub struct ModelConfig {
     pub vae: Option<PathBuf>,
     /// Full path to the **tokenizer** `tokenizer.json`, overriding
     /// `base/tokenizer/tokenizer.json`. Absolute verbatim; relative joins
-    /// onto `base`. Env: `LORACTL_MODEL__TOKENIZER`. (ComfyUI installs have
-    /// no tokenizer file; a later milestone fetches the model-invariant
-    /// Qwen3-VL tokenizer when neither this override nor the base-dir file
-    /// exists.)
+    /// onto `base`. Env: `LORACTL_MODEL__TOKENIZER`. A ComfyUI install ships
+    /// no tokenizer file — when neither this override nor the base-dir file
+    /// exists, the model-invariant Qwen3-VL tokenizer is fetched once and
+    /// cached (see `hf::fetch_qwen3vl_tokenizer`), so the ComfyUI flow needs
+    /// nothing set here. An override that names a **missing** file is an
+    /// error, never a silent fetch.
     #[serde(default)]
     pub tokenizer: Option<PathBuf>,
 }
