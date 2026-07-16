@@ -1,11 +1,16 @@
 //! Diagnostic (wgpu feature): the same one training step on the tiny-krea2
-//! bundle, once on ndarray f32 (ground truth) and once on Wgpu<f16> —
-//! deterministic identical inputs, then compare the LoRA gradient
-//! magnitudes. Localizes backend-level gradient corruption that same-backend
-//! comparisons (e.g. ckpt-vs-stored, both on wgpu) structurally cannot see.
+//! bundle, once on ndarray f32 (ground truth) and once per GPU arm — Wgpu
+//! f16/f32, candle-metal bf16 (`--features candle`), cuda f32/f16
+//! (`--features cuda`) — deterministic identical inputs, then compare the
+//! LoRA gradient magnitudes. Localizes backend-level gradient corruption
+//! that same-backend comparisons (e.g. ckpt-vs-stored, both on wgpu)
+//! structurally cannot see.
 //!
 //! Usage:
 //!   cargo run --release -p loractl-core --features wgpu \
+//!     --example grad_compare -- crates/loractl-core/tests/fixtures/tiny-krea2
+//!   # on a Linux+NVIDIA host, add the cuda arms:
+//!   cargo run --release -p loractl-core --features cuda,wgpu \
 //!     --example grad_compare -- crates/loractl-core/tests/fixtures/tiny-krea2
 
 fn main() -> anyhow::Result<()> {
@@ -166,6 +171,14 @@ mod run {
             .unwrap()[0]
     }
 
+    /// NaN placeholders shaped like `like`, for arms whose feature is off —
+    /// keeps the table column-comparable regardless of the build.
+    fn nan_grads(like: &SiteGrads) -> SiteGrads {
+        like.iter()
+            .map(|(s, _, _)| (s.clone(), f32::NAN, f32::NAN))
+            .collect()
+    }
+
     pub fn main() -> Result<()> {
         let args: Vec<String> = std::env::args().collect();
         let base = PathBuf::from(args.get(1).context("arg 1: tiny-krea2 bundle dir")?);
@@ -188,49 +201,86 @@ mod run {
         #[cfg(not(feature = "candle"))]
         let (loss_cb, grads_cb) = {
             println!("candle-metal bf16... SKIPPED (build with --features candle)");
-            (
-                f32::NAN,
-                grads_cpu
-                    .iter()
-                    .map(|(s, _, _)| (s.clone(), f32::NAN, f32::NAN))
-                    .collect::<Vec<_>>(),
-            )
+            (f32::NAN, nan_grads(&grads_cpu))
         };
         println!("wgpu f32...");
         let (loss_wf32, grads_wf32) = one_step::<Autodiff<Wgpu>>(&base)?;
+        // The cuda arms need their own feature (Linux + NVIDIA + CUDA toolkit
+        // only); without it, NaN placeholders keep the table comparable. The
+        // f16 arm instantiates Cuda<f16> directly — the trainer's require_f32
+        // gate is a config-surface rule, not a backend limitation, and the f16
+        // data point is exactly what burn#5162 needs cross-platform.
+        #[cfg(feature = "cuda")]
+        let (loss_cu32, grads_cu32) = {
+            println!("cuda f32...");
+            one_step_on::<Autodiff<burn::backend::Cuda>>(
+                &base,
+                burn::backend::cuda::CudaDevice::new(0),
+            )?
+        };
+        #[cfg(not(feature = "cuda"))]
+        let (loss_cu32, grads_cu32) = {
+            println!("cuda f32... SKIPPED (build with --features cuda)");
+            (f32::NAN, nan_grads(&grads_cpu))
+        };
+        #[cfg(feature = "cuda")]
+        let (loss_cu16, grads_cu16) = {
+            println!("cuda f16...");
+            one_step_on::<Autodiff<burn::backend::Cuda<burn::tensor::f16>>>(
+                &base,
+                burn::backend::cuda::CudaDevice::new(0),
+            )?
+        };
+        #[cfg(not(feature = "cuda"))]
+        let (loss_cu16, grads_cu16) = {
+            println!("cuda f16... SKIPPED (build with --features cuda)");
+            (f32::NAN, nan_grads(&grads_cpu))
+        };
 
         println!(
-            "\nloss: cpu={loss_cpu:.6} wgpu-f16={loss_f16:.6} candle-bf16={loss_cb:.6} wgpu-f32={loss_wf32:.6}"
+            "\nloss: cpu={loss_cpu:.6} wgpu-f16={loss_f16:.6} candle-bf16={loss_cb:.6} wgpu-f32={loss_wf32:.6} cuda-f32={loss_cu32:.6} cuda-f16={loss_cu16:.6}"
         );
         println!(
-            "\n{:24} {:>11} {:>11} {:>11} {:>11} | {:>11} {:>11} {:>11} {:>11} {:>8}",
+            "\n{:24} {:>11} {:>11} {:>11} {:>11} {:>11} {:>11} | {:>11} {:>11} {:>11} {:>11} {:>11} {:>11} {:>8} {:>8}",
             "site",
             "A cpu",
             "A wf16",
             "A cbf16",
             "A wf32",
+            "A cu32",
+            "A cu16",
             "B cpu",
             "B wf16",
             "B cbf16",
             "B wf32",
-            "cb/cpu"
+            "B cu32",
+            "B cu16",
+            "cb/cpu",
+            "cu32/cpu"
         );
-        for ((s, a_c, b_c), (((_, a_16, b_16), (_, a_cb, b_cb)), (_, a_32, b_32))) in grads_cpu
-            .iter()
-            .zip(grads_f16.iter().zip(grads_cb.iter()).zip(grads_wf32.iter()))
-        {
+        for (i, (s, a_c, b_c)) in grads_cpu.iter().enumerate() {
+            let (_, a_16, b_16) = &grads_f16[i];
+            let (_, a_cb, b_cb) = &grads_cb[i];
+            let (_, a_32, b_32) = &grads_wf32[i];
+            let (_, a_cu32, b_cu32) = &grads_cu32[i];
+            let (_, a_cu16, b_cu16) = &grads_cu16[i];
             println!(
-                "{:24} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} | {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>8.2}",
+                "{:24} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} | {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>8.2} {:>8.2}",
                 s,
                 a_c,
                 a_16,
                 a_cb,
                 a_32,
+                a_cu32,
+                a_cu16,
                 b_c,
                 b_16,
                 b_cb,
                 b_32,
-                b_cb / b_c
+                b_cu32,
+                b_cu16,
+                b_cb / b_c,
+                b_cu32 / b_c
             );
         }
         Ok(())

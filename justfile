@@ -138,9 +138,10 @@ lint-wgpu:
 lint-candle:
     cargo clippy -p loractl-core --all-targets --features candle -- -D warnings
 
-# NOTE: cuda/tch are intentionally NOT local recipes — burn-cuda needs the CUDA
-# toolkit/nvcc and burn-tch a linked libtorch, neither present on this Mac. They
-# are build-verifiable only on a Linux+NVIDIA / libtorch host.
+# NOTE: cuda/tch are intentionally NOT local lint recipes — burn-cuda needs the
+# CUDA toolkit/nvcc and burn-tch a linked libtorch, neither present on this Mac.
+# They are build-verifiable only on a Linux+NVIDIA / libtorch host; on such a
+# host, `just test-cuda` runs the cuda smoke.
 
 # Format the workspace.
 fmt:
@@ -207,6 +208,12 @@ test-turbo-real fp8_path:
 # double-gated `#[ignore]`d smokes run; never fires in CI.
 test-wgpu:
     cargo test -p loractl-core --features wgpu -- --ignored wgpu
+
+# Run the cuda GPU smoke (f32 + grad-checkpointing) on a real NVIDIA GPU —
+# Linux + CUDA toolkit at build time; NOT runnable on this Mac (see the
+# cuda/tch note above). The ONLY way the double-gated `#[ignore]`d smoke runs.
+test-cuda:
+    cargo test -p loractl-core --features cuda -- --ignored cuda
 
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.

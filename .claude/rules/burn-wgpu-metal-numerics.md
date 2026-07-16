@@ -27,6 +27,35 @@ The f16 zeros are loss-scale invariant (S=64 vs S=16384) → dropped values,
 probes showed. Tracking one extra tensor flipping f32 between NaN and
 bit-exact means the defect is lazy-execution/kernel-boundary dependent.
 
+## Cross-platform truth table (2026-07-16, popos RTX 4090, driver 580.126.18)
+
+First-ever cuda execution plus the same ladder on wgpu-Vulkan (loractl PR #94,
+cuda arms added to `grad_compare` + `tests/cuda_smoke.rs`):
+
+| arm (loaded weights, params-only unless noted) | result |
+|---|---|
+| **cuda f32** | **CLEAN** — loss matches CPU to 1e-6 (0.802561 vs 0.802559), B-grad ratio 1.00 at every site; smoke + CLI train green |
+| cuda f16 | wrong forward (**0.7771 — the same value as Metal's broken f16-tracked row**) + exact-zero/denormal B-grads |
+| wgpu-Vulkan f32 | forward loss **NaN**; grad readbacks impossible values (a negative "abs max", −3.998) |
+| wgpu-Vulkan f16 | forward ≈ correct (0.8018); grad readbacks the same −3.998 garbage |
+| wgpu-Vulkan f32 + input tracked (`workaround`) | MATCHES CPU (ratio 1.000 every site) — same healing as Metal |
+| wgpu-Vulkan f16 + input tracked | exactly 0.0 grads — same as Metal |
+| wgpu-Vulkan `no-load` (random init) | clean, 0 NaN grads — **differs from Metal**, which breaks fixture-free |
+| wgpu-Vulkan `verify-load` / `stages` | clean (92/92 tensors exact; all stages finite) |
+
+Consequences:
+
+- The params-only pruned-backward corruption is **not Metal-specific** — it
+  reproduces on Vulkan with different surface signatures but identical
+  discriminators (load clean, input-backward clean, params-only broken,
+  input-tracking heals f32). The f16 exact-zero-grads defect reproduces on
+  **cuda** too, so it lives in burn/cubecl's f16 autodiff path, not in any
+  one GPU compiler.
+- **cuda f32 is the first fully-clean GPU configuration** for loractl: the
+  synthetic path runs end-to-end (`just test-cuda`; CLI `--backend cuda`).
+  A real ~12B run on the 24 GB box still needs f16-on-cuda (blocked on the
+  f16 defect) or int8/NF4 (#24) — f32 weights (~49 GB) don't fit.
+
 ## Discriminators already established (don't re-derive)
 
 - **Load path is clean**: 92/92 tensors byte-identical after a wgpu
@@ -59,6 +88,9 @@ bit-exact means the defect is lazy-execution/kernel-boundary dependent.
 
 - Upstream: [tracel-ai/burn#5162] (the bug), [tracel-ai/cubecl#1375]
   (open Metal if/else miscompilation, same cubecl 0.10.0 — possibly related).
+  The 2026-07-16 cross-platform table above (Vulkan repro + cuda-f16 repro +
+  cuda-f32 clean) belongs on #5162 — it moves the bug from "Metal compiler"
+  to "cubecl/burn autodiff path".
 - burn 0.22 (`main`) has graph-capture/fusion/memory rework in exactly this
   neighborhood — re-run the ladder there. The migration itself is
   milestone-scale (backend-erased `Tensor`); map and plan live in issue #79.
