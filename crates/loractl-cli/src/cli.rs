@@ -42,7 +42,8 @@ enum Command {
     Sample(SampleCmd),
 
     /// Scaffold a starter training config from a template (to stdout, or a file
-    /// with `-o`). Presets: `synthetic` (default), `wgpu`, `flow`, `krea2`.
+    /// with `-o`). Presets: `synthetic` (default), `wgpu`, `flow`, `krea2`,
+    /// `krea2-comfyui` (scattered ComfyUI file paths).
     Init(InitCmd),
 
     /// Print shell completions to stdout (e.g. `loractl completions zsh`).
@@ -72,6 +73,10 @@ enum Preset {
     /// A real Krea 2 image-diffusion LoRA run through the DiffusionTrainer
     /// (M14). Edit the placeholder `model.base`/`dataset.path` before running.
     Krea2,
+    /// A real Krea 2 run pointing at a ComfyUI install's scattered files
+    /// (`model.{denoiser,text_encoder,vae}` overrides) — no restructuring,
+    /// no duplicate files, no symlinks. Edit the placeholder paths first.
+    Krea2Comfyui,
 }
 
 impl Preset {
@@ -82,6 +87,9 @@ impl Preset {
             Preset::Wgpu => include_str!("../../../config/examples/lora-wgpu.yaml"),
             Preset::Flow => include_str!("../../../config/examples/flow.yaml"),
             Preset::Krea2 => include_str!("../../../config/examples/krea2-lora.yaml"),
+            Preset::Krea2Comfyui => {
+                include_str!("../../../config/examples/krea2-comfyui.yaml")
+            }
         }
     }
 
@@ -93,6 +101,7 @@ impl Preset {
             Preset::Wgpu => "wgpu",
             Preset::Flow => "flow",
             Preset::Krea2 => "krea2",
+            Preset::Krea2Comfyui => "krea2-comfyui",
         }
     }
 }

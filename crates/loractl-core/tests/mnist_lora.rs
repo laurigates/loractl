@@ -76,6 +76,10 @@ fn mnist_lora_converges() {
             base: "mnist".into(),
             variant: Default::default(),
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: RANK as u32,

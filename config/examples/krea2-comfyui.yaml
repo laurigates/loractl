@@ -1,0 +1,54 @@
+# A real Krea 2 LoRA run pointing at a ComfyUI install's SCATTERED files —
+# no restructuring into an HF snapshot dir, no duplicate files, no symlinks.
+#
+# ComfyUI keeps each component in its own tree under models/; the four
+# model.*_path overrides point straight at those files. `base` is only the
+# root that RELATIVE overrides join onto (and the fallback location for any
+# component you DON'T override) — set it to your ComfyUI models/ dir.
+#
+# Absolute override paths are used verbatim; relative ones join onto `base`.
+
+task: flow-matching
+
+model:
+  base: /home/you/ComfyUI/models    # your ComfyUI models/ root
+  variant: krea2                    # architecture; the denoiser below is a Krea-2 scaled-fp8 repack
+  denoiser:     diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
+  text_encoder: text_encoders/qwen/qwen3vl_4b_fp8_scaled.safetensors
+  vae:          vae/qwen/qwen_image_vae.safetensors
+  # tokenizer: omitted — ComfyUI ships no tokenizer.json; a later milestone
+  #            fetches the model-invariant Qwen3-VL tokenizer automatically.
+  #            Until then, point this at a tokenizer.json you have:
+  # tokenizer:  /path/to/qwen3vl/tokenizer.json
+
+dataset:
+  path: /path/to/dataset            # images + same-named .txt captions
+  resolution: 512                   # multiple of 16
+  batch_size: 1
+
+lora:
+  rank: 16
+  alpha: 16.0
+  targets:
+    - pattern: 'blocks\.'           # every MMDiT trunk projection
+
+optim:
+  lr: 1.0e-4
+
+steps: 500
+seed: 42
+
+output:
+  dir: output/krea2-lora
+  name: krea2-lora
+
+# The numerically-clean GPU route on a 24 GB NVIDIA card: cuda f32 + int8
+# frozen-base quantization (the ~12.8B base fits at ~20 GB as int8).
+compute:
+  backend: cuda
+  precision: f32
+  quant: int8
+  grad_checkpointing: true
+
+flow:
+  shift: 3.0

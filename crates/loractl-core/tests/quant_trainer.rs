@@ -84,6 +84,10 @@ fn config(out: &TempDir, dataset: PathBuf, steps: u64) -> TrainConfig {
             base: BUNDLE.into(),
             variant: ModelVariant::TinyKrea2,
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         },
         lora: LoraConfig {
             rank: 4,

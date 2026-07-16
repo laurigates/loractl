@@ -102,6 +102,10 @@ fn denoiser_filename_precedence() {
             base: "unused".into(),
             variant,
             checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         };
         assert_eq!(
             denoiser_filename(&model),
