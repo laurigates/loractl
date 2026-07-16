@@ -87,8 +87,11 @@ mod wgpu_main {
         // File truth: first.weight is F32 max|W| 0.61, tmlp.0.weight F32 max
         // 0.39 — if the loaded values differ, the LOAD corrupts them.
         stats("W first (loaded)", &mmdit.first.weight.val());
-        stats("W tmlp.0 (loaded)", &mmdit.tmlp.fc1.weight.val());
-        stats("W blocks0.wq", &mmdit.blocks[0].attn.wq.weight.val());
+        stats("W tmlp.0 (loaded)", &mmdit.tmlp.fc1.as_plain().weight.val());
+        stats(
+            "W blocks0.wq",
+            &mmdit.blocks[0].attn.wq.as_plain().weight.val(),
+        );
 
         let [b, z, h, w] = batch.latents.dims();
         let img = patchify(batch.latents.clone(), patch);

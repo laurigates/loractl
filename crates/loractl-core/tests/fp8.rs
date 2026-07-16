@@ -743,8 +743,11 @@ fn fp8_and_dequant_twin_paths_agree() {
     // dequantized from the same fp8 payload at fixture-generation time.
     let remapper = KeyRemapper::from_patterns(Mmdit::<NdArray>::key_remap().to_vec())
         .expect("valid remap patterns");
+    // `BaseLinear` enum sites: skip the variant name in key paths (matches
+    // `load_fp8_module`'s path, so the twin loads land identical keys).
     let mut store = SafetensorsStore::from_file(TURBO_DEQUANT)
         .remap(remapper)
+        .skip_enum_variants(true)
         .with_from_adapter(PyTorchToBurnAdapter);
     let mut dequant_model = Mmdit::<NdArray>::init(cfg.clone(), &device);
     let result = dequant_model

@@ -66,6 +66,7 @@
 //! no CLI. Parity: `tests/mmdit_parity.rs` vs `reference/mmdit_reference.py`.
 
 use crate::adapters::{LoraAdapters, LoraSite};
+use crate::quant::{QUANT_BLOCK, QuantBackend, quantize_linear_weight};
 use burn::module::{Module, Param};
 use burn::nn::{Gelu, Linear, LinearConfig};
 use burn::tensor::activation::{sigmoid, silu, softmax};
@@ -334,17 +335,94 @@ fn apply_rope<B: Backend>(x: Tensor<B, 4>, tables: &RopeTables<B>) -> Tensor<B, 
     Tensor::cat(vec![y0, y1], 4).reshape([b, h, l, hd])
 }
 
-/// Run a base `Linear` at an injectable site, adding any adapter registered
-/// for `path` (the M6 attach seam; `None` is the plain loaded forward).
-fn site<B: Backend, const D: usize>(
+/// A frozen int8-quantized replacement for a base [`Linear`] at a trunk site.
+///
+/// The weight is a burn-native `QFloat` tensor in **file layout `[d_out, d_in]`**
+/// (never transposed) — the layout
+/// [`quant_matmul_t`](crate::quant::QuantBackend::quant_matmul_t) consumes.
+/// burn's `Linear` stores its weight `[d_in, d_out]` and computes `x·W`;
+/// [`Mmdit::into_quantized`] transposes to `[d_out, d_in]` before quantizing,
+/// and [`BaseLinear::forward`] restores `x·W` as `x · dequant(wq)ᵀ`, so a
+/// quantized site equals its plain twin up to int8 error.
+#[derive(Module, Debug)]
+pub struct QuantLinear<B: Backend> {
+    /// Frozen int8 weight in FILE layout `[d_out, d_in]` (a `QFloat`
+    /// primitive; never transposed, never receives a gradient — the quant op
+    /// treats it as a constant).
+    pub weight: Param<Tensor<B, 2>>,
+    /// Optional bias `[d_out]`, kept in full precision (never quantized).
+    pub bias: Option<Param<Tensor<B, 1>>>,
+}
+
+/// The frozen base linear at an injectable site: either the plain loaded
+/// [`Linear`] (the default — byte-identical to pre-quant behavior) or its int8
+/// [`QuantLinear`] twin. The M6 LoRA adapter attaches on top of *this* output
+/// at [`site`], unaffected by which arm is active — quantizing the base does
+/// not disturb the attach seam.
+#[derive(Module, Debug)]
+pub enum BaseLinear<B: Backend> {
+    /// The plain, full-precision loaded linear.
+    Plain(Linear<B>),
+    /// An int8-quantized frozen linear (the memory knob for the ~12B base).
+    Quant(QuantLinear<B>),
+}
+
+impl<B: Backend> BaseLinear<B> {
+    /// The inner plain [`Linear`], for tests/diagnostics that read the base
+    /// weight directly. Panics on the `Quant` arm — a low-traffic accessor,
+    /// not a hot path.
+    pub fn as_plain(&self) -> &Linear<B> {
+        match self {
+            BaseLinear::Plain(lin) => lin,
+            BaseLinear::Quant(_) => {
+                panic!("BaseLinear::as_plain called on a quantized (Quant) site")
+            }
+        }
+    }
+}
+
+impl<B: QuantBackend> BaseLinear<B> {
+    /// Forward through whichever arm is active — a numerical drop-in for
+    /// [`Linear::forward`] up to int8 error. `Plain` delegates directly;
+    /// `Quant` flattens the leading dims to a `[n, d_in]` matrix (mirroring
+    /// burn `Linear`'s own batch-flatten), runs the weight-as-constant
+    /// [`quant_matmul_t`](crate::quant::QuantBackend::quant_matmul_t)
+    /// (`x · dequant(wq)ᵀ`), adds the broadcast bias, and reshapes back with
+    /// `d_out` as the last dimension.
+    pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
+        match self {
+            BaseLinear::Plain(lin) => lin.forward(x),
+            BaseLinear::Quant(q) => {
+                let mut out_dims = x.dims();
+                let d_in = out_dims[D - 1];
+                let n: usize = out_dims[..D - 1].iter().product();
+                let wq = q.weight.val();
+                let d_out = wq.dims()[0]; // file layout [d_out, d_in]
+                let x2 = x.reshape([n, d_in]);
+                let mut y = B::quant_matmul_t(x2, &wq); // [n, d_out]
+                if let Some(bias) = &q.bias {
+                    y = y + bias.val().reshape([1, d_out]);
+                }
+                out_dims[D - 1] = d_out;
+                y.reshape(out_dims)
+            }
+        }
+    }
+}
+
+/// Run a base linear at an injectable site, adding any adapter registered for
+/// `path` (the M6 attach seam; `None` is the plain loaded forward). `base`
+/// carries whichever precision the frozen weight has — the seam is identical
+/// for [`BaseLinear::Plain`] and [`BaseLinear::Quant`].
+fn site<B: QuantBackend, const D: usize>(
     adapters: Option<&LoraAdapters<B>>,
     path: &str,
-    lin: &Linear<B>,
+    base: &BaseLinear<B>,
     x: Tensor<B, D>,
 ) -> Tensor<B, D> {
     match adapters {
-        Some(a) => a.apply(path, x.clone(), lin.forward(x)),
-        None => lin.forward(x),
+        Some(a) => a.apply(path, x.clone(), base.forward(x)),
+        None => base.forward(x),
     }
 }
 
@@ -352,15 +430,15 @@ fn site<B: Backend, const D: usize>(
 #[derive(Module, Debug)]
 pub struct MmditAttention<B: Backend> {
     /// Query projection.
-    pub wq: Linear<B>,
+    pub wq: BaseLinear<B>,
     /// Key projection (KV heads wide).
-    pub wk: Linear<B>,
+    pub wk: BaseLinear<B>,
     /// Value projection (KV heads wide).
-    pub wv: Linear<B>,
+    pub wv: BaseLinear<B>,
     /// The sigmoid gate projection (`dim → dim`), from the block input.
-    pub gate: Linear<B>,
+    pub gate: BaseLinear<B>,
     /// Output projection.
-    pub wo: Linear<B>,
+    pub wo: BaseLinear<B>,
     /// Pre-RoPE q/k norms.
     pub qknorm: QkNorm<B>,
     /// Query-head count.
@@ -375,7 +453,7 @@ impl<B: Backend> MmditAttention<B> {
     fn init(dim: usize, heads: usize, kvheads: usize, device: &B::Device) -> Self {
         let head_dim = dim / heads;
         let lin = |d_in: usize, d_out: usize| {
-            LinearConfig::new(d_in, d_out).with_bias(false).init(device)
+            BaseLinear::Plain(LinearConfig::new(d_in, d_out).with_bias(false).init(device))
         };
         Self {
             wq: lin(dim, head_dim * heads),
@@ -391,7 +469,9 @@ impl<B: Backend> MmditAttention<B> {
             kvheads,
         }
     }
+}
 
+impl<B: QuantBackend> MmditAttention<B> {
     /// `x` is `[b, l, dim]`; `rope` is `None` in the text-fusion blocks;
     /// `mask` the additive `[b, 1, l, l]` attention mask. `adapters`/`prefix`
     /// route the projections through injected LoRA deltas.
@@ -481,18 +561,18 @@ impl<B: Backend> MmditAttention<B> {
 #[derive(Module, Debug)]
 pub struct SwiGlu<B: Backend> {
     /// Gate projection.
-    pub gate: Linear<B>,
+    pub gate: BaseLinear<B>,
     /// Up projection.
-    pub up: Linear<B>,
+    pub up: BaseLinear<B>,
     /// Down projection.
-    pub down: Linear<B>,
+    pub down: BaseLinear<B>,
 }
 
 impl<B: Backend> SwiGlu<B> {
     fn init(features: usize, multiplier: usize, device: &B::Device) -> Self {
         let inner = MmditConfig::swiglu_dim(features, multiplier);
         let lin = |d_in: usize, d_out: usize| {
-            LinearConfig::new(d_in, d_out).with_bias(false).init(device)
+            BaseLinear::Plain(LinearConfig::new(d_in, d_out).with_bias(false).init(device))
         };
         Self {
             gate: lin(features, inner),
@@ -500,7 +580,9 @@ impl<B: Backend> SwiGlu<B> {
             down: lin(inner, features),
         }
     }
+}
 
+impl<B: QuantBackend> SwiGlu<B> {
     fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -579,7 +661,9 @@ impl<B: Backend> TextFusionBlock<B> {
             mlp: SwiGlu::init(dim, multiplier, device),
         }
     }
+}
 
+impl<B: QuantBackend> TextFusionBlock<B> {
     fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 4>>) -> Tensor<B, 3> {
         let x = x.clone()
             + self
@@ -602,7 +686,7 @@ pub struct TextFusionTransformer<B: Backend> {
     pub refiner_blocks: Vec<TextFusionBlock<B>>,
 }
 
-impl<B: Backend> TextFusionTransformer<B> {
+impl<B: QuantBackend> TextFusionTransformer<B> {
     /// `x` is the conditioner stack `[b, l, txtlayers, txtdim]`; `mask` the
     /// additive text mask `[b, 1, l, l]` (layerwise blocks run unmasked, like
     /// the reference).
@@ -649,7 +733,9 @@ impl<B: Backend> SingleStreamBlock<B> {
             mlp: SwiGlu::init(config.features, config.multiplier, device),
         }
     }
+}
 
+impl<B: QuantBackend> SingleStreamBlock<B> {
     fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -699,16 +785,16 @@ impl<B: Backend> LastLayer<B> {
 #[derive(Module, Debug)]
 pub struct TimestepMlp<B: Backend> {
     /// `tdim → features` (the reference's `tmlp.0`).
-    pub fc1: Linear<B>,
+    pub fc1: BaseLinear<B>,
     /// `features → features` (`tmlp.2`).
-    pub fc2: Linear<B>,
+    pub fc2: BaseLinear<B>,
 }
 
 /// The modulation projector (`tproj`): GELU then `features → 6·features`.
 #[derive(Module, Debug)]
 pub struct TimestepProj<B: Backend> {
     /// The projection (`tproj.1`).
-    pub fc: Linear<B>,
+    pub fc: BaseLinear<B>,
 }
 
 /// The fused-text projector (`txtmlp`): norm, up, GELU, out.
@@ -717,9 +803,9 @@ pub struct TextMlp<B: Backend> {
     /// `txtmlp.0` — the zero-centered norm.
     pub norm: ZRmsNorm<B>,
     /// `txtmlp.1` — `txtdim → features`.
-    pub fc1: Linear<B>,
+    pub fc1: BaseLinear<B>,
     /// `txtmlp.3` — `features → features`.
-    pub fc2: Linear<B>,
+    pub fc2: BaseLinear<B>,
 }
 
 /// Intermediate activations captured by [`Mmdit::forward_trace`], for parity
@@ -777,6 +863,9 @@ impl<B: Backend> Mmdit<B> {
         let lin_nb = |d_in: usize, d_out: usize| {
             LinearConfig::new(d_in, d_out).with_bias(false).init(device)
         };
+        // Quantizable base sites start `Plain` (with bias, like `lin`);
+        // `into_quantized` swaps in the int8 twin.
+        let base = |d_in: usize, d_out: usize| BaseLinear::Plain(lin(d_in, d_out));
         let fusion_block = || {
             TextFusionBlock::init(
                 config.txtdim,
@@ -789,10 +878,10 @@ impl<B: Backend> Mmdit<B> {
         Self {
             first: lin(config.channels * config.patch * config.patch, f),
             tmlp: TimestepMlp {
-                fc1: lin(config.tdim, f),
-                fc2: lin(f, f),
+                fc1: base(config.tdim, f),
+                fc2: base(f, f),
             },
-            tproj: TimestepProj { fc: lin(f, 6 * f) },
+            tproj: TimestepProj { fc: base(f, 6 * f) },
             txtfusion: TextFusionTransformer {
                 layerwise_blocks: vec![fusion_block(), fusion_block()],
                 projector: lin_nb(config.txtlayers, 1),
@@ -800,8 +889,8 @@ impl<B: Backend> Mmdit<B> {
             },
             txtmlp: TextMlp {
                 norm: ZRmsNorm::init(config.txtdim, device),
-                fc1: lin(config.txtdim, f),
-                fc2: lin(f, f),
+                fc1: base(config.txtdim, f),
+                fc2: base(f, f),
             },
             blocks: (0..config.layers)
                 .map(|_| SingleStreamBlock::init(&config, device))
@@ -865,6 +954,109 @@ impl<B: Backend> Mmdit<B> {
         sites
     }
 
+    /// Replace every frozen-base [`BaseLinear::Plain`] site with its int8
+    /// [`BaseLinear::Quant`] twin (weight-only, per-block symmetric int8 via
+    /// [`quantize_linear_weight`]) — the memory knob for the ~12B base
+    /// (#24 → #96). burn's `Linear` stores its weight `[d_in, d_out]` and
+    /// computes `x·W`; the quant path wants file layout `[d_out, d_in]` and
+    /// computes `x · dequant(wq)ᵀ`, so each weight is **transposed** before
+    /// quantizing and the two are numerically equal up to int8 error (proven
+    /// in `tests/quant_mmdit.rs`). The M6 LoRA seam is untouched — adapters
+    /// attach on the quantized site's output exactly as on the plain one.
+    ///
+    /// A site whose `d_in` is not a multiple of [`QUANT_BLOCK`] is left
+    /// `Plain` (the block scheme can't tile it). On the real Krea 2 config
+    /// every quantizable site is block-aligned; only tiny fixtures (e.g.
+    /// `tmlp.fc1` at `tdim = 16`) keep a stray `Plain` site.
+    ///
+    /// Must run on a **non-autodiff** backend: burn 0.21's `Autodiff` has no
+    /// `quantize` op (`todo!()`), so the trainer quantizes on the inner
+    /// backend and lifts the module with
+    /// [`AutodiffModule::from_inner`](burn::module::AutodiffModule::from_inner)
+    /// — the pattern `tests/quant.rs` and `tests/quant_mmdit.rs` follow. The
+    /// `device` argument is reserved for a future scheme that needs it
+    /// (`quantize_dynamic` quantizes on each tensor's own device today).
+    pub fn into_quantized(mut self, _device: &B::Device) -> Self {
+        for block in &mut self.blocks {
+            quantize_attention(&mut block.attn);
+            quantize_swiglu(&mut block.mlp);
+        }
+        for block in &mut self.txtfusion.layerwise_blocks {
+            quantize_attention(&mut block.attn);
+            quantize_swiglu(&mut block.mlp);
+        }
+        for block in &mut self.txtfusion.refiner_blocks {
+            quantize_attention(&mut block.attn);
+            quantize_swiglu(&mut block.mlp);
+        }
+        quantize_field(&mut self.tmlp.fc1);
+        quantize_field(&mut self.tmlp.fc2);
+        quantize_field(&mut self.tproj.fc);
+        quantize_field(&mut self.txtmlp.fc1);
+        quantize_field(&mut self.txtmlp.fc2);
+        self
+    }
+
+    /// Every injectable trunk site paired with its checkpoint-key base path
+    /// (`blocks.{i}.attn.wq`, …) as a mutable handle — the same paths and
+    /// order [`injectable_sites`](Self::injectable_sites) advertises (pinned
+    /// by `tests/quant_mmdit.rs`). PR-B3's streaming loader fills each site
+    /// from a checkpoint through this handle.
+    pub fn base_linears_mut(&mut self) -> Vec<(String, &mut BaseLinear<B>)> {
+        let mut out: Vec<(String, &mut BaseLinear<B>)> = Vec::with_capacity(self.blocks.len() * 7);
+        for (i, block) in self.blocks.iter_mut().enumerate() {
+            let p = format!("blocks.{i}");
+            let SingleStreamBlock { attn, mlp, .. } = block;
+            out.push((format!("{p}.attn.wq"), &mut attn.wq));
+            out.push((format!("{p}.attn.wk"), &mut attn.wk));
+            out.push((format!("{p}.attn.wv"), &mut attn.wv));
+            out.push((format!("{p}.attn.wo"), &mut attn.wo));
+            out.push((format!("{p}.mlp.gate"), &mut mlp.gate));
+            out.push((format!("{p}.mlp.up"), &mut mlp.up));
+            out.push((format!("{p}.mlp.down"), &mut mlp.down));
+        }
+        out
+    }
+}
+
+/// Quantize one base site in place: a block-aligned [`BaseLinear::Plain`]
+/// becomes its int8 [`BaseLinear::Quant`] twin (the `[d_in, d_out]` Linear
+/// weight transposed to file layout `[d_out, d_in]`, then
+/// [`quantize_linear_weight`]); a `Quant` arm, or a `Plain` whose `d_in` is
+/// not a multiple of [`QUANT_BLOCK`], is left untouched.
+fn quantize_field<B: Backend>(base: &mut BaseLinear<B>) {
+    let BaseLinear::Plain(lin) = base else {
+        return;
+    };
+    let [d_in, _d_out] = lin.weight.dims();
+    if !d_in.is_multiple_of(QUANT_BLOCK) {
+        return;
+    }
+    let wq = quantize_linear_weight(lin.weight.val().transpose());
+    let bias = lin.bias.clone();
+    *base = BaseLinear::Quant(QuantLinear {
+        weight: Param::from_tensor(wq),
+        bias,
+    });
+}
+
+/// Quantize an attention block's five projections in place.
+fn quantize_attention<B: Backend>(attn: &mut MmditAttention<B>) {
+    quantize_field(&mut attn.wq);
+    quantize_field(&mut attn.wk);
+    quantize_field(&mut attn.wv);
+    quantize_field(&mut attn.gate);
+    quantize_field(&mut attn.wo);
+}
+
+/// Quantize a SwiGLU's three projections in place.
+fn quantize_swiglu<B: Backend>(mlp: &mut SwiGlu<B>) {
+    quantize_field(&mut mlp.gate);
+    quantize_field(&mut mlp.up);
+    quantize_field(&mut mlp.down);
+}
+
+impl<B: QuantBackend> Mmdit<B> {
     /// Denoise: `img` is the pre-patchified latent tokens
     /// `[b, img_tokens, channels·patch²]`, `context` the M10 conditioner
     /// stack `[b, txtlen, txtlayers, txtdim]`, `t` the per-sample timesteps

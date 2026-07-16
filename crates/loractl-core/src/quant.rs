@@ -97,6 +97,15 @@ impl QuantBackend for NdArray {}
 #[cfg(feature = "wgpu")]
 impl QuantBackend for burn::backend::Wgpu {}
 
+// `Wgpu<f16>` is a distinct concrete backend from the default `Wgpu` (f32) —
+// the M13 half-precision path (`compute.precision: f16`) and the
+// `trace_f16_forward` diagnostic run the *non-autodiff* forward directly on it,
+// so it needs its own impl (the `Autodiff<Wgpu<f16>>` training path is already
+// covered by the blanket `Autodiff` impl below). The default `quant_matmul_t`
+// (dequantize + matmul) is dtype-generic over cubecl float elements.
+#[cfg(feature = "wgpu")]
+impl QuantBackend for burn::backend::Wgpu<burn::tensor::f16> {}
+
 #[cfg(feature = "cuda")]
 impl QuantBackend for burn::backend::Cuda {}
 

@@ -35,6 +35,7 @@ mod run {
     use loractl_core::adapters::build_adapters;
     use loractl_core::config::{LoraConfig, TargetSpec};
     use loractl_core::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
+    use loractl_core::quant::QuantBackend;
     use std::path::{Path, PathBuf};
 
     /// Deterministic pseudo-random values in [-1, 1] — identical on every
@@ -54,11 +55,11 @@ mod run {
 
     /// One forward+backward on backend `AB`; returns (loss, per-site max |grad|
     /// over lora_a/lora_b) sorted by site path.
-    fn one_step<AB: AutodiffBackend>(base: &Path) -> Result<(f32, SiteGrads)> {
+    fn one_step<AB: AutodiffBackend + QuantBackend>(base: &Path) -> Result<(f32, SiteGrads)> {
         one_step_on::<AB>(base, Default::default())
     }
 
-    fn one_step_on<AB: AutodiffBackend>(
+    fn one_step_on<AB: AutodiffBackend + QuantBackend>(
         base: &Path,
         device: AB::Device,
     ) -> Result<(f32, SiteGrads)> {
