@@ -233,6 +233,47 @@ pub fn load_fp8_snapshots(path: &Path) -> Result<Vec<TensorSnapshot>> {
     Ok(snapshots)
 }
 
+/// Build lazy passthrough snapshots for every tensor in a **plain** (non-fp8)
+/// safetensors checkpoint — the fp8-free twin of [`load_fp8_snapshots`], the
+/// streaming source PR-B3's quantized loader ([`crate::diffusion_trainer`])
+/// uses on the bf16/f32 path.
+///
+/// Each tensor becomes a lazy [`plain_snapshot`] over one shared `Arc<Mmap>`,
+/// materializing its bytes only when the applier — or the quant pass — forces
+/// it, so the loader never holds the whole f32 model at once. Unlike
+/// `SafetensorsStore::from_file(..).load_from(..)` (which drives the whole
+/// apply itself), this hands back the snapshot vector so the caller can
+/// partition it (base-linear weight keys → the per-tensor quant pass,
+/// everything else → the store applier). An unmapped dtype is a hard error
+/// naming the tensor, exactly as in [`load_fp8_snapshots`].
+pub(crate) fn load_plain_snapshots(path: &Path) -> Result<Vec<TensorSnapshot>> {
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    // SAFETY: see [`is_fp8_checkpoint`].
+    let mmap: Arc<Mmap> = Arc::new(
+        unsafe { Mmap::map(&file) }.with_context(|| format!("mmapping {}", path.display()))?,
+    );
+    let st = SafeTensors::deserialize(&mmap)
+        .with_context(|| format!("parsing safetensors header of {}", path.display()))?;
+
+    let mut snapshots = Vec::new();
+    for (name, view) in st.iter() {
+        let Some(dtype) = map_dtype(view.dtype()) else {
+            bail!(
+                "'{name}' has unsupported dtype {:?} in {}",
+                view.dtype(),
+                path.display()
+            );
+        };
+        snapshots.push(plain_snapshot(
+            Arc::clone(&mmap),
+            name.to_string(),
+            dtype,
+            view.shape().to_vec(),
+        ));
+    }
+    Ok(snapshots)
+}
+
 /// One lazily-dequantizing snapshot: materializes `LUT[byte] * scale` as f32
 /// only when the applier calls `to_data()`.
 fn dequant_snapshot(

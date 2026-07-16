@@ -277,6 +277,7 @@ compute:
   device: 0                # GPU ordinal; ignored by ndarray. wgpu: 0 = default/best GPU
   precision: f32           # f32 (default) | f16 (wgpu only — M13; halves weight memory)
   grad_checkpointing: false # recompute activations during backward (M13; numerically identical)
+  quant: none              # none (default) | int8 (frozen-base int8; ndarray/cuda + f32 only — #96)
 ```
 
 - **`ndarray`** is the default and is **always** available — it needs no extra
@@ -304,6 +305,43 @@ compute:
 The GPU backend is a **portability** target (the loop runs, loss decreases),
 not a bit-exact numerics one — per ADR-0001 the numerics-golden parity tests
 stay on ndarray, since GPU float-reduction order differs.
+
+### Frozen-base quantization (int8, #96)
+
+A third memory knob, orthogonal to `precision`, quantizes the diffusion
+trainer's **frozen MMDiT base** to weight-only per-block symmetric int8 while
+the LoRA adapters stay f32 — the **QLoRA** pattern:
+
+```yaml
+compute:
+  backend: cuda            # or ndarray (offline/CI)
+  precision: f32           # int8 dequantizes to f32 — f16/bf16 are rejected
+  quant: int8              # none (default) | int8
+```
+
+- **The point:** `precision: f16` only fits the ~12.8B Krea 2 base on a large
+  (48 GB) Metal host, and burn's GPU autodiff is broken in f16 (burn#5162).
+  `quant: int8` cuts the resident base to ~1/4 of f32 (~14 GB of int8 weights +
+  scales; **~17–19 GB** total with adapters, activations, and optimizer state),
+  which is the practical route to training on a **24 GB** card via the
+  numerically-clean **cuda f32** path.
+- **Where it applies:** the diffusion trainer's base only — the base weights are
+  frozen int8 constants (a custom autodiff matmul dequantizes transiently per
+  layer, so gradients flow to the adapters, never the base), and every
+  checkpoint is still the same ComfyUI-loadable kohya-ss export. The synthetic
+  `BurnTrainer` rejects the knob (no frozen base worth quantizing).
+- **Where it's allowed:** `ndarray` (the offline/CI path) and `cuda` only, and
+  `precision: f32` only. `wgpu` is untested (use `precision: f16` there),
+  candle/tch have no quantized matmul, and any non-f32 precision is rejected —
+  all fail loudly, never a silent fallback.
+- **Loading is streamed:** the ~49 GB f32 checkpoint is never materialized — the
+  loader quantizes one layer's weight at a time from an mmap'd file (bf16/f32 or
+  auto-detected scaled-fp8), so peak load memory is the int8 skeleton plus one
+  transient f32 tensor.
+- **Validated offline** on the tiny-krea2 bundle (`cargo test`): the loader
+  produces a correct trainable quantized model (finite losses, the 42-key kohya
+  export, resume). **On-box memory on the 24 GB RTX 4090 is not yet validated —
+  that is the next PR ([#96](https://github.com/laurigates/loractl/issues/96)).**
 
 ## Observability (GlitchTip / Sentry)
 

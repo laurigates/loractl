@@ -341,6 +341,57 @@ impl<'de> Deserialize<'de> for Precision {
     }
 }
 
+/// Frozen-base quantization of the diffusion trainer's MMDiT (#96 — the #24
+/// follow-up).
+///
+/// `Int8` loads the ~12.8B Krea 2 base as weight-only, per-block symmetric
+/// int8 ([`quant::int8_scheme`](crate::quant::int8_scheme)) while the LoRA
+/// adapters train in f32 — the QLoRA pattern — cutting the resident base to
+/// ~1/4 of f32 so it fits a 24 GB GPU. Like [`Precision`], the enum and its
+/// `Deserialize` are **always compiled** and route through `FromStr`; the
+/// diffusion trainer's guard matrix restricts it to the numerically-validated
+/// `(ndarray, f32)` / `(cuda, f32)` combos and fails loudly everywhere else
+/// (wgpu is untested, candle/tch have no quant q-ops) — never a silent
+/// fallback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Quant {
+    /// No quantization — the frozen base loads in the backend's float dtype
+    /// (the default; every existing config keeps its current behavior).
+    #[default]
+    None,
+    /// Weight-only per-block symmetric int8 for the frozen base (`quant.rs`).
+    Int8,
+}
+
+// No `clap::ValueEnum` here for the same reason as `BackendKind`/`Precision`:
+// core never imports clap; the CLI routes its `--quant` flag through this
+// `FromStr`.
+impl FromStr for Quant {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" | "off" | "f32" => Ok(Self::None),
+            "int8" | "i8" => Ok(Self::Int8),
+            other => Err(format!("unknown quant {other:?} (none|int8)")),
+        }
+    }
+}
+
+// Deserialize through `FromStr` for the same layer-parity reasons as
+// `BackendKind`/`Precision` (case-insensitive + aliases, identical errors in
+// YAML, env, and flag form).
+impl<'de> Deserialize<'de> for Quant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Compute backend + device selection.
 ///
 /// `#[serde(default)]` plus the derived `Default` (`{ backend: Ndarray,
@@ -364,6 +415,13 @@ pub struct ComputeConfig {
     /// substantially less activation memory; numerically identical
     /// (recomputation replays the same ops).
     pub grad_checkpointing: bool,
+    /// Frozen-base quantization (#96). `int8` loads the diffusion trainer's
+    /// MMDiT base as per-block symmetric int8 (~1/4 the f32 weight memory);
+    /// `none` (default) keeps the full-precision base. Restricted to
+    /// `(ndarray|cuda, f32)` by the trainer guard — every other combination
+    /// fails loudly.
+    #[serde(default)]
+    pub quant: Quant,
 }
 
 /// Which training objective a run drives (M8, #19).

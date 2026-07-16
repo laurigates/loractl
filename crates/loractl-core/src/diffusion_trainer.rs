@@ -64,19 +64,21 @@
 //! two-armed factory on `model.base`).
 
 use crate::adapters::{LoraAdapters, build_adapters};
-use crate::config::{BackendKind, ModelConfig, ModelVariant, Precision, TaskKind, TrainConfig};
+use crate::config::{
+    BackendKind, ModelConfig, ModelVariant, Precision, Quant, TaskKind, TrainConfig,
+};
 use crate::dataset::prepare_dataset;
 use crate::event::TrainEvent;
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, sample_timesteps, velocity_target};
-use crate::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
-use crate::quant::QuantBackend;
+use crate::mmdit::{BaseLinear, Mmdit, MmditConfig, krea2_positions, patchify};
+use crate::quant::{QuantBackend, quantize_linear_weight};
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
 use crate::qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
 use crate::train::Trainer;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use burn::backend::{Autodiff, NdArray};
-use burn::module::Module;
+use burn::module::{AutodiffModule, Module, Param};
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::{DType, Distribution, Element, ElementConversion, Tensor};
@@ -84,6 +86,7 @@ use burn_store::{
     KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
     TensorSnapshot,
 };
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -194,6 +197,37 @@ impl Trainer for DiffusionTrainer {
         });
         std::fs::create_dir_all(&config.output.dir)
             .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
+
+        // Frozen-base int8 quantization (#96) is validated only on the two
+        // numerically-clean f32 paths — ndarray (the offline/CI path) and cuda
+        // (the real 24 GB run) — because burn's int8 q-ops need those backends
+        // and its non-f32 autodiff is broken on GPU (burn#5162). Gate it here,
+        // BEFORE the backend/precision match below, so the quant-specific
+        // message wins over the more generic ones (e.g. wgpu+int8 says "use
+        // f16", not "wgpu not built"). Every illegal combo fails loudly — never
+        // a silent full-precision or wrong-backend load. Compiled always (a
+        // pure config check), like the rest of this validation.
+        if config.compute.quant == Quant::Int8 {
+            match config.compute.backend {
+                BackendKind::Ndarray | BackendKind::Cuda => {}
+                BackendKind::Wgpu => bail!(
+                    "int8 base quantization is validated on cuda and ndarray; wgpu is untested — \
+                     use compute.precision: f16 for wgpu memory savings"
+                ),
+                BackendKind::Candle | BackendKind::Tch => bail!(
+                    "compute.quant = int8 is not supported on the {:?} backend (no quantized \
+                     matmul q-ops); use ndarray (offline/CI) or cuda (the 24 GB real run)",
+                    config.compute.backend
+                ),
+            }
+            if config.compute.precision != Precision::F32 {
+                bail!(
+                    "quantization dequantizes to f32; set compute.precision to f32 \
+                     (got compute.precision = {:?} with compute.quant = int8)",
+                    config.compute.precision
+                );
+            }
+        }
 
         // Backend validity first, so a misconfigured run fails before the
         // (potentially long) encode phase rather than after it.
@@ -543,6 +577,156 @@ pub fn load_fp8_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
     Ok(module)
 }
 
+/// Load a checkpoint into an **already-[`into_quantized`](Mmdit::into_quantized)**
+/// MMDiT, quantizing each frozen base weight from the file **one tensor at a
+/// time** — the int8 twin of [`load_module`] / [`load_fp8_module`] (PR-B3, #96).
+///
+/// ## Memory discipline (the whole point)
+///
+/// The full f32 MMDiT is ~49 GB; this loader must **never** materialize it. It
+/// receives a module whose `Quant` sites already hold int8 placeholders (the
+/// ~14 GB skeleton) and overwrites every tensor through two lazy, streaming
+/// seams — peak ≈ the int8 skeleton + ONE transient f32 layer weight:
+///
+/// - **Base-linear WEIGHT keys** go through the per-tensor quant pass: force
+///   the file snapshot to a single transient f32 `[d_out, d_in]` tensor,
+///   quantize it to int8, replace the placeholder, drop the f32. The full-model
+///   f32 tensors are never collected together.
+/// - **Everything else** (norms, modulations, first/last/projector, the base
+///   linears' biases, and any site `into_quantized` left `Plain` on an
+///   unaligned `d_in`) flows through the store applier over the SAME lazy
+///   snapshots — one tensor materialized at a time, exactly as
+///   [`load_fp8_module`].
+///
+/// Snapshots are auto-detected scaled-fp8 (dequantized to f32 lazily) or plain
+/// safetensors, then remapped with [`Mmdit::key_remap`].
+///
+/// ## Weight orientation
+///
+/// A PyTorch `Linear` checkpoint weight is `[d_out, d_in]` (file layout) —
+/// exactly what [`quantize_linear_weight`] consumes and what
+/// [`Mmdit::into_quantized`] produces (it transposes burn's stored
+/// `[d_in, d_out]` back to `[d_out, d_in]` before quantizing). So a raw base
+/// weight is quantized **without a transpose** here; only the applier's `Plain`
+/// path applies `PyTorchToBurnAdapter`'s transpose (to reach burn's storage).
+///
+/// ## Completeness (no silent partial load)
+///
+/// Every `Quant` site MUST find its weight in the checkpoint (else bail), the
+/// applier must have no `unused` file tensors and no *genuine* `missing` param.
+/// The applier legitimately reports each `Quant` weight as `missing` — it
+/// visits the QFloat `Param<Tensor>` via `map_float` but its snapshot was
+/// partitioned into the quant pass — so "missing" is filtered against the set
+/// of weights the quant pass actually overwrote; anything left is a real gap.
+fn load_quant_module<B: burn::tensor::backend::Backend>(
+    mut module: Mmdit<B>,
+    path: &Path,
+    remap: &[(&str, &str)],
+    what: &str,
+    device: &B::Device,
+    sink: &mut dyn FnMut(TrainEvent),
+) -> Result<Mmdit<B>> {
+    // 1. Lazy per-tensor snapshots (fp8 auto-detected from the header), remapped
+    //    to module paths. Each materializes its tensor only when forced.
+    let snapshots = if crate::fp8::is_fp8_checkpoint(path)? {
+        crate::fp8::load_fp8_snapshots(path)
+            .with_context(|| format!("loading {what} (scaled fp8) from {}", path.display()))?
+    } else {
+        crate::fp8::load_plain_snapshots(path)
+            .with_context(|| format!("loading {what} from {}", path.display()))?
+    };
+    let remapper = KeyRemapper::from_patterns(remap.to_vec())
+        .unwrap_or_else(|e| panic!("invalid {what} remap patterns: {e}"));
+    let (snapshots, _) = remapper.remap(snapshots);
+    let mut by_key: HashMap<String, TensorSnapshot> =
+        snapshots.into_iter().map(|s| (s.full_path(), s)).collect();
+
+    // 2. Quant pass, ONE tensor at a time: overwrite each Quant site's int8
+    //    weight from the checkpoint. A site left Plain by into_quantized keeps
+    //    its weight key in `by_key` for the applier (step 4).
+    let mut quantized = 0usize;
+    let mut left_plain = 0usize;
+    let mut covered: HashSet<String> = HashSet::new();
+    for (path_key, base) in module.all_base_linears_mut() {
+        let weight_key = format!("{path_key}.weight");
+        match base {
+            BaseLinear::Quant(q) => {
+                let snapshot = by_key.remove(&weight_key).ok_or_else(|| {
+                    anyhow!(
+                        "{what}: quantized base site {path_key} has no {weight_key} in the \
+                         checkpoint {}",
+                        path.display()
+                    )
+                })?;
+                // Force ONE transient f32 [d_out, d_in]; quantize; drop it.
+                let data = snapshot
+                    .to_data()
+                    .map_err(|e| anyhow!("forcing {weight_key} from {}: {e:?}", path.display()))?
+                    .convert_dtype(DType::F32);
+                let w = Tensor::<B, 2>::from_data(data, device);
+                q.weight = Param::from_tensor(quantize_linear_weight(w));
+                quantized += 1;
+                covered.insert(weight_key);
+            }
+            // Unaligned d_in (tiny fixtures only): load the f32 weight via the
+            // applier — leave its key in `by_key`.
+            BaseLinear::Plain(_) => left_plain += 1,
+        }
+    }
+
+    // 3. Loud accounting (review): a surprise misalignment on the real model —
+    //    where every base linear is block-aligned and should quantize — must be
+    //    visible here, not a silent OOM later.
+    sink(TrainEvent::Warning {
+        message: format!(
+            "{what}: int8-quantized {quantized} frozen-base linear sites, {left_plain} left \
+             full-precision (unaligned d_in)"
+        ),
+    });
+
+    // 4. Applier over the REST — norms, modulations, first/last/projector, base
+    //    biases, and any Plain base weight. Same adapter chain as load_module's
+    //    transpose_linears=true / load_fp8_module path; `skip_enum_variants` so
+    //    the BaseLinear enum sites don't inject `Plain`/`Quant` into key paths.
+    let cast = CastFloatsAdapter {
+        target: <B::FloatElem as Element>::dtype(),
+    };
+    let adapter: Box<dyn ModuleAdapter> = Box::new(PyTorchToBurnAdapter.chain(cast));
+    let rest: Vec<TensorSnapshot> = by_key.into_values().collect();
+    let result = module.apply(rest, None, Some(adapter), true);
+
+    if !result.errors.is_empty() {
+        bail!(
+            "{what} load errors from {}: {:?}",
+            path.display(),
+            result.errors
+        );
+    }
+    if !result.unused.is_empty() {
+        bail!(
+            "{what} at {} contains tensors the model does not consume: {:?}",
+            path.display(),
+            result.unused
+        );
+    }
+    // Every quantized Quant weight is expected in `missing` (its QFloat param is
+    // visited but its snapshot went to the quant pass). A GENUINE missing param
+    // is any `missing` entry not covered by the quant pass — no silent gap.
+    let real_missing: Vec<&(String, String)> = result
+        .missing
+        .iter()
+        .filter(|(p, _)| !covered.contains(p))
+        .collect();
+    if !real_missing.is_empty() {
+        bail!(
+            "{what} at {} is missing parameters: {:?}",
+            path.display(),
+            real_missing
+        );
+    }
+    Ok(module)
+}
+
 /// One training job on backend `AB`: re-read the cache [`encode_phase`]
 /// populated, load the MMDiT, and train the injected LoRA.
 ///
@@ -586,33 +770,54 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
     }
 
     // ---- Phase 2: the denoiser + adapters. ----
-    //
-    // Load on the backend's DEFAULT device, then move to the target device.
-    // For ndarray/wgpu the default IS the target (a no-op move); for candle
-    // the default is the CPU, which sidesteps a load-time double allocation
-    // on Metal (the freshly-initialized params plus the store's replacement
-    // tensors peaking at ~2× the ~25 GB model — observed as "Failed to
-    // create metal resource: Buffer"). `to_device` then migrates tensor by
-    // tensor inside unified memory, so peak stays ~one model.
     let denoiser = base.join(denoiser_filename(&config.model));
-    let init = Mmdit::<AB>::init(mmdit_cfg, &AB::Device::default());
-    // Scaled-fp8 repacks are auto-detected from the file header, never from
-    // the variant or the filename — a bf16 official checkpoint and a local
-    // fp8 repack both route to the right loader under any name.
-    let mmdit = if crate::fp8::is_fp8_checkpoint(&denoiser)? {
-        load_fp8_module(init, &denoiser, &Mmdit::<AB>::key_remap(), "MMDiT")?
-    } else {
-        load_module(
-            init,
+    let mmdit = if config.compute.quant == Quant::Int8 {
+        // int8 frozen base (#96). Build + load + quantize on the NON-autodiff
+        // INNER backend, at the TARGET device directly — NOT default+to_device:
+        // a lifted QFloat module cannot `.to_device()` (`Autodiff::q_to_device`
+        // is unimplemented), and `into_quantized` requires a non-autodiff
+        // backend (burn 0.21's `Autodiff::quantize_dynamic` is `todo!()`).
+        // `load_quant_module` streams the checkpoint into the int8 skeleton one
+        // tensor at a time (never the ~49 GB f32 model); `from_inner` then lifts
+        // it into the autodiff backend the training loop steps.
+        let inner = Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized(&device);
+        let inner = load_quant_module(
+            inner,
             &denoiser,
-            &Mmdit::<AB>::key_remap(),
-            true,
-            None,
+            &Mmdit::<AB::InnerBackend>::key_remap(),
             "MMDiT",
-        )?
-    }
-    .to_device(&device)
-    .no_grad();
+            &device,
+            sink,
+        )?;
+        <Mmdit<AB> as AutodiffModule<AB>>::from_inner(inner).no_grad()
+    } else {
+        // Non-quant path (unchanged): load on the backend's DEFAULT device, then
+        // move to the target device. For ndarray/wgpu the default IS the target
+        // (a no-op move); for candle the default is the CPU, which sidesteps a
+        // load-time double allocation on Metal (the freshly-initialized params
+        // plus the store's replacement tensors peaking at ~2× the ~25 GB model —
+        // observed as "Failed to create metal resource: Buffer"). `to_device`
+        // then migrates tensor by tensor inside unified memory, so peak stays
+        // ~one model.
+        let init = Mmdit::<AB>::init(mmdit_cfg, &AB::Device::default());
+        // Scaled-fp8 repacks are auto-detected from the file header, never from
+        // the variant or the filename — a bf16 official checkpoint and a local
+        // fp8 repack both route to the right loader under any name.
+        if crate::fp8::is_fp8_checkpoint(&denoiser)? {
+            load_fp8_module(init, &denoiser, &Mmdit::<AB>::key_remap(), "MMDiT")?
+        } else {
+            load_module(
+                init,
+                &denoiser,
+                &Mmdit::<AB>::key_remap(),
+                true,
+                None,
+                "MMDiT",
+            )?
+        }
+        .to_device(&device)
+        .no_grad()
+    };
 
     let sites = mmdit.injectable_sites();
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);

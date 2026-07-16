@@ -88,9 +88,15 @@ wgpu f16 + grad checkpointing (`config/examples/krea2-lora.yaml`) fits the
 48 GiB Metal host but burn's GPU autodiff is broken (burn#5162, all
 platforms); **cuda f32 is numerically clean and wired into
 `DiffusionTrainer` (f32-only), but full-depth f32 (~49 GB) exceeds the
-24 GB RTX 4090 host — the int8 frozen-base quantization (#24's follow-up)
-is the practical route.** Strategy and gap analysis:
-[ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+24 GB RTX 4090 host — the `compute.quant: int8` frozen-base quantization
+(#96, the #24 follow-up) is the practical route.** That knob has now
+landed (offline-validated): the diffusion trainer's ~12.8B MMDiT base loads
+as per-block symmetric int8 (`src/quant.rs`, `BaseLinear::Quant`) while the
+LoRA adapters train in f32 (QLoRA), streamed one layer at a time so the
+~49 GB f32 model is never materialized; restricted to `(ndarray|cuda, f32)`
+by the trainer guard (wgpu untested, non-f32 rejected — burn#5162). On-box
+memory on the 24 GB card is the remaining #96 checkbox (PR-B4). Strategy and
+gap analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 ## Commands
 

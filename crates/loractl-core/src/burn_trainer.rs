@@ -64,7 +64,7 @@
 //! through the `&mut dyn FnMut(TrainEvent)` sink.
 
 use crate::adapter;
-use crate::config::{BackendKind, FlowConfig, Precision, TaskKind, TrainConfig};
+use crate::config::{BackendKind, FlowConfig, Precision, Quant, TaskKind, TrainConfig};
 use crate::event::TrainEvent;
 use crate::flow;
 use crate::model::LoraMlp;
@@ -150,6 +150,17 @@ impl Trainer for BurnTrainer {
                  the flow-matching task trains a velocity net with no classifier sample path; \
                  set output.sample_every to 0",
                 config.output.sample_every
+            );
+        }
+        // Frozen-base int8 quantization (#96) applies only to the diffusion
+        // trainer's ~12.8B MMDiT base — the synthetic/MNIST LoRA-MLP here has
+        // no frozen base worth quantizing. Fail loudly rather than silently
+        // ignore the knob.
+        if config.compute.quant != Quant::None {
+            anyhow::bail!(
+                "compute.quant = {:?} applies to the diffusion trainer's frozen base, not the \
+                 synthetic/MNIST trainer; set compute.quant to none",
+                config.compute.quant
             );
         }
 
