@@ -12,6 +12,9 @@
 //! - `GET /runs/{id}/events` — SSE stream: full replay from event 0, then
 //!   live tail until the run's terminal event (`finished` or `failed`).
 //!
+//! Both sit behind an optional bearer-token gate (`LORACTL_API_TOKEN`, #62);
+//! unset, the API is open and loopback-only binding is enforced.
+//!
 //! The wire contract (event shapes, SSE framing, lifecycle rules) is
 //! documented for GUI authors in `docs/api/events.md`; the core event shapes
 //! are pinned byte-for-byte by `loractl-core/tests/event_json.rs`.
@@ -82,6 +85,20 @@ pub struct ApiConfig {
     ///
     /// Env: `LORACTL_MAX_CONCURRENT_RUNS` (default 4).
     pub max_concurrent_runs: usize,
+
+    /// Optional bearer token gating **every** endpoint (#62).
+    ///
+    /// `None` (the env var unset) leaves the API open — the zero-config
+    /// localhost dev loop, unchanged. `Some` requires each request to carry
+    /// `Authorization: Bearer <token>`; a missing, malformed, or mismatched
+    /// value is `401`. The token compare is constant-time, and the read side
+    /// (`GET /runs/{id}/events`) is gated too — events carry run configuration
+    /// and resolved output paths.
+    ///
+    /// Env: `LORACTL_API_TOKEN` (unset by default). Present-but-empty is a
+    /// hard startup error, never "auth off": an operator who set the variable
+    /// believes auth is in force.
+    pub api_token: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -90,6 +107,7 @@ impl Default for ApiConfig {
             run_retention: DEFAULT_RUN_RETENTION,
             output_base: PathBuf::from(DEFAULT_OUTPUT_BASE),
             max_concurrent_runs: DEFAULT_MAX_CONCURRENT_RUNS,
+            api_token: None,
         }
     }
 }
@@ -114,8 +132,45 @@ impl ApiConfig {
                 "LORACTL_MAX_CONCURRENT_RUNS",
                 DEFAULT_MAX_CONCURRENT_RUNS,
             )?,
+            api_token: parse_api_token(std::env::var("LORACTL_API_TOKEN"))?,
         })
     }
+}
+
+/// Interprets the raw `LORACTL_API_TOKEN` read: unset → auth off, a value →
+/// the token, present-but-empty → a hard error (same "never a silent
+/// fallback" stance as [`env_usize`]). Split from the env read so the
+/// decision table is unit-testable without touching process state.
+fn parse_api_token(raw: Result<String, std::env::VarError>) -> anyhow::Result<Option<String>> {
+    match raw {
+        Ok(token) if token.is_empty() => anyhow::bail!(
+            "LORACTL_API_TOKEN is set but empty — set a real token, or unset it to disable auth"
+        ),
+        Ok(token) => Ok(Some(token)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(anyhow::Error::new(e).context("reading LORACTL_API_TOKEN")),
+    }
+}
+
+/// Refuses to run an **unauthenticated** server on a non-loopback address
+/// (#62): with no token configured, reachability is the only guard, so
+/// loopback-only is enforced rather than assumed.
+///
+/// `main` calls this with the *actually bound* IP (`listener.local_addr()`),
+/// not the configured string — ground truth, immune to hostname-resolution
+/// surprises. IPv4-mapped IPv6 addresses are canonicalized first so
+/// `::ffff:127.0.0.1` counts as loopback.
+pub fn enforce_loopback_or_token(
+    bind_ip: std::net::IpAddr,
+    token_configured: bool,
+) -> anyhow::Result<()> {
+    if token_configured || bind_ip.to_canonical().is_loopback() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to serve without authentication on non-loopback address {bind_ip}: \
+         set LORACTL_API_TOKEN, or bind LORACTL_API_ADDR to a loopback address"
+    )
 }
 
 /// Reads a `usize` from `key`, or `default` when the var is unset.
@@ -139,4 +194,39 @@ pub fn app(factory: TrainerFactory, config: ApiConfig) -> anyhow::Result<Router>
     Ok(routes::router(Arc::new(state::AppState::new(
         factory, config,
     )?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_api_token;
+    use std::env::VarError;
+
+    #[test]
+    fn api_token_unset_means_auth_off() {
+        assert_eq!(parse_api_token(Err(VarError::NotPresent)).unwrap(), None);
+    }
+
+    #[test]
+    fn api_token_value_enables_auth() {
+        assert_eq!(
+            parse_api_token(Ok("s3cret".into())).unwrap(),
+            Some("s3cret".into())
+        );
+    }
+
+    #[test]
+    fn api_token_empty_is_a_hard_error_not_auth_off() {
+        let err = parse_api_token(Ok(String::new())).unwrap_err();
+        assert!(
+            err.to_string().contains("empty"),
+            "the error must say why it refused, got: {err}"
+        );
+    }
+
+    #[test]
+    fn api_token_non_unicode_is_a_hard_error() {
+        let raw = Err(VarError::NotUnicode("\u{fffd}".into()));
+        let err = parse_api_token(raw).unwrap_err();
+        assert!(err.to_string().contains("LORACTL_API_TOKEN"));
+    }
 }

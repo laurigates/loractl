@@ -245,11 +245,13 @@ SSE instead of a progress bar:
 - `GET /runs/{id}/events` — SSE stream: full replay from event 0, then live
   tail, ending with exactly one terminal event (`finished` or `failed`).
 
-`POST /runs` is **unauthenticated** — the default localhost bind is what makes
-that safe, so treat these guards as load-bearing if you ever change it:
+The API is **unauthenticated by default** — the default localhost bind is what
+makes that safe, and it is enforced: a non-loopback bind refuses to start
+unless a token is configured. The guards:
 
 | Env var | Default | Guard |
 |---|---|---|
+| `LORACTL_API_TOKEN` | unset (no auth) | When set, every request must carry `Authorization: Bearer <token>` (constant-time compare); otherwise `401`. Required to bind beyond loopback. |
 | `LORACTL_OUTPUT_BASE` | `./runs` | A request's `output.dir`/`output.name` are confined under this base; absolute paths, `..`, and symlink escapes are a `400`. |
 | `LORACTL_MAX_CONCURRENT_RUNS` | `4` | Simultaneous runs; `POST /runs` returns `429` while saturated. |
 | `LORACTL_RUN_RETENTION` | `32` | Completed runs kept in memory; older ones are evicted and their events become a `404`. In-flight runs are never evicted. |

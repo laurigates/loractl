@@ -1202,3 +1202,285 @@ async fn saturated_concurrency_cap_returns_429() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+// ---------------------------------------------------------------------------
+// Bearer-token auth (#62)
+// ---------------------------------------------------------------------------
+
+/// The configured token in every auth test. Deliberately contains a space's
+/// worth of neighbors (dashes) but no whitespace: the header grammar is
+/// `Bearer <token>` split on the first space.
+const TEST_TOKEN: &str = "s3cret-loractl-token";
+
+/// The exact 401 body — a golden, like the 404's. One message for missing,
+/// malformed, and wrong credentials: the response must not reveal how close
+/// the caller got.
+const UNAUTHORIZED_BODY: &str = r#"{"error":"missing or invalid bearer token"}"#;
+
+/// An app whose every endpoint requires `Authorization: Bearer TEST_TOKEN`.
+fn app_with_auth(base: &std::path::Path) -> Router {
+    let factory: TrainerFactory = Arc::new(|_| Box::new(MockTrainer));
+    loractl_api::app(
+        factory,
+        ApiConfig {
+            api_token: Some(TEST_TOKEN.to_string()),
+            ..config_for(base)
+        },
+    )
+    .expect("app builds")
+}
+
+/// `POST /runs` carrying an arbitrary `Authorization` header value.
+fn post_runs_authed(body: String, authorization: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/runs")
+        .header("content-type", "application/json")
+        .header("authorization", authorization)
+        .body(Body::from(body))
+        .expect("valid request")
+}
+
+/// `GET /runs/{id}/events` carrying an arbitrary `Authorization` header value.
+fn get_events_authed(id: u64, authorization: &str) -> Request<Body> {
+    Request::builder()
+        .uri(format!("/runs/{id}/events"))
+        .header("authorization", authorization)
+        .body(Body::empty())
+        .expect("valid request")
+}
+
+/// #62 AC: with a token configured, a request with no `Authorization` header
+/// is `401` on BOTH endpoints — and the rejected POST registers nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_token_is_401_on_both_endpoints() {
+    let base = test_base("auth-missing");
+    let app = app_with_auth(&base);
+
+    // POST without credentials: 401, the golden JSON body, and the
+    // WWW-Authenticate challenge RFC 6750 requires.
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()["www-authenticate"].to_str().unwrap(),
+        "Bearer"
+    );
+    assert_eq!(body_string(response.into_body()).await, UNAUTHORIZED_BODY);
+
+    // GET without credentials: same 401 — events carry run config and
+    // resolved output paths, so the read side is gated too.
+    let response = app.clone().oneshot(get_events(1)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body_string(response.into_body()).await, UNAUTHORIZED_BODY);
+
+    // The rejected POST left no run behind: an authenticated probe of id 1
+    // is a 404 (never issued), not a 200 — and this also proves the correct
+    // token passes the gate.
+    let response = app
+        .oneshot(get_events_authed(1, &format!("Bearer {TEST_TOKEN}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// #62 AC: wrong or malformed credentials are `401` — wrong token, prefix,
+/// extension, wrong scheme, scheme-only, bare token. None of them burn an id.
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_or_malformed_credentials_are_401() {
+    let base = test_base("auth-wrong");
+    let app = app_with_auth(&base);
+
+    let truncated = &TEST_TOKEN[..TEST_TOKEN.len() - 1];
+    let bad = [
+        "Bearer wrong-token".to_string(),
+        format!("Bearer {truncated}"),   // prefix of the real token
+        format!("Bearer {TEST_TOKEN}x"), // real token extended
+        format!("Bearer  {TEST_TOKEN}"), // doubled separator
+        format!("bearer{TEST_TOKEN}"),   // no separator at all
+        format!("Basic {TEST_TOKEN}"),   // wrong scheme
+        "Bearer".to_string(),            // scheme, no token
+        "Bearer ".to_string(),           // scheme, empty token
+        TEST_TOKEN.to_string(),          // bare token, no scheme
+    ];
+    for authorization in &bad {
+        let response = app
+            .clone()
+            .oneshot(post_runs_authed(
+                config_json(RUN_DIR, 1, 1).to_string(),
+                authorization,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "must reject Authorization: {authorization:?}"
+        );
+        assert_eq!(body_string(response.into_body()).await, UNAUTHORIZED_BODY);
+
+        let response = app
+            .clone()
+            .oneshot(get_events_authed(1, authorization))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "events endpoint must reject Authorization: {authorization:?}"
+        );
+    }
+
+    // No rejected request burned an id: the first authenticated run is id 1.
+    let response = app
+        .oneshot(post_runs_authed(
+            config_json(RUN_DIR, 1, 1).to_string(),
+            &format!("Bearer {TEST_TOKEN}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_string(response.into_body()).await;
+    assert_eq!(body, r#"{"id":1,"events_url":"/runs/1/events"}"#);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// #62 AC: the correct token proceeds end-to-end — the run trains and its
+/// stream drains to `finished` through the same gate.
+#[tokio::test(flavor = "multi_thread")]
+async fn correct_token_runs_end_to_end() {
+    let base = test_base("auth-ok");
+    let app = app_with_auth(&base);
+
+    let response = app
+        .clone()
+        .oneshot(post_runs_authed(
+            config_json(RUN_DIR, 2, 100).to_string(),
+            &format!("Bearer {TEST_TOKEN}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app
+        .oneshot(get_events_authed(1, &format!("Bearer {TEST_TOKEN}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = parse_sse(&body_string(response.into_body()).await);
+    assert_eq!(types(&events).first().map(String::as_str), Some("started"));
+    assert_eq!(types(&events).last().map(String::as_str), Some("finished"));
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The auth *scheme* is case-insensitive (RFC 9110 §11.1); the token is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn bearer_scheme_is_case_insensitive_but_token_is_not() {
+    let base = test_base("auth-case");
+    let app = app_with_auth(&base);
+
+    for scheme in ["bearer", "BEARER", "BeArEr"] {
+        let response = app
+            .clone()
+            .oneshot(post_runs_authed(
+                config_json(RUN_DIR, 1, 1).to_string(),
+                &format!("{scheme} {TEST_TOKEN}"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "scheme {scheme:?} must be accepted"
+        );
+    }
+
+    let response = app
+        .oneshot(post_runs_authed(
+            config_json(RUN_DIR, 1, 1).to_string(),
+            &format!("Bearer {}", TEST_TOKEN.to_uppercase()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the token itself is case-sensitive"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// #62 AC: with NO token configured, nothing changes — the endpoints stay
+/// open and an `Authorization` header, present or garbage, is ignored.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_token_configured_leaves_the_api_open() {
+    let base = test_base("auth-off");
+    let app = mock_app(&base); // ApiConfig::default(): api_token = None
+
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 1).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // A stray Authorization header on an auth-less server is not an error.
+    let response = app
+        .oneshot(post_runs_authed(
+            config_json(RUN_DIR, 1, 1).to_string(),
+            "Bearer whatever",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// #62 (the enforced-invariant half): an unauthenticated server may only
+/// bind loopback. The check runs against the *actually bound* IP in `main`;
+/// this pins the pure decision function it delegates to.
+#[test]
+fn unauthenticated_server_requires_loopback_bind() {
+    use loractl_api::enforce_loopback_or_token;
+    use std::net::IpAddr;
+
+    let loopbacks: [IpAddr; 3] = [
+        "127.0.0.1".parse().unwrap(),
+        "::1".parse().unwrap(),
+        // IPv4-mapped loopback: what a dual-stack `::` listener reports for a
+        // 127.0.0.1 client-side bind — canonicalized before the check.
+        "::ffff:127.0.0.1".parse().unwrap(),
+    ];
+    for ip in loopbacks {
+        assert!(
+            enforce_loopback_or_token(ip, false).is_ok(),
+            "loopback {ip} must not require a token"
+        );
+    }
+
+    let public: [IpAddr; 4] = [
+        "0.0.0.0".parse().unwrap(),
+        "::".parse().unwrap(),
+        "192.168.1.10".parse().unwrap(),
+        "2001:db8::1".parse().unwrap(),
+    ];
+    for ip in public {
+        let err = enforce_loopback_or_token(ip, false)
+            .expect_err("non-loopback without a token must refuse to serve");
+        assert!(
+            err.to_string().contains("LORACTL_API_TOKEN"),
+            "the refusal must name the fix, got: {err}"
+        );
+        // The same bind with a token configured is fine.
+        assert!(enforce_loopback_or_token(ip, true).is_ok());
+    }
+}
