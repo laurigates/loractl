@@ -221,6 +221,12 @@ test-cuda:
 run-cuda config="config/examples/lora.yaml":
     cargo run --release -p loractl-cli --features cuda -- train {{config}} --backend cuda
 
+# On-box int8 validation (#96): load a real Krea-2 denoiser as int8 at full
+# krea2() depth on cuda and report coverage, resident VRAM, and real-weight
+# dequant error. Linux+NVIDIA + a 24 GB GPU; needs the multi-GB checkpoint.
+quant-probe denoiser:
+    cargo run --release -p loractl-core --features cuda --example quant_probe -- {{denoiser}}
+
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.
 run-wgpu config="config/examples/lora-wgpu.yaml":

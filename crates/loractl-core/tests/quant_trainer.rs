@@ -371,3 +371,59 @@ fn tiny_krea2_fp8_checkpoint_int8_requant_trains_e2e() {
     let keys = kohya_keys(&adapter);
     assert_eq!(keys.len(), 42, "unexpected fp8→int8 export keys: {keys:?}");
 }
+
+// ---------------------------------------------------------------------------
+// 4. cuda + int8 on real hardware — the quantized training path on the GPU.
+// ---------------------------------------------------------------------------
+
+/// The full quantized diffusion stack on real cuda hardware (`cuda + f32 +
+/// int8`) — the exact production configuration for the #25 real run, exercised
+/// on the tiny bundle so it needs no multi-GB weights. Distinct from the
+/// ndarray e2e (which proves correctness) and the `quant_probe` example (which
+/// proves the real model's memory fit): this proves the quantized *training*
+/// path — the custom autodiff op, the streaming load, the kohya export — runs
+/// on the cuda backend. Compiled only under the cuda feature; run via
+/// `just test-cuda`.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires an NVIDIA GPU (CUDA toolkit at build time); run via `just test-cuda`"]
+fn tiny_krea2_cuda_int8_trains_e2e() {
+    const STEPS: u64 = 12;
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("quant-cuda-int8");
+    let dataset = staged_dataset(&out);
+
+    let mut cfg = config(&out, dataset, STEPS);
+    cfg.compute.backend = BackendKind::Cuda; // cuda + f32 (default precision) + int8
+    cfg.compute.quant = Quant::Int8;
+
+    let mut losses = Vec::new();
+    let mut finished = None;
+    let mut quant_accounting = None;
+    let adapter = DiffusionTrainer
+        .train(&cfg, &mut |event| match event {
+            TrainEvent::Step { loss, .. } => losses.push(loss),
+            TrainEvent::Finished { adapter_path } => finished = Some(adapter_path),
+            TrainEvent::Warning { message } if message.contains("int8-quantized") => {
+                quant_accounting = Some(message)
+            }
+            _ => {}
+        })
+        .expect("the cuda int8 tiny Krea 2 run completes");
+
+    assert_eq!(losses.len() as u64, STEPS, "one Step per step");
+    assert!(
+        losses.iter().all(|l| l.is_finite()),
+        "non-finite loss on cuda int8: {losses:?}"
+    );
+    assert!(
+        quant_accounting
+            .as_deref()
+            .is_some_and(|m| m.contains("int8-quantized 52 frozen-base linear sites")),
+        "cuda int8 quant accounting missing/unexpected: {quant_accounting:?}"
+    );
+    let keys = kohya_keys(&finished.unwrap_or(adapter));
+    assert_eq!(keys.len(), 42, "unexpected cuda int8 export keys: {keys:?}");
+}

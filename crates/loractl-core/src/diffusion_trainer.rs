@@ -618,7 +618,11 @@ pub fn load_fp8_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
 /// visits the QFloat `Param<Tensor>` via `map_float` but its snapshot was
 /// partitioned into the quant pass — so "missing" is filtered against the set
 /// of weights the quant pass actually overwrote; anything left is a real gap.
-fn load_quant_module<B: burn::tensor::backend::Backend>(
+// `pub` so the on-box memory/quality probe (`examples/quant_probe.rs`) loads the
+// real base through the EXACT path the trainer uses — the VRAM and dequant-error
+// numbers it reports then describe production behavior, not a replica that could
+// drift. Not part of the crate's stable surface; it moves with the trainer.
+pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     mut module: Mmdit<B>,
     path: &Path,
     remap: &[(&str, &str)],
