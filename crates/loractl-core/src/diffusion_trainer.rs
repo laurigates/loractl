@@ -93,6 +93,7 @@ use burn_store::{
     KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
     TensorSnapshot,
 };
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -498,14 +499,29 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
         },
         |caption| {
             if conditioner.is_none() {
-                let encoder = load_module(
-                    Qwen3VlEncoder::<B>::init(enc_cfg.clone(), &device),
-                    &text_encoder_path(&config.model, &base),
-                    &[],
-                    true,
-                    Some(Qwen3VlEncoder::<B>::load_filter()),
-                    "text encoder",
-                )?
+                // A ComfyUI text-encoder repack (F8_E4M3 text weights, `model.*`
+                // keys, a bundled vision tower) is auto-detected from the file
+                // header and routed through the fp8 snapshot loader with the
+                // model.→language_model. remap + vision-tower filter; a stock HF
+                // `text_encoder/model.safetensors` (bf16/f32, `language_model.*`
+                // keys) still takes the unchanged burn-store path.
+                let enc_path = text_encoder_path(&config.model, &base);
+                let encoder = if crate::fp8::is_fp8_checkpoint(&enc_path)? {
+                    load_fp8_encoder(
+                        Qwen3VlEncoder::<B>::init(enc_cfg.clone(), &device),
+                        &enc_path,
+                        "text encoder",
+                    )?
+                } else {
+                    load_module(
+                        Qwen3VlEncoder::<B>::init(enc_cfg.clone(), &device),
+                        &enc_path,
+                        &[],
+                        true,
+                        Some(Qwen3VlEncoder::<B>::load_filter()),
+                        "text encoder",
+                    )?
+                }
                 .no_grad();
                 conditioner = Some(Qwen3VlConditioner::new(
                     encoder,
@@ -701,6 +717,94 @@ pub fn load_fp8_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
         );
     }
     Ok(module)
+}
+
+/// The ComfyUI-repack key remap for the Qwen3-VL text encoder: HF-Qwen naming
+/// (`model.*`) → loractl's `language_model.*` module tree. `visual.*` keys do
+/// not start with `model.`, so this leaves them untouched — the load filter
+/// then drops them.
+const COMFY_ENCODER_REMAP: [(&str, &str); 1] = [(r"^model\.", "language_model.")];
+
+/// Load a **ComfyUI-fp8-packed** Qwen3-VL text encoder — the fp8 twin of
+/// [`load_module`]'s filtered encoder arm (the ComfyUI-scattered-file arc,
+/// Phase 3). A scattered ComfyUI
+/// `models/text_encoders/qwen/qwen3vl_*_fp8_scaled.safetensors` poses three
+/// blockers a stock HF `text_encoder/model.safetensors` does not, each dodged
+/// here:
+///
+/// 1. **Key prefix.** ComfyUI ships HF-Qwen naming (`model.layers.N.…`,
+///    `model.embed_tokens.weight`, `model.norm.weight`) where loractl's tree
+///    is keyed `language_model.*`; [`COMFY_ENCODER_REMAP`] rewrites the
+///    prefix. (The stock Krea-2-Raw checkpoint is already `language_model.*`,
+///    so the non-fp8 path needs no remap.)
+/// 2. **fp8 dtype.** The text projections are `F8_E4M3` + `weight_scale`
+///    sidecars, which burn-store 0.21 cannot load (it errors on the dtype
+///    before any adapter runs). So the snapshots come from
+///    [`crate::fp8::load_fp8_snapshots`] — the same LUT-dequant source the
+///    denoiser uses — which pairs the scalar `weight_scale`s and drops the
+///    `.comfy_quant`/`.input_scale` inference markers. `fp8.rs` needs no
+///    change.
+/// 3. **Vision tower.** The file bundles ~315 `visual.*` keys plus the dead
+///    post-`max(select_layers)` decoder layers and final `norm`, none of
+///    which the text-only encoder consumes. After the remap the snapshots are
+///    pre-filtered to [`Qwen3VlEncoder::load_filter`] (`^language_model\.`),
+///    dropping every `visual.*` key BEFORE the applier — so the vision tower
+///    never reaches `unused`. The dead `language_model.*` tensors that survive
+///    the filter DO land in `unused`, which — exactly like [`load_module`]'s
+///    filtered arm, and unlike [`load_fp8_module`] — is tolerated. Genuine
+///    `missing`/`errors` still bail.
+///
+/// The adapter chain (PyTorch `[out, in]` linear transpose → cast to the
+/// backend float dtype) is [`load_module`]'s `transpose_linears = true` path
+/// verbatim, so an fp8 repack and a stock bf16 checkpoint land byte-equivalent
+/// params.
+pub fn load_fp8_encoder<B: burn::tensor::backend::Backend>(
+    mut encoder: Qwen3VlEncoder<B>,
+    path: &Path,
+    what: &str,
+) -> Result<Qwen3VlEncoder<B>> {
+    let snapshots = crate::fp8::load_fp8_snapshots(path)
+        .with_context(|| format!("loading {what} (scaled fp8) from {}", path.display()))?;
+    let remapper = KeyRemapper::from_patterns(COMFY_ENCODER_REMAP.to_vec())
+        .unwrap_or_else(|e| panic!("invalid {what} remap patterns: {e}"));
+    let (snapshots, _) = remapper.remap(snapshots);
+    // Pre-filter to the text trunk BEFORE the applier: drop every `visual.*`
+    // key so the vision tower never reaches `unused`. The dead post-select
+    // layers + final `norm` survive as `language_model.*` and are tolerated
+    // below (as in load_module's filtered arm).
+    let filter = Regex::new(Qwen3VlEncoder::<B>::load_filter())
+        .expect("the encoder load filter is a valid regex");
+    let snapshots: Vec<TensorSnapshot> = snapshots
+        .into_iter()
+        .filter(|s| filter.is_match(&s.full_path()))
+        .collect();
+    // Same adapter chain as load_module's transpose_linears=true / the fp8
+    // denoiser path: the encoder's projections are genuine PyTorch nn.Linear.
+    let cast = CastFloatsAdapter {
+        target: <B::FloatElem as Element>::dtype(),
+    };
+    let adapter: Box<dyn ModuleAdapter> = Box::new(PyTorchToBurnAdapter.chain(cast));
+    // `skip_enum_variants = true` is inert (the encoder tree has no enum sites)
+    // but matches every other load path in this module.
+    let result = encoder.apply(snapshots, None, Some(adapter), true);
+    if !result.errors.is_empty() {
+        bail!(
+            "{what} load errors from {}: {:?}",
+            path.display(),
+            result.errors
+        );
+    }
+    if !result.missing.is_empty() {
+        bail!(
+            "{what} at {} is missing parameters: {:?}",
+            path.display(),
+            result.missing
+        );
+    }
+    // `unused` is deliberately NOT checked: the vision tower is dropped by the
+    // filter above, and the dead `language_model.norm`/post-select-layer
+    // tensors are the encoder's expected leftovers.
+    Ok(encoder)
 }
 
 /// Load a checkpoint into an **already-[`into_quantized`](Mmdit::into_quantized)**
