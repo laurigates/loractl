@@ -230,6 +230,10 @@ run-wgpu config="config/examples/lora-wgpu.yaml":
 reference:
     uv run reference/lora_reference.py > crates/loractl-core/tests/golden/lora_toy.json
 
+# Regenerate the per-block int8 quantization golden (#96; torch via uv, no network).
+quant-reference:
+    uv run reference/quant_reference.py
+
 # Regenerate the BurnTrainer step-loss golden (#49 H9; needs torch via uv).
 #
 # Two-stage, unlike the other references: burn's frozen base, LoRA `A` init, and
