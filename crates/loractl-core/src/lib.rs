@@ -77,6 +77,7 @@ pub mod gpt2;
 pub mod lora;
 pub mod mmdit;
 pub mod model;
+pub mod quant;
 pub mod qwen3vl;
 pub mod qwen_vae;
 pub mod sample;
