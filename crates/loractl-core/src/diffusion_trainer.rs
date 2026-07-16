@@ -70,6 +70,7 @@ use crate::event::TrainEvent;
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, sample_timesteps, velocity_target};
 use crate::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
+use crate::quant::QuantBackend;
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
 use crate::qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
 use crate::train::Trainer;
@@ -438,7 +439,15 @@ fn load_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
 ) -> Result<M> {
     let remapper = KeyRemapper::from_patterns(remap.to_vec())
         .unwrap_or_else(|e| panic!("invalid {what} remap patterns: {e}"));
-    let mut store = SafetensorsStore::from_file(path).remap(remapper);
+    // Skip enum-variant path segments: `Mmdit`'s `BaseLinear` sites are an
+    // enum in the module tree, and burn-store would otherwise inject the
+    // active variant name (`Plain`/`Quant`) into every key path
+    // (`blocks.0.attn.wq.Plain.weight`), so the checkpoint's
+    // `blocks.0.attn.wq.weight` would not match. Inert for enum-free modules
+    // (the VAE/text encoder) — they contain no `Enum:` container.
+    let mut store = SafetensorsStore::from_file(path)
+        .remap(remapper)
+        .skip_enum_variants(true);
     if let Some(pattern) = filter {
         store = store.with_regex(pattern).allow_partial(true);
     }
@@ -506,7 +515,9 @@ pub fn load_fp8_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
         target: <B::FloatElem as Element>::dtype(),
     };
     let adapter: Box<dyn ModuleAdapter> = Box::new(PyTorchToBurnAdapter.chain(cast));
-    let result = module.apply(snapshots, None, Some(adapter), false);
+    // `skip_enum_variants = true`: `Mmdit`'s `BaseLinear` enum sites must not
+    // inject a variant name into key paths — see [`load_module`].
+    let result = module.apply(snapshots, None, Some(adapter), true);
     if !result.errors.is_empty() {
         bail!(
             "{what} load errors from {}: {:?}",
@@ -534,7 +545,12 @@ pub fn load_fp8_module<B: burn::tensor::backend::Backend, M: ModuleSnapshot<B>>(
 
 /// One training job on backend `AB`: re-read the cache [`encode_phase`]
 /// populated, load the MMDiT, and train the injected LoRA.
-fn run_diffusion<AB: AutodiffBackend>(
+///
+/// `AB: QuantBackend` so the MMDiT forward can route through
+/// [`BaseLinear`](crate::mmdit::BaseLinear) sites; every backend
+/// [`dispatch_checkpointing`] instantiates satisfies it via the blanket
+/// `Autodiff<B, C>: QuantBackend` impl.
+fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
     config: &TrainConfig,
     device: AB::Device,
     sink: &mut dyn FnMut(TrainEvent),

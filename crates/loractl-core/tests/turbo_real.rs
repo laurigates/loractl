@@ -84,7 +84,9 @@ fn turbo_fp8_real_truncated_load_and_forward() {
         target: <<B as BackendTypes>::FloatElem as Element>::dtype(),
     };
     let adapter: Box<dyn ModuleAdapter> = Box::new(PyTorchToBurnAdapter.chain(cast));
-    let result = model.apply(retained, None, Some(adapter), false);
+    // skip_enum_variants=true: `Mmdit`'s `BaseLinear` enum sites (matches
+    // `load_fp8_module`).
+    let result = model.apply(retained, None, Some(adapter), true);
 
     assert!(
         result.errors.is_empty(),

@@ -130,8 +130,11 @@ fn load_tiny<Bk: burn::tensor::backend::Backend>(expected_tensors: usize) -> Mmd
     // Sequential-index + `mod`-keyword renames, then the nn.Linear transpose.
     let remapper = KeyRemapper::from_patterns(Mmdit::<Bk>::key_remap().to_vec())
         .expect("valid remap patterns");
+    // `BaseLinear` is an enum in the module tree; skip its variant name in
+    // key paths so `blocks.0.attn.wq.weight` matches (not `…wq.Plain.weight`).
     let mut store = SafetensorsStore::from_file(SAFETENSORS)
         .remap(remapper)
+        .skip_enum_variants(true)
         .with_from_adapter(PyTorchToBurnAdapter);
     let result = model.load_from(&mut store).expect("safetensors load");
 
@@ -357,9 +360,18 @@ fn lora_attach_one_step_on_loaded_mmdit() {
     }
     // ...and the frozen base gets nothing (spot checks across site kinds).
     let block = &model.blocks[0];
-    assert!(block.attn.wq.weight.val().grad(&grads).is_none());
-    assert!(block.attn.wo.weight.val().grad(&grads).is_none());
-    assert!(block.mlp.down.weight.val().grad(&grads).is_none());
+    assert!(block.attn.wq.as_plain().weight.val().grad(&grads).is_none());
+    assert!(block.attn.wo.as_plain().weight.val().grad(&grads).is_none());
+    assert!(
+        block
+            .mlp
+            .down
+            .as_plain()
+            .weight
+            .val()
+            .grad(&grads)
+            .is_none()
+    );
 
     let mut optim = AdamConfig::new().init::<AB, LoraAdapters<AB>>();
     let grad_params = GradientsParams::from_grads(grads, &set);

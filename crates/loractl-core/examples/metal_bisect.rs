@@ -62,6 +62,7 @@ mod run {
     use loractl_core::adapters::build_adapters;
     use loractl_core::config::{LoraConfig, TargetSpec};
     use loractl_core::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
+    use loractl_core::quant::QuantBackend;
     use std::path::{Path, PathBuf};
 
     fn det_vals(n: usize, seed: u32) -> Vec<f32> {
@@ -137,7 +138,7 @@ mod run {
     }
 
     /// Random-init forward+backward on one backend; no file I/O at all.
-    fn no_load_step<AB: AutodiffBackend>(label: &str) -> Result<()> {
+    fn no_load_step<AB: AutodiffBackend + QuantBackend>(label: &str) -> Result<()> {
         no_load_step_on::<AB>(label, r"blocks\.", false)
     }
 
@@ -148,7 +149,7 @@ mod run {
     /// input optionally tracked; returns per-site (path, max|dA|, max|dB|)
     /// so the input-tracking workaround can be verified *numerically*
     /// against CPU ground truth, not just for finiteness.
-    fn loaded_step<AB: AutodiffBackend>(
+    fn loaded_step<AB: AutodiffBackend + QuantBackend>(
         base: &Path,
         input_grad: bool,
         loss_scale: f32,
@@ -290,7 +291,7 @@ mod run {
         Ok(())
     }
 
-    fn no_load_step_on<AB: AutodiffBackend>(
+    fn no_load_step_on<AB: AutodiffBackend + QuantBackend>(
         label: &str,
         pattern: &str,
         input_grad: bool,
@@ -414,7 +415,7 @@ mod run {
     /// Stage-level localization: loss on each trace stage separately, then
     /// backward to the *inputs* (img/context/t require_grad). The earliest
     /// stage whose input grads NaN bounds the broken op.
-    fn stages<AB: AutodiffBackend>(label: &str) -> Result<()> {
+    fn stages<AB: AutodiffBackend + QuantBackend>(label: &str) -> Result<()> {
         let device = AB::Device::default();
         AB::seed(&device, 42);
         let cfg = MmditConfig::tiny_krea2();

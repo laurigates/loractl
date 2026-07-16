@@ -103,8 +103,10 @@ fn real_mmdit_truncated_forward_matches_krea2_golden() {
     let mut model = Mmdit::<B>::init(config, &device);
     let remapper =
         KeyRemapper::from_patterns(Mmdit::<B>::key_remap().to_vec()).expect("valid remap patterns");
+    // `BaseLinear` enum sites: skip the variant name in key paths.
     let mut store = SafetensorsStore::from_file(SAFETENSORS)
         .remap(remapper)
+        .skip_enum_variants(true)
         .with_from_adapter(PyTorchToBurnAdapter);
     let result = model.load_from(&mut store).expect("safetensors load");
 
