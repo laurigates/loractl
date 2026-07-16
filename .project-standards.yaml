@@ -5,6 +5,10 @@ project_type: "rust"
 last_configured: "2026-07-05"
 
 components:
+  readme: "2025.1"
+  readme_style: "standard"
+  readme_has_logo: false
+  readme_badges: ["ci", "license", "rust-version"]
   justfile: "2025.1"
   tests: "2025.1"
   sentry: "2025.1"
