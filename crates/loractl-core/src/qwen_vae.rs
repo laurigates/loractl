@@ -824,6 +824,132 @@ impl<B: Backend> QwenVae<B> {
         [(r"resample\.1\.(weight|bias)$", r"resample.${1}")]
     }
 
+    /// The remap for a **ComfyUI-native (Qwen/WAN) keyed** VAE file
+    /// (`models/vae/qwen/qwen_image_vae.safetensors`), which names the *same*
+    /// weights under the original Wan-VAE state-dict scheme rather than
+    /// diffusers' `AutoencoderKLQwenImage` scheme this module mirrors. It is a
+    /// full key-*scheme* difference, not a prefix: the native file has
+    /// top-level `conv1`/`conv2` (the quant convs), `{encoder,decoder}.conv1`
+    /// (the input convs), `{…}.head.{0,2}` (the norm-out/conv-out head),
+    /// `{…}.middle.{0,1,2}` (the mid block), `{…}.residual.{0,2,3,6}` /
+    /// `.shortcut` (the res-block internals), and a **flat** encoder
+    /// `downsamples.N` / decoder `upsamples.N` list where diffusers groups the
+    /// decoder into `up_blocks.{i}.{resnets,upsamplers}`.
+    ///
+    /// The pattern list reproduces diffusers' own
+    /// `convert_wan_vae_to_diffusers` (`loaders/single_file_utils.py`) — the
+    /// authoritative native→diffusers converter — then chains
+    /// [`key_remap`](Self::key_remap)'s `resample.1`→`resample` flatten, so a
+    /// native file lands on the exact burn paths a diffusers file does.
+    /// burn-store's [`KeyRemapper`](burn_store::KeyRemapper) applies every
+    /// pattern in order, cumulatively, which is what lets the native→diffusers
+    /// rewrite compose with the flatten in one pass.
+    ///
+    /// The decoder's flat→grouped regrouping is index arithmetic diffusers
+    /// hardcodes and regex cannot compute, so each flat `upsamples.N` index is
+    /// enumerated (`num_res_blocks = 2` ⇒ stride 4: `N/4` = stage, `N%4` =
+    /// resnet, `N%4 == 3` = the stage's upsampler). Indices 0–14 cover both the
+    /// real config (`dim_mult` len 4) and the tiny fixture (len 3); unused
+    /// indices simply never match. Verified against the authoritative converter
+    /// on both the 194-key real and 154-key tiny key sets (every native key
+    /// maps to the identical burn path a diffusers key would), and pinned by
+    /// the encode-parity guard (`tests/qwen_vae_native_parity.rs`).
+    pub fn native_key_remap() -> Vec<(&'static str, &'static str)> {
+        let mut patterns: Vec<(&'static str, &'static str)> = vec![
+            // Top-level quant convs (`conv1`/`conv2` → `quant_conv`/`post_quant_conv`).
+            (r"^conv1\.", "quant_conv."),
+            (r"^conv2\.", "post_quant_conv."),
+            // Encoder/decoder input convs (distinct from the top-level convs above).
+            (r"^encoder\.conv1\.", "encoder.conv_in."),
+            (r"^decoder\.conv1\.", "decoder.conv_in."),
+            // Output head: Sequential(RMS_norm@0, SiLU@1, CausalConv3d@2).
+            (r"^encoder\.head\.0\.gamma$", "encoder.norm_out.gamma"),
+            (r"^encoder\.head\.2\.", "encoder.conv_out."),
+            (r"^decoder\.head\.0\.gamma$", "decoder.norm_out.gamma"),
+            (r"^decoder\.head\.2\.", "decoder.conv_out."),
+            // Mid block: middle.{0,1,2} → {resnets.0, attentions.0, resnets.1}.
+            // The res prefixes run before the uniform residual sub-renames below.
+            (r"\.middle\.0\.residual\.", ".mid_block.resnets.0.residual."),
+            (r"\.middle\.2\.residual\.", ".mid_block.resnets.1.residual."),
+            (r"\.middle\.1\.", ".mid_block.attentions.0."),
+            // Encoder trunk is FLAT: downsamples.N → down_blocks.N (index kept).
+            (r"^encoder\.downsamples\.", "encoder.down_blocks."),
+            // Decoder trunk is REGROUPED: flat upsamples.N → up_blocks.{N/4}.…
+            (
+                r"^decoder\.upsamples\.0\.",
+                "decoder.up_blocks.0.resnets.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.1\.",
+                "decoder.up_blocks.0.resnets.1.",
+            ),
+            (
+                r"^decoder\.upsamples\.2\.",
+                "decoder.up_blocks.0.resnets.2.",
+            ),
+            (
+                r"^decoder\.upsamples\.3\.",
+                "decoder.up_blocks.0.upsamplers.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.4\.",
+                "decoder.up_blocks.1.resnets.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.5\.",
+                "decoder.up_blocks.1.resnets.1.",
+            ),
+            (
+                r"^decoder\.upsamples\.6\.",
+                "decoder.up_blocks.1.resnets.2.",
+            ),
+            (
+                r"^decoder\.upsamples\.7\.",
+                "decoder.up_blocks.1.upsamplers.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.8\.",
+                "decoder.up_blocks.2.resnets.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.9\.",
+                "decoder.up_blocks.2.resnets.1.",
+            ),
+            (
+                r"^decoder\.upsamples\.10\.",
+                "decoder.up_blocks.2.resnets.2.",
+            ),
+            (
+                r"^decoder\.upsamples\.11\.",
+                "decoder.up_blocks.2.upsamplers.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.12\.",
+                "decoder.up_blocks.3.resnets.0.",
+            ),
+            (
+                r"^decoder\.upsamples\.13\.",
+                "decoder.up_blocks.3.resnets.1.",
+            ),
+            (
+                r"^decoder\.upsamples\.14\.",
+                "decoder.up_blocks.3.resnets.2.",
+            ),
+            // Res-block internals — uniform across encoder & decoder, applied
+            // after the trunk prefixes above have exposed the `.residual.N.` /
+            // `.shortcut.` suffix.
+            (r"\.residual\.0\.gamma$", ".norm1.gamma"),
+            (r"\.residual\.2\.", ".conv1."),
+            (r"\.residual\.3\.gamma$", ".norm2.gamma"),
+            (r"\.residual\.6\.", ".conv2."),
+            (r"\.shortcut\.", ".conv_shortcut."),
+        ];
+        // Finally the diffusers→burn flatten (`resample.1` → `resample`), so
+        // both schemes converge on the same burn module paths.
+        patterns.extend(Self::key_remap());
+        patterns
+    }
+
     /// Per-channel latent stats as a broadcastable `[1, z_dim, 1, 1]` pair.
     fn latent_stats(&self, device: &B::Device) -> (Tensor<B, 4>, Tensor<B, 4>) {
         let z = self.config.z_dim;
