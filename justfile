@@ -283,6 +283,12 @@ vae-reference:
 vae-real-reference:
     uv run reference/qwen_vae_reference.py --real --out crates/loractl-core/tests/fixtures
 
+# Regenerate the checked-in ComfyUI-native (Qwen/WAN) keyed tiny VAE fixture by
+# re-keying the tiny diffusers fixture (numpy + safetensors only, no torch/
+# network); self-verifies the rename against diffusers' own converter.
+vae-native-reference:
+    uv run reference/qwen_vae_native_reference.py --out crates/loractl-core/tests/fixtures
+
 # Regenerate the checked-in tiny Qwen3-VL parity fixture (weights + golden;
 # torch + transformers via uv, no network — the tiny model is constructed locally).
 qwen3vl-reference:

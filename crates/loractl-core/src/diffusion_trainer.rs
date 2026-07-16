@@ -182,6 +182,33 @@ fn vae_path(model: &ModelConfig, base: &Path) -> PathBuf {
     )
 }
 
+/// Header-only probe: is `path` a **ComfyUI-native (Qwen/WAN) keyed** VAE
+/// rather than a diffusers `AutoencoderKLQwenImage` one? The two name the same
+/// weights under different schemes (see [`QwenVae::native_key_remap`]); this
+/// picks the remap without a config flag, mirroring the fp8-vs-bf16 header
+/// auto-detect ([`crate::fp8::is_fp8_checkpoint`]).
+///
+/// The discriminators are tokens the diffusers scheme *never* emits: a mid
+/// block keyed `.middle.` (diffusers uses `.mid_block.`) or a bare top-level
+/// `conv1.weight` (diffusers uses `quant_conv.weight`). Only the header key
+/// names are read — no tensor data is materialized.
+fn vae_is_native_keyed(path: &Path) -> Result<bool> {
+    use memmap2::Mmap;
+    use safetensors::SafeTensors;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    // SAFETY: same contract as burn-store's own mmap-backed loader and
+    // `fp8::is_fp8_checkpoint` — the mapping is undefined only if the file is
+    // truncated/mutated while mapped, which checkpoint files are not.
+    let mmap =
+        unsafe { Mmap::map(&file) }.with_context(|| format!("mmapping {}", path.display()))?;
+    let st = SafeTensors::deserialize(&mmap)
+        .with_context(|| format!("parsing safetensors header of {}", path.display()))?;
+    Ok(st
+        .names()
+        .into_iter()
+        .any(|name| name.contains(".middle.") || name == "conv1.weight"))
+}
+
 /// The tokenizer's nominal path — override or `base/tokenizer/tokenizer.json`
 /// — resolved by the same rules as the other components (absolute verbatim,
 /// relative onto `base`), WITHOUT checking existence. [`resolve_tokenizer`]
@@ -442,11 +469,24 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
         &device,
         |image| {
             if vae.is_none() {
+                // A ComfyUI-native (Qwen/WAN) keyed VAE names the same weights
+                // under a different *scheme* than the diffusers file this port
+                // mirrors — auto-detected from the header (like the fp8-vs-bf16
+                // dispatch) so no config flag is needed. Native → the
+                // `native_key_remap` (which reproduces diffusers'
+                // `convert_wan_vae_to_diffusers` then flattens `resample.1`),
+                // diffusers → the existing `key_remap`.
+                let path = vae_path(&config.model, &base);
+                let remap: Vec<(&str, &str)> = if vae_is_native_keyed(&path)? {
+                    QwenVae::<B>::native_key_remap()
+                } else {
+                    QwenVae::<B>::key_remap().to_vec()
+                };
                 vae = Some(
                     load_module(
                         QwenVae::<B>::init(vae_cfg.clone(), &device),
-                        &vae_path(&config.model, &base),
-                        &QwenVae::<B>::key_remap(),
+                        &path,
+                        &remap,
                         false,
                         None,
                         "VAE",
@@ -1193,6 +1233,27 @@ mod tests {
         assert_eq!(
             denoiser_path(&m, base),
             Path::new("/elsewhere/my.safetensors")
+        );
+    }
+
+    /// The VAE key-scheme auto-detect: the diffusers-keyed tiny fixture reads as
+    /// diffusers, the re-keyed ComfyUI-native fixture reads as native — so
+    /// `encode_phase` picks `native_key_remap` vs `key_remap` without a flag.
+    #[test]
+    fn vae_native_scheme_is_autodetected_from_the_header() {
+        assert!(
+            !vae_is_native_keyed(Path::new(
+                "tests/fixtures/tiny-qwen-vae/diffusion_pytorch_model.safetensors"
+            ))
+            .expect("probe diffusers fixture"),
+            "the diffusers-keyed fixture must NOT be detected as native"
+        );
+        assert!(
+            vae_is_native_keyed(Path::new(
+                "tests/fixtures/tiny-qwen-vae-native/qwen_image_vae.safetensors"
+            ))
+            .expect("probe native fixture"),
+            "the ComfyUI-native-keyed fixture must be detected as native"
         );
     }
 }
