@@ -1,5 +1,9 @@
 # loractl
 
+[![CI](https://github.com/laurigates/loractl/actions/workflows/ci.yml/badge.svg)](https://github.com/laurigates/loractl/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](Cargo.toml)
+
 A terminal-native LoRA trainer, in Rust.
 
 Most LoRA trainers bolt a half-baked web GUI onto a Python training core.
@@ -390,6 +394,12 @@ parity harness and would bank the RoPE-convention work (burn's RoPE is
 *interleaved* vs HF's *half-split*, see
 [ADR-0001](docs/adrs/0001-first-real-target-model.md)) ahead of M11's 3D axial
 RoPE — but it is not on the critical path to Krea 2.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Conventional commits are required
+(release-please drives versioning); the local gate mirrors CI — run
+`just fmt-check && just lint && just test` before opening a PR.
 
 ## License
 
