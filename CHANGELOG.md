@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/laurigates/loractl/compare/v0.8.0...v0.9.0) (2026-07-16)
+
+
+### Features
+
+* **api:** optional bearer-token auth gated on LORACTL_API_TOKEN ([#92](https://github.com/laurigates/loractl/issues/92)) ([a00efdd](https://github.com/laurigates/loractl/commit/a00efddf93f2982894d35d48fd0efcaa24e5d839))
+* **core:** cuda arms for the numerics ladder — grad_compare + cuda smoke ([#94](https://github.com/laurigates/loractl/issues/94)) ([002d421](https://github.com/laurigates/loractl/commit/002d421f5267cacb47a13fc42de17863bd91207f))
+* **mmdit:** quantizable BaseLinear sites (int8 frozen base) ([#98](https://github.com/laurigates/loractl/issues/98)) ([8ccc40a](https://github.com/laurigates/loractl/commit/8ccc40a16c15071ea4cb48048c7d6d1210c2d502))
+* **quant:** int8 QuantBackend core — scheme, custom autodiff op, goldens ([#97](https://github.com/laurigates/loractl/issues/97)) ([69b546b](https://github.com/laurigates/loractl/commit/69b546b65a2613232fd023938af35e677a5059c5))
+* **quant:** on-box int8 validation — quant_probe + cuda int8 e2e ([#100](https://github.com/laurigates/loractl/issues/100)) ([6fda532](https://github.com/laurigates/loractl/commit/6fda532db8b66d62c443ecc47c16a4bf46964862))
+* **trainer:** compute.quant=int8 — quantized frozen-base training ([#99](https://github.com/laurigates/loractl/issues/99)) ([fb0f3a8](https://github.com/laurigates/loractl/commit/fb0f3a8ac0001c75d713d74fa7f13b2000f77079))
+* **trainer:** cuda backend for DiffusionTrainer (f32-only) ([#95](https://github.com/laurigates/loractl/issues/95)) ([562eb37](https://github.com/laurigates/loractl/commit/562eb3754374824678c5ebe52824f730f6cf7bec))
+
 ## [0.8.0](https://github.com/laurigates/loractl/compare/v0.7.0...v0.8.0) (2026-07-15)
 
 
