@@ -9,6 +9,11 @@
 #
 # Memory (48 GiB host): f16 + activation checkpointing fits the ~12B base
 # (~24.6 GB weights); run with `--features wgpu` (Metal).
+#
+# cuda alternative (Linux + NVIDIA): `compute.backend: cuda` with
+# `precision: f32` — the numerically-clean GPU path (burn#5162 breaks non-f32
+# autodiff on every GPU backend) — but full-depth f32 is ~49 GB, beyond a
+# 24 GB card until the int8 frozen-base quantization lands (#24 follow-up).
 
 task: flow-matching
 

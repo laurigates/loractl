@@ -89,6 +89,9 @@ use std::rc::Rc;
 #[cfg(feature = "wgpu")]
 use burn::backend::Wgpu;
 
+#[cfg(feature = "cuda")]
+use burn::backend::{Cuda, cuda::CudaDevice};
+
 /// The per-variant architecture bundle: (MMDiT, encoder, VAE, caption budget).
 fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
     match variant {
@@ -216,9 +219,24 @@ impl Trainer for DiffusionTrainer {
                 "config selected the 'candle' backend but this binary was built without it; \
                  rebuild with `--features candle`"
             ),
-            (BackendKind::Cuda | BackendKind::Tch, _) => bail!(
-                "the diffusion trainer currently wires ndarray, wgpu, and candle; \
-                 cuda/tch land once they can be verified on real hardware"
+            #[cfg(not(feature = "cuda"))]
+            (BackendKind::Cuda, _) => bail!(
+                "config selected the 'cuda' backend but this binary was built without it; \
+                 rebuild with `--features cuda` on a Linux+NVIDIA host (CUDA toolkit \
+                 required). cuda is not runnable on macOS"
+            ),
+            // cuda is wired f32-only: burn's f16 autodiff produces exactly-zero
+            // adapter gradients on cuda — the same defect as Metal, validated
+            // on the RTX 4090 (tracel-ai/burn#5162, examples/grad_compare.rs).
+            #[cfg(feature = "cuda")]
+            (BackendKind::Cuda, p) if p != Precision::F32 => bail!(
+                "compute.precision = {p:?} is not supported on the cuda backend — burn's \
+                 non-f32 autodiff is broken on cuda (exactly-zero adapter gradients, \
+                 tracel-ai/burn#5162); set compute.precision to f32"
+            ),
+            (BackendKind::Tch, _) => bail!(
+                "the diffusion trainer currently wires ndarray, wgpu, candle, and cuda; \
+                 tch lands once it can be verified on real hardware"
             ),
             _ => {}
         }
@@ -264,6 +282,14 @@ impl Trainer for DiffusionTrainer {
                     >(config, device, sink),
                     Precision::F16 => unreachable!("validated above"),
                 }
+            }
+            // f32-only by the guard above (burn#5162); like candle, the
+            // device is constructed explicitly from the config's ordinal.
+            // The first fully-clean GPU configuration (grad ratio 1.00 vs
+            // ndarray at every adapter site — PR #94's 4090 validation).
+            #[cfg(feature = "cuda")]
+            BackendKind::Cuda => {
+                dispatch_checkpointing::<Cuda>(config, CudaDevice::new(config.compute.device), sink)
             }
             _ => unreachable!("backend validated above"),
         }

@@ -419,3 +419,101 @@ fn kohya_keys(path: &Path) -> Vec<String> {
     keys.sort();
     keys
 }
+
+// ---------------------------------------------------------------------------
+// cuda backend (the guard is offline; the e2e is double-gated, box-only)
+// ---------------------------------------------------------------------------
+
+/// Selecting cuda in a binary built without the feature must bail with the
+/// actionable not-built message (same convention `backend_dispatch.rs` pins
+/// for the synthetic path), never the old "cuda isn't wired" catch-all.
+#[cfg(not(feature = "cuda"))]
+#[test]
+fn diffusion_cuda_without_the_feature_names_the_fix() {
+    use loractl_core::config::BackendKind;
+
+    let out = TempDir::new("diffusion-cuda-unbuilt");
+    let mut config = config(&out, PathBuf::from("unused-dataset"));
+    config.compute.backend = BackendKind::Cuda;
+
+    let err = DiffusionTrainer
+        .train(&config, &mut |_event| {})
+        .expect_err("cuda without the feature must refuse");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("--features cuda"),
+        "the error must name the rebuild fix, got: {message}"
+    );
+}
+
+/// cuda is wired f32-only: f16 autodiff produces exactly-zero adapter
+/// gradients on cuda (tracel-ai/burn#5162, validated on the RTX 4090), so
+/// the guard must fail loudly before any GPU work. Cheap (bails pre-encode),
+/// but compiled only under the cuda feature — runs via `just test-cuda`.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "compiled only with the cuda feature; run via `just test-cuda`"]
+fn diffusion_cuda_f16_bails_loudly() {
+    use loractl_core::config::{BackendKind, Precision};
+
+    let out = TempDir::new("diffusion-cuda-f16");
+    let mut config = config(&out, PathBuf::from("unused-dataset"));
+    config.compute.backend = BackendKind::Cuda;
+    config.compute.precision = Precision::F16;
+
+    let err = DiffusionTrainer
+        .train(&config, &mut |_event| {})
+        .expect_err("cuda f16 must refuse — burn#5162");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("5162") && message.contains("f32"),
+        "the error must cite the upstream defect and the fix, got: {message}"
+    );
+}
+
+/// The tiny-krea2 e2e on real cuda hardware (M14 dispatch, cuda arm): the
+/// whole diffusion stack trains through `DiffusionTrainer` on the GPU with
+/// finite losses and exports the exact kohya layout. Portability asserts
+/// only — GPU float-reduction order differs from ndarray (ADR-0001), so no
+/// bit-identity and no loss-decrease bound (12 steps on random tiny weights).
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires an NVIDIA GPU (CUDA toolkit at build time); run via `just test-cuda`"]
+fn tiny_krea2_cuda_f32_trains_e2e() {
+    use loractl_core::config::BackendKind;
+
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("diffusion-cuda-e2e");
+    let dataset = staged_dataset(&out);
+    let mut config = config(&out, dataset);
+    config.compute.backend = BackendKind::Cuda;
+
+    let mut losses = Vec::new();
+    let mut finished_path = None;
+    let adapter = DiffusionTrainer
+        .train(&config, &mut |event| match event {
+            TrainEvent::Step { loss, .. } => losses.push(loss),
+            TrainEvent::Finished { adapter_path } => finished_path = Some(adapter_path),
+            _ => {}
+        })
+        .expect("cuda diffusion training should complete end-to-end");
+
+    assert_eq!(losses.len() as u64, STEPS, "one Step event per step");
+    assert!(
+        losses.iter().all(|l| l.is_finite()),
+        "non-finite loss on cuda: {losses:?}"
+    );
+
+    // The exported adapter carries the exact kohya layout the offline e2e
+    // pins: 7 sites × 2 blocks × 3 tensors = 42 keys.
+    let adapter = finished_path.unwrap_or(adapter);
+    let keys = kohya_keys(&adapter);
+    assert_eq!(keys.len(), 42, "kohya export must carry 42 keys: {keys:?}");
+    assert!(
+        keys.iter()
+            .any(|k| k == "transformer_blocks.0.attn.to_q.lora_down.weight"),
+        "kohya naming must match the offline e2e's layout, got: {keys:?}"
+    );
+}
