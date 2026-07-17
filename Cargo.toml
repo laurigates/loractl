@@ -46,18 +46,18 @@ async-stream = "0.3"
 # patching only the runtime leaves the graph with two copies of the sibling
 # crates' public types (E0308 mismatches against crates.io users).
 [patch.crates-io]
-cubecl = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-common = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-core = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-cpp = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-cpu = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-cuda = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-hip = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-ir = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-macros = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-macros-internal = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-opt = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-runtime = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-std = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-wgpu = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
-cubecl-zspace = { git = "https://github.com/laurigates/cubecl", rev = "0d3824c5243b464e7dca786fda694ecdd6fb9d02" }
+cubecl = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-common = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-core = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-cpp = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-cpu = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-cuda = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-hip = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-ir = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-macros = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-macros-internal = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-opt = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-runtime = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-std = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-wgpu = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
+cubecl-zspace = { git = "https://github.com/laurigates/cubecl", rev = "fe7c4f8bad1ea7cf0a124ed7ef6e2ae79d695a0c" }
