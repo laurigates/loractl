@@ -52,4 +52,6 @@ compute:
   grad_checkpointing: true
 
 flow:
-  shift: 3.0
+  shift_mode: resolution            # ai-toolkit Krea 2 parity (#84): per-batch
+                                    # shift exp(μ), μ linear 0.5@256 → 1.15@6400
+                                    # image tokens

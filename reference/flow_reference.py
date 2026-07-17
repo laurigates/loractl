@@ -20,9 +20,15 @@ Pinned math conventions (SD3 paper + diffusers + kohya-ss — all agree):
   density*, never a multiplicative weight).
 - Timestep sampling: `u ~ Normal(mean, std)`, `t = sigmoid(u)`, then the
   constant shift `t' = shift*t / (1 + (shift - 1)*t)`.
-- FLUX resolution-dependent shift: mu is linear in image_seq_len through
-  (256, 0.5) and (4096, 1.15); the LINEAR shift consumable by the constant
-  form is `exp(mu)` (mu itself is a LOG shift).
+- FLUX-family resolution-dependent shift: mu is linear in image_seq_len
+  through (base_image_seq_len, base_shift) and (max_image_seq_len, max_shift),
+  extrapolated (never clamped) outside the anchors, matching diffusers'
+  `calculate_shift`; the LINEAR shift consumable by the constant form is
+  `exp(mu)` (mu itself is a LOG shift). FLUX's anchors: (256, 0.5) ->
+  (4096, 1.15). Krea 2's, per ai-toolkit krea2.py scheduler_config (#84):
+  (256, 0.5) -> (6400, 1.15), `time_shift_type: "exponential"` — and the
+  exponential dynamic form `exp(mu) / (exp(mu) + (1/t - 1))` is IDENTICAL to
+  the constant form at `shift = exp(mu)` (asserted below).
 
 Convention: all matrices below are defined in **burn** layout `[d_in, d_out]`
 (burn `Linear.weight` is `[d_in, d_out]` and computes `x @ W`). PyTorch
@@ -67,10 +73,21 @@ U = np.array([-2.5, -1.0, -0.3, 0.0, 0.4, 1.0, 2.0, 3.0], dtype=np.float64)
 SYM = {"logit_mean": 0.0, "logit_std": 1.0, "shift": 3.0}
 ASYM = {"logit_mean": 0.5, "logit_std": 2.0, "shift": 1.5}
 
-# FLUX resolution-dependent shift anchors: (256, 0.5) and (4096, 1.15) pin the
-# mu line; 1024 is an interior point. The golden stores exp(mu) — the LINEAR
-# shift — because that is what `shift_timesteps` consumes.
-SEQ_LENS = [256, 1024, 4096]
+# Resolution-dependent shift anchor sets: FLUX's mu line ends at 4096, Krea 2's
+# at 6400 (ai-toolkit krea2.py scheduler_config — loractl's FlowConfig
+# defaults). Interior points probe the line; 8192 probes the un-clamped
+# extrapolation beyond max_image_seq_len. The golden stores exp(mu) — the
+# LINEAR shift — because that is what `shift_timesteps` consumes.
+FLUX_ENDPOINTS = {"base_image_seq_len": 256, "max_image_seq_len": 4096,
+                  "base_shift": 0.5, "max_shift": 1.15}
+KREA2_ENDPOINTS = {"base_image_seq_len": 256, "max_image_seq_len": 6400,
+                   "base_shift": 0.5, "max_shift": 1.15}
+FLUX_SEQ_LENS = [256, 1024, 4096]
+# 1024 = the 512-px acceptance-run bucket (64x64 f8 latents, patch 2).
+KREA2_SEQ_LENS = [256, 1024, 4096, 6400, 8192]
+# The resolution-MODE composition case: the full logit-normal sampler with the
+# shift resolved from a seq len (Krea anchors, the 1024-token bucket).
+RESOLUTION_MODE_SEQ_LEN = 1024
 
 X0 = np.array(
     [[1.5, -0.6, 0.8],
@@ -117,12 +134,31 @@ def logit_to_t(u: np.ndarray, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
     return t, shift * t / (1.0 + (shift - 1.0) * t)
 
 
-def resolution_shift(image_seq_len: int) -> float:
-    """FLUX resolution-dependent shift: mu linear through (256, 0.5) and
-    (4096, 1.15); returns the LINEAR shift exp(mu), directly consumable by the
-    constant-form shift transform."""
-    mu = 0.5 + (1.15 - 0.5) * (image_seq_len - 256) / (4096 - 256)
+def resolution_shift(image_seq_len: int, ep: dict) -> float:
+    """FLUX-family resolution-dependent shift: mu linear through
+    (base_image_seq_len, base_shift) and (max_image_seq_len, max_shift),
+    extrapolated outside the anchors; returns the LINEAR shift exp(mu),
+    directly consumable by the constant-form shift transform."""
+    mu = ep["base_shift"] + (ep["max_shift"] - ep["base_shift"]) * (
+        image_seq_len - ep["base_image_seq_len"]
+    ) / (ep["max_image_seq_len"] - ep["base_image_seq_len"])
     return float(np.exp(mu))
+
+
+# Equivalence self-check (#84): ai-toolkit/diffusers apply the exponential
+# dynamic form `exp(mu) / (exp(mu) + (1/t - 1)^sigma)` with sigma = 1.0; the
+# constant form at shift = exp(mu) must be the SAME function, or loractl's
+# "resolution mode = constant shift_timesteps at exp(mu)" reduction is wrong.
+_t_probe = np.linspace(0.001, 0.999, 997, dtype=np.float64)
+for _seq in KREA2_SEQ_LENS:
+    _mu = np.log(resolution_shift(_seq, KREA2_ENDPOINTS))
+    _dynamic = np.exp(_mu) / (np.exp(_mu) + (1.0 / _t_probe - 1.0))
+    _shift = np.exp(_mu)
+    _constant = _shift * _t_probe / (1.0 + (_shift - 1.0) * _t_probe)
+    _max_diff = float(np.max(np.abs(_dynamic - _constant)))
+    assert _max_diff < 1e-12, (
+        f"dynamic vs constant shift form diverge at seq_len {_seq}: {_max_diff:.3e}"
+    )
 
 
 # Interpolation + velocity target on the fixed batch (f32, matching burn).
@@ -229,6 +265,16 @@ print(f"first loss {t_losses[0]:.6f} -> last loss {t_losses[-1]:.6f} (converges:
 sym_sigmoid, sym_shifted = logit_to_t(U, SYM)
 _, asym_shifted = logit_to_t(U, ASYM)
 
+# Resolution-MODE composition: the same sampler with the shift resolved from
+# the image-token count (Krea anchors) — exactly what the diffusion trainer
+# feeds `sample_timesteps` per bucket under shift_mode: resolution.
+RES_MODE = {
+    "logit_mean": 0.0,
+    "logit_std": 1.0,
+    "shift": resolution_shift(RESOLUTION_MODE_SEQ_LEN, KREA2_ENDPOINTS),
+}
+_, res_mode_shifted = logit_to_t(U, RES_MODE)
+
 golden = {
     "provenance": {
         "torch_version": torch.__version__,
@@ -239,7 +285,6 @@ golden = {
         "latent_dim": LATENT_DIM, "hidden": HIDDEN, "rank": RANK, "alpha": ALPHA,
         "scaling": SCALING, "lr": LR, "steps": STEPS, "batch": BATCH,
         "sampler_symmetric": SYM, "sampler_asymmetric": ASYM,
-        "resolution_seq_lens": SEQ_LENS,
     },
     "sampler": {
         "u": U.tolist(),
@@ -250,10 +295,29 @@ golden = {
         "asymmetric": {
             "t_shifted": asym_shifted.tolist(),
         },
+        "resolution_mode": {
+            "seq_len": RESOLUTION_MODE_SEQ_LEN,
+            "t_shifted": res_mode_shifted.tolist(),
+        },
     },
-    "resolution_shift": [
-        {"seq_len": s, "shift": resolution_shift(s)} for s in SEQ_LENS
-    ],
+    "resolution_shift": {
+        "flux": {
+            "endpoints": FLUX_ENDPOINTS,
+            "cases": [
+                {"seq_len": s, "shift": resolution_shift(s, FLUX_ENDPOINTS)}
+                for s in FLUX_SEQ_LENS
+            ],
+        },
+        # Krea 2 anchors == loractl FlowConfig defaults; the Rust test feeds
+        # FlowConfig::default() for these cases.
+        "krea2": {
+            "endpoints": KREA2_ENDPOINTS,
+            "cases": [
+                {"seq_len": s, "shift": resolution_shift(s, KREA2_ENDPOINTS)}
+                for s in KREA2_SEQ_LENS
+            ],
+        },
+    },
     "interp": {
         "x0": X0.flatten().tolist(),
         "eps": EPS.flatten().tolist(),

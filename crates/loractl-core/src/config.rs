@@ -513,10 +513,66 @@ impl<'de> Deserialize<'de> for TaskKind {
     }
 }
 
+/// How the flow-matching timestep shift is chosen (#84).
+///
+/// Like [`BackendKind`]/[`TaskKind`], the enum and its `Deserialize` are
+/// always compiled and route through `FromStr`, so the YAML and env layers
+/// accept the same spellings (case-insensitive) and report the same clear
+/// error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShiftMode {
+    /// The constant [`FlowConfig::shift`] for every batch — the kohya/SD3
+    /// `discrete_flow_shift` behavior, and the backward-compatible default.
+    #[default]
+    Constant,
+    /// Resolution-dependent shift: per batch, `shift = exp(μ)` with `μ`
+    /// linear in the image-token count through the
+    /// ([`FlowConfig::base_image_seq_len`], [`FlowConfig::base_shift`]) and
+    /// ([`FlowConfig::max_image_seq_len`], [`FlowConfig::max_shift`]) anchor
+    /// points — the FLUX-family dynamic shifting ai-toolkit trains Krea 2
+    /// with ([`FlowConfig::shift`] is then unused). Requires image latents,
+    /// so only the diffusion trainer accepts it; the synthetic flow toy
+    /// bails loudly.
+    Resolution,
+}
+
+// No `clap::ValueEnum` derive here on purpose (same reasoning as
+// [`BackendKind`]): the vocabulary lives once in core. There is no CLI flag
+// for this knob yet — the YAML and `LORACTL_FLOW__SHIFT_MODE` env layers are
+// the surface.
+impl FromStr for ShiftMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "constant" => Ok(Self::Constant),
+            "resolution" => Ok(Self::Resolution),
+            other => Err(format!(
+                "unknown shift mode {other:?} (constant|resolution)"
+            )),
+        }
+    }
+}
+
+// Deserialize through `FromStr` (not the derive) so the YAML and env layers
+// accept exactly the same spellings — see [`BackendKind`]'s `Deserialize` for
+// the full rationale. `Serialize` stays derived (writes kebab-case), so a
+// round-trip is stable.
+impl<'de> Deserialize<'de> for ShiftMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Rectified-flow / flow-matching hyperparameters (M8, #19).
 ///
-/// Controls the logit-normal timestep sampler and the constant shift transform
-/// (see [`crate::flow`]). Only consulted when [`TrainConfig::task`] is
+/// Controls the logit-normal timestep sampler and the shift transform (see
+/// [`crate::flow`]). Only consulted when [`TrainConfig::task`] is
 /// [`TaskKind::FlowMatching`]. `#[serde(default)]` plus the hand-written
 /// `Default` means every existing YAML/JSON — which carries no `flow:` block —
 /// deserializes exactly as before, onto the SD3 Eq. 19 sampler defaults and
@@ -532,8 +588,28 @@ pub struct FlowConfig {
     pub logit_std: f64,
     /// Constant timestep shift `t' = shift·t / (1 + (shift − 1)·t)`;
     /// `shift > 1` pushes `t` toward 1 (noise). kohya/SD3-scheduler
-    /// production default: `3.0`.
+    /// production default: `3.0`. This is a **LINEAR** shift (`exp(μ)`), and
+    /// it is consulted only under [`ShiftMode::Constant`].
     pub shift: f64,
+    /// Whether the shift is the constant [`Self::shift`] or the per-batch
+    /// resolution-dependent `exp(μ)` (#84). Default: constant.
+    pub shift_mode: ShiftMode,
+    /// μ-line anchor: the image-token count at which `μ = base_shift`.
+    /// Krea 2 / ai-toolkit `scheduler_config.base_image_seq_len`: `256`.
+    pub base_image_seq_len: usize,
+    /// μ-line anchor: the image-token count at which `μ = max_shift`.
+    /// Krea 2 / ai-toolkit `scheduler_config.max_image_seq_len`: `6400`
+    /// (FLUX uses `4096`). The line is extrapolated, never clamped, outside
+    /// the anchors — matching diffusers' `calculate_shift`.
+    pub max_image_seq_len: usize,
+    /// μ at `base_image_seq_len`. **A LOG shift** (the linear shift is
+    /// `exp(μ)`), unlike [`Self::shift`] — the field names follow
+    /// diffusers/ai-toolkit (`base_shift`/`max_shift` there are μ values
+    /// too). Krea 2: `0.5`.
+    pub base_shift: f64,
+    /// μ at `max_image_seq_len`. A LOG shift, like [`Self::base_shift`].
+    /// Krea 2: `1.15`.
+    pub max_shift: f64,
 }
 
 impl Default for FlowConfig {
@@ -542,6 +618,13 @@ impl Default for FlowConfig {
             logit_mean: 0.0,
             logit_std: 1.0,
             shift: 3.0,
+            shift_mode: ShiftMode::Constant,
+            // Krea 2's dynamic-shift anchors, per ai-toolkit's krea2.py
+            // scheduler_config (see crate::flow's module docs).
+            base_image_seq_len: 256,
+            max_image_seq_len: 6400,
+            base_shift: 0.5,
+            max_shift: 1.15,
         }
     }
 }
