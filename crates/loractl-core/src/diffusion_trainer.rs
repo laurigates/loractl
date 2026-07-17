@@ -1053,6 +1053,18 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         .no_grad()
     };
 
+    // Return the load's transient pool pages before the training loop
+    // allocates: cubecl's CUDA SubSlices pool frees sliced pages only on an
+    // EXPLICIT memory_cleanup (the automatic path is a no-op for them), so
+    // the per-layer f32 dequant buffers otherwise stay reserved — observed as
+    // ~6 GB stranded on a 24 GB card, OOMing step 1 (tracel-ai/cubecl#1401).
+    // Sync on both sides: no kernel may be in flight while cleanup renumbers
+    // surviving pages, and the second sync flushes the deferred cuMemFree.
+    // No-op on ndarray (Backend's default body).
+    AB::sync(&device).map_err(|e| anyhow!("post-load sync: {e:?}"))?;
+    AB::memory_cleanup(&device);
+    AB::sync(&device).map_err(|e| anyhow!("post-cleanup sync: {e:?}"))?;
+
     let sites = mmdit.injectable_sites();
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);
     if set.deltas.is_empty() {
