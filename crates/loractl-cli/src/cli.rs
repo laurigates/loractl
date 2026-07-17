@@ -194,6 +194,31 @@ struct TrainCmd {
     /// means true; an explicit `false` overrides a config-file `true`.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     grad_checkpointing: Option<bool>,
+
+    /// Override `model.denoiser`: path to the denoiser file (ComfyUI
+    /// scattered layout, #101). Absolute paths are used verbatim; relative
+    /// paths join onto `model.base`. fp8-vs-bf16 is auto-detected from the
+    /// file header.
+    #[arg(long)]
+    denoiser: Option<PathBuf>,
+
+    /// Override `model.text_encoder`: path to the Qwen3-VL text-encoder
+    /// file (#101). Absolute verbatim; relative joins onto `model.base`.
+    #[arg(long)]
+    text_encoder: Option<PathBuf>,
+
+    /// Override `model.vae`: path to the Qwen-Image VAE file (#101).
+    /// Absolute verbatim; relative joins onto `model.base`.
+    #[arg(long)]
+    vae: Option<PathBuf>,
+
+    /// Override `model.tokenizer`: path to a `tokenizer.json` (#101).
+    /// Absolute verbatim; relative joins onto `model.base`. Without this (and
+    /// with no `base/tokenizer/tokenizer.json`), the model-invariant Qwen3-VL
+    /// tokenizer is fetched once and cached; naming a missing file here is an
+    /// error, never a silent fetch.
+    #[arg(long)]
+    tokenizer: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -307,6 +332,21 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     }
     if let Some(grad_checkpointing) = cmd.grad_checkpointing {
         config.compute.grad_checkpointing = grad_checkpointing;
+    }
+    // The #101 per-component path overrides: the flags mirror the
+    // `model.denoiser`/`text_encoder`/`vae`/`tokenizer` keys (relative paths
+    // join onto `model.base` at load, same as the YAML/env layers).
+    if let Some(denoiser) = &cmd.denoiser {
+        config.model.denoiser = Some(denoiser.clone());
+    }
+    if let Some(text_encoder) = &cmd.text_encoder {
+        config.model.text_encoder = Some(text_encoder.clone());
+    }
+    if let Some(vae) = &cmd.vae {
+        config.model.vae = Some(vae.clone());
+    }
+    if let Some(tokenizer) = &cmd.tokenizer {
+        config.model.tokenizer = Some(tokenizer.clone());
     }
     Ok(config)
 }
@@ -461,6 +501,10 @@ mod tests {
             precision: None,
             quant: None,
             grad_checkpointing: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
         }
     }
 
@@ -509,6 +553,13 @@ mod tests {
             cmd.precision = Some(Precision::F16); // M13 flag-only override
             cmd.quant = Some(Quant::Int8); // #96 flag-only override
             cmd.grad_checkpointing = Some(true); // M13 flag-only override
+            // The #101 path overrides: --denoiser beats the env layer below;
+            // the other three are flag-only.
+            cmd.denoiser = Some("flag/denoiser.safetensors".into());
+            cmd.text_encoder = Some("flag/te.safetensors".into());
+            cmd.vae = Some("flag/vae.safetensors".into());
+            cmd.tokenizer = Some("flag/tokenizer.json".into());
+            jail.set_env("LORACTL_MODEL__DENOISER", "env/denoiser.safetensors");
 
             let config = resolve_config(&cmd).expect("resolve");
             assert_eq!(config.optim.lr, 0.0003, "flag must win over env and file");
@@ -523,6 +574,26 @@ mod tests {
             // The #96 quant knob reaches the config the same way (the trainer
             // guard restricts the legal backend/precision combos in core).
             assert_eq!(config.compute.quant, Quant::Int8);
+            // The #101 path flags reach the config, and --denoiser beats the
+            // env layer (the component loaders resolve relative-vs-absolute
+            // in core; here only the layering is under test).
+            assert_eq!(
+                config.model.denoiser.as_deref(),
+                Some(std::path::Path::new("flag/denoiser.safetensors")),
+                "flag must win over the env layer"
+            );
+            assert_eq!(
+                config.model.text_encoder.as_deref(),
+                Some(std::path::Path::new("flag/te.safetensors"))
+            );
+            assert_eq!(
+                config.model.vae.as_deref(),
+                Some(std::path::Path::new("flag/vae.safetensors"))
+            );
+            assert_eq!(
+                config.model.tokenizer.as_deref(),
+                Some(std::path::Path::new("flag/tokenizer.json"))
+            );
             Ok(())
         });
     }
