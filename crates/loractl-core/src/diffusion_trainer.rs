@@ -1053,6 +1053,18 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         .no_grad()
     };
 
+    // Reclaim the pool pages the streaming base load left cached before the
+    // training loop allocates. The int8 load dequantizes each frozen weight to
+    // a transient f32 to quantize it, then drops it — but cubecl's CUDA pool
+    // returns fully-free pages only on an EXPLICIT cleanup (the automatic path
+    // is a no-op for its sliced pools, and cubecl-cuda never cleans on the hot
+    // path), so those ~GB of transients sit reserved. Sync so no kernel is in
+    // flight while pages are reclaimed, then again to flush the deferred
+    // cuMemFree. No-op on ndarray (Backend's default body).
+    AB::sync(&device).map_err(|e| anyhow!("post-load sync: {e:?}"))?;
+    AB::memory_cleanup(&device);
+    AB::sync(&device).map_err(|e| anyhow!("post-cleanup sync: {e:?}"))?;
+
     let sites = mmdit.injectable_sites();
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);
     if set.deltas.is_empty() {
