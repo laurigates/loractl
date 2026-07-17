@@ -1,0 +1,16 @@
+[package]
+name = "loractl-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Backend-agnostic compute measurement harness (RESULT/SANITY schema, wall-sync timing) for loractl."
+# Not published to crates.io — consumed in-workspace by loractl-core and, later,
+# by custom-attention-engine-framework via a git dependency.
+publish = false
+
+[dependencies]
+
+[dev-dependencies]

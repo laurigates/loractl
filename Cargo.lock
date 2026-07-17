@@ -3711,6 +3711,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "loractl-bench"
+version = "0.10.0"
+
+[[package]]
 name = "loractl-cli"
 version = "0.10.0"
 dependencies = [
