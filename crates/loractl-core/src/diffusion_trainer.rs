@@ -1071,6 +1071,39 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         .no_grad()
     };
 
+    // Reclaim the pool pages the streaming quantized base load left cached
+    // before the training loop allocates. Gated on the quant path because
+    // this bracket exists ONLY to reclaim the QUANT streaming load's f32
+    // dequant transients: that load dequantizes each frozen weight to a
+    // transient f32 and drops it, but cubecl-cuda returns fully-free pool
+    // pages to the driver only on an EXPLICIT cleanup, so several GB sit
+    // reserved after load (RTX 4090: int4 resident ~14.9 GB unreclaimed vs
+    // ~10.1 GB reclaimed; int8 ~20.1 -> ~17.1 GB — measured under the cubecl
+    // fork pin; the stock-build magnitude is what this PR's A/B gate
+    // verifies). Per ADR-0005 the training step is VRAM-bound, so this is
+    // step headroom.
+    //
+    // The quant guard above already restricts quant to ndarray (where
+    // memory_cleanup is a no-op) and cuda (the reclaim target), so non-quant
+    // loads never enter this block and other backends' semantics are left
+    // untouched — notably burn-candle's Backend::sync returns Err on every
+    // Metal device (burn-candle 0.21 backend.rs), which would otherwise kill
+    // a perfectly good candle run right after a successful load.
+    //
+    // Safe on stock cubecl 0.10 at this point: the cleanup is bracketed by
+    // Backend::sync (submit_blocking on the same serialized device queue —
+    // nothing queued or in flight when it runs), and stock cleanup can only
+    // free pages whose descriptor Arc has no external holder, rewriting
+    // survivors' indices through the shared descriptor every live handle
+    // reads. The cubecl#1401 hazard needs in-flight/queued work — excluded
+    // here. Precedent: examples/quant_probe.rs runs this exact bracketed
+    // pattern on stock cubecl.
+    if config.compute.quant != Quant::None {
+        AB::sync(&device).map_err(|e| anyhow!("post-load sync: {e:?}"))?;
+        AB::memory_cleanup(&device);
+        AB::sync(&device).map_err(|e| anyhow!("post-cleanup sync: {e:?}"))?;
+    }
+
     let sites = mmdit.injectable_sites();
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);
     if set.deltas.is_empty() {
