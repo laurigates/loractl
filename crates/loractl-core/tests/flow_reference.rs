@@ -25,7 +25,7 @@ use burn::module::Param;
 use burn::nn::{DropoutConfig, Linear};
 use burn::optim::{GradientsParams, Optimizer, SgdConfig};
 use burn::tensor::{Tensor, TensorData, Tolerance};
-use loractl_core::config::FlowConfig;
+use loractl_core::config::{FlowConfig, ShiftMode};
 use loractl_core::{LoraLinear, LoraMlp, flow};
 
 /// Plain CPU backend for the pure-math (sampler/interp) sections.
@@ -57,24 +57,30 @@ const U: [f32; 8] = [-2.5, -1.0, -0.3, 0.0, 0.4, 1.0, 2.0, 3.0]; // raw normal d
 
 /// Sampler config (a): the SD3 defaults + the kohya/SD3-scheduler shift.
 /// MUST match the golden's `sampler_symmetric`.
-const SYMMETRIC: FlowConfig = FlowConfig {
-    logit_mean: 0.0,
-    logit_std: 1.0,
-    shift: 3.0,
-};
+fn symmetric() -> FlowConfig {
+    FlowConfig {
+        logit_mean: 0.0,
+        logit_std: 1.0,
+        shift: 3.0,
+        ..FlowConfig::default()
+    }
+}
 /// Sampler config (b): deliberately asymmetric (mean 0.5, std 2.0, shift 1.5)
 /// so a `sigmoid(-u)` or mean-sign error cannot cancel the way it would at the
 /// symmetric defaults. MUST match the golden's `sampler_asymmetric`.
-const ASYMMETRIC: FlowConfig = FlowConfig {
-    logit_mean: 0.5,
-    logit_std: 2.0,
-    shift: 1.5,
-};
+fn asymmetric() -> FlowConfig {
+    FlowConfig {
+        logit_mean: 0.5,
+        logit_std: 2.0,
+        shift: 1.5,
+        ..FlowConfig::default()
+    }
+}
 
 #[derive(serde::Deserialize)]
 struct Golden {
     sampler: SamplerGolden,
-    resolution_shift: Vec<ResolutionCase>,
+    resolution_shift: ResolutionShiftGolden,
     interp: InterpGolden,
     train: TrainGolden,
 }
@@ -83,6 +89,7 @@ struct Golden {
 struct SamplerGolden {
     symmetric: SymmetricGolden,
     asymmetric: AsymmetricGolden,
+    resolution_mode: ResolutionModeGolden,
 }
 
 #[derive(serde::Deserialize)]
@@ -94,6 +101,46 @@ struct SymmetricGolden {
 #[derive(serde::Deserialize)]
 struct AsymmetricGolden {
     t_shifted: Vec<f32>,
+}
+
+#[derive(serde::Deserialize)]
+struct ResolutionModeGolden {
+    seq_len: usize,
+    t_shifted: Vec<f32>,
+}
+
+#[derive(serde::Deserialize)]
+struct ResolutionShiftGolden {
+    flux: ResolutionShiftSet,
+    krea2: ResolutionShiftSet,
+}
+
+#[derive(serde::Deserialize)]
+struct ResolutionShiftSet {
+    endpoints: Endpoints,
+    cases: Vec<ResolutionCase>,
+}
+
+#[derive(serde::Deserialize)]
+struct Endpoints {
+    base_image_seq_len: usize,
+    max_image_seq_len: usize,
+    base_shift: f64,
+    max_shift: f64,
+}
+
+impl Endpoints {
+    /// A [`FlowConfig`] carrying these μ-line anchors (sampler fields at the
+    /// defaults — irrelevant to `resolution_shift`, which reads anchors only).
+    fn config(&self) -> FlowConfig {
+        FlowConfig {
+            base_image_seq_len: self.base_image_seq_len,
+            max_image_seq_len: self.max_image_seq_len,
+            base_shift: self.base_shift,
+            max_shift: self.max_shift,
+            ..FlowConfig::default()
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -142,7 +189,7 @@ fn timestep_sampler_matches_reference() {
         TensorData::new(g.sampler.symmetric.t_sigmoid.clone(), [8]),
         &device,
     );
-    flow::shift_timesteps(t_sigmoid, SYMMETRIC.shift)
+    flow::shift_timesteps(t_sigmoid, symmetric().shift)
         .into_data()
         .assert_approx_eq::<f32>(
             &TensorData::new(g.sampler.symmetric.t_shifted.clone(), [8]),
@@ -152,12 +199,12 @@ fn timestep_sampler_matches_reference() {
     // (a) the FULL `logit_to_t` composition fed the raw normal draws — this is
     // the exact transform `sample_timesteps` feeds its RNG draws into.
     let u = Tensor::<TB, 1>::from_data(TensorData::new(U.to_vec(), [8]), &device);
-    flow::logit_to_t(u.clone(), SYMMETRIC)
+    flow::logit_to_t(u.clone(), symmetric())
         .into_data()
         .assert_approx_eq::<f32>(&TensorData::new(g.sampler.symmetric.t_shifted, [8]), tol());
 
     // (b) the asymmetric config through the full composition only.
-    flow::logit_to_t(u, ASYMMETRIC)
+    flow::logit_to_t(u, asymmetric())
         .into_data()
         .assert_approx_eq::<f32>(&TensorData::new(g.sampler.asymmetric.t_shifted, [8]), tol());
 }
@@ -165,20 +212,101 @@ fn timestep_sampler_matches_reference() {
 #[test]
 fn resolution_shift_matches_reference() {
     // f64 in both Python and Rust computing the same μ line + exp — the golden
-    // values reproduce to within a few ulps, so 1e-12 is generous.
-    for case in golden().resolution_shift {
-        let got = flow::resolution_shift(case.seq_len);
-        assert!(
-            (got - case.shift).abs() < 1e-12,
-            "resolution_shift({}) = {got}, golden {}",
-            case.seq_len,
-            case.shift
-        );
+    // values reproduce to within a few ulps, so 1e-12 is generous. Two anchor
+    // sets: FLUX's line (max 4096, fed explicitly) and Krea 2's (max 6400 —
+    // which MUST be `FlowConfig::default()`'s anchors, pinned below).
+    let g = golden().resolution_shift;
+    for (set, name) in [(&g.flux, "flux"), (&g.krea2, "krea2")] {
+        let cfg = set.endpoints.config();
+        for case in &set.cases {
+            let got = flow::resolution_shift(case.seq_len, cfg);
+            assert!(
+                (got - case.shift).abs() < 1e-12,
+                "{name}: resolution_shift({}) = {got}, golden {}",
+                case.seq_len,
+                case.shift
+            );
+        }
     }
+
+    // The Krea 2 anchor set IS the config default (ai-toolkit krea2.py
+    // scheduler_config) — the golden and the shipped defaults must agree.
+    let default = FlowConfig::default();
+    assert_eq!(
+        g.krea2.endpoints.base_image_seq_len,
+        default.base_image_seq_len
+    );
+    assert_eq!(
+        g.krea2.endpoints.max_image_seq_len,
+        default.max_image_seq_len
+    );
+    assert_eq!(g.krea2.endpoints.base_shift, default.base_shift);
+    assert_eq!(g.krea2.endpoints.max_shift, default.max_shift);
+
     // Endpoint anchors, exact by construction of the μ line: the returned value
-    // is the LINEAR shift exp(μ), NOT μ itself (the μ-vs-exp(μ) confusion guard).
-    assert!((flow::resolution_shift(256) - 0.5f64.exp()).abs() < 1e-12);
-    assert!((flow::resolution_shift(4096) - 1.15f64.exp()).abs() < 1e-12);
+    // is the LINEAR shift exp(μ), NOT μ itself (the μ-vs-exp(μ) confusion
+    // guard). Krea 2's line ends at 6400, not FLUX's 4096.
+    assert!((flow::resolution_shift(256, default) - 0.5f64.exp()).abs() < 1e-12);
+    assert!((flow::resolution_shift(6400, default) - 1.15f64.exp()).abs() < 1e-12);
+    assert!(
+        (flow::resolution_shift(4096, g.flux.endpoints.config()) - 1.15f64.exp()).abs() < 1e-12
+    );
+}
+
+/// `resolve_shift` is the per-batch dispatch the diffusion trainer routes
+/// through (#84): constant mode passes the config through untouched (whatever
+/// the image-token count); resolution mode replaces ONLY `shift` with
+/// `exp(μ(seq_len))` and must ignore the constant `shift` it replaces.
+#[test]
+fn resolve_shift_dispatches_on_mode() {
+    let constant = FlowConfig {
+        shift: 3.0,
+        shift_mode: ShiftMode::Constant,
+        ..FlowConfig::default()
+    };
+    assert_eq!(flow::resolve_shift(constant, 1024), constant);
+    assert_eq!(flow::resolve_shift(constant, 6400), constant);
+
+    let resolution = FlowConfig {
+        // A deliberately wrong constant: resolution mode must not read it.
+        shift: 999.0,
+        shift_mode: ShiftMode::Resolution,
+        ..FlowConfig::default()
+    };
+    let resolved = flow::resolve_shift(resolution, 1024);
+    assert_eq!(resolved.shift, flow::resolution_shift(1024, resolution));
+    // Everything except `shift` passes through unchanged.
+    assert_eq!(
+        FlowConfig {
+            shift: 999.0,
+            ..resolved
+        },
+        resolution,
+        "resolve_shift must only replace the shift field"
+    );
+}
+
+/// The resolution-MODE composition end to end: the full logit-normal sampler
+/// with the shift resolved from the image-token count — exactly what the
+/// diffusion trainer feeds `sample_timesteps` per bucket — pinned against the
+/// PyTorch reference at the Krea 2 anchors.
+#[test]
+fn resolution_mode_composition_matches_reference() {
+    let g = golden();
+    let device = Default::default();
+
+    let cfg = FlowConfig {
+        shift_mode: ShiftMode::Resolution,
+        ..FlowConfig::default()
+    };
+    let resolved = flow::resolve_shift(cfg, g.sampler.resolution_mode.seq_len);
+    let u = Tensor::<TB, 1>::from_data(TensorData::new(U.to_vec(), [8]), &device);
+    flow::logit_to_t(u, resolved)
+        .into_data()
+        .assert_approx_eq::<f32>(
+            &TensorData::new(g.sampler.resolution_mode.t_shifted, [8]),
+            tol(),
+        );
 }
 
 #[test]

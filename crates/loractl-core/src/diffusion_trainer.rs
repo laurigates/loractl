@@ -77,7 +77,7 @@ use crate::config::{
 use crate::dataset::prepare_dataset;
 use crate::event::TrainEvent;
 use crate::export::{ExportFormat, export_adapters, import_adapters};
-use crate::flow::{interpolate, sample_timesteps, velocity_target};
+use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
 use crate::mmdit::{BaseLinear, Mmdit, MmditConfig, krea2_positions, patchify};
 use crate::quant::{QuantBackend, quantize_linear_weight};
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
@@ -1095,9 +1095,12 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         let batch = &batches[((step - 1) as usize) % batches.len()];
         let [b, z, h, w] = batch.latents.dims();
         let flat = z * h * w;
+        let (gh, gw) = (h / patch, w / patch);
 
-        // The M8 objective over the cached latents.
-        let t = sample_timesteps::<AB>(b, config.flow, &device);
+        // The M8 objective over the cached latents. Under `flow.shift_mode:
+        // resolution` the sampler's shift follows this batch's bucket —
+        // `exp(μ(gh·gw))`, ai-toolkit's Krea 2 dynamic shifting (#84).
+        let t = sample_timesteps::<AB>(b, resolve_shift(config.flow, gh * gw), &device);
         let eps = Tensor::<AB, 4>::random([b, z, h, w], Distribution::Normal(0.0, 1.0), &device);
         let x0 = batch.latents.clone();
         let xt = interpolate(
@@ -1113,7 +1116,6 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
 
         // Token layout: text first, image tokens on the patch grid.
         let img_tokens = patchify(xt, patch);
-        let (gh, gw) = (h / patch, w / patch);
         let txt_len = batch.conditioning.dims()[1];
         let pos = krea2_positions::<AB>(txt_len, gh, gw, b, &device);
         let mask = Tensor::cat(

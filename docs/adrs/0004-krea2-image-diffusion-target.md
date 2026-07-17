@@ -225,11 +225,14 @@ scaled-fp8 turbo repacks (13.1 GB vs 26.3 GB bf16) could not load at all.
 
 **Scope note.** M15 is the load seam only; no real turbo training run is
 claimed — that remains future work alongside M14's open real-run checkbox.
-Deferred follow-ups, tracked separately: an optional Turbo training adapter
+Deferred follow-up, tracked separately: an optional Turbo training adapter
 (assistant-LoRA merge-at-load,
-[#83](https://github.com/laurigates/loractl/issues/83)) and dynamic
+[#83](https://github.com/laurigates/loractl/issues/83)). Dynamic
 resolution-based timestep-shift parity
-([#84](https://github.com/laurigates/loractl/issues/84)).
+([#84](https://github.com/laurigates/loractl/issues/84)) has since landed as
+`flow.shift_mode: resolution` — per-batch `exp(μ(gh·gw))` with Krea 2's
+ai-toolkit-documented anchors (μ linear 0.5@256 → 1.15@6400 image tokens) as
+the `FlowConfig` defaults; the krea2 example configs train with it.
 
 ## References
 
