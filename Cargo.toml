@@ -42,5 +42,22 @@ async-stream = "0.3"
 # (tracel-ai/cubecl#1401; root cause unfixed upstream as of 0.11-pre). The fork
 # pins v0.10.0 + stable page slots (tombstones instead of drain-and-renumber).
 # Drop this patch when upstream ships the fix and burn re-pins.
+# Every cubecl workspace member in the graph must come from the same source —
+# patching only the runtime leaves the graph with two copies of the sibling
+# crates' public types (E0308 mismatches against crates.io users).
 [patch.crates-io]
+cubecl = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-common = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-core = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-cpp = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-cpu = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-cuda = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-hip = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-ir = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-macros = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-macros-internal = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-opt = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
 cubecl-runtime = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-std = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-wgpu = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
+cubecl-zspace = { git = "https://github.com/laurigates/cubecl", rev = "fb92dfb7c70390ca9dccef22c3b0c17fa003d7df" }
