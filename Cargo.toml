@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/loractl-core", "crates/loractl-cli", "crates/loractl-api"]
 
 [workspace.package]
-version = "0.9.0" # x-release-please-version
+version = "0.10.0" # x-release-please-version
 edition = "2024"
 license = "MIT"
 authors = ["Lauri Gates"]

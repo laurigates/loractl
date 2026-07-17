@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.0](https://github.com/laurigates/loractl/compare/v0.9.0...v0.10.0) (2026-07-16)
+
+
+### Features
+
+* **config:** per-component model paths — load scattered ComfyUI files ([#101](https://github.com/laurigates/loractl/issues/101)) ([20a3d7a](https://github.com/laurigates/loractl/commit/20a3d7a68a4a90d4d3eaf419e0087ea7a3b10b37))
+* **encode:** load a ComfyUI native-keyed Qwen-Image VAE ([#104](https://github.com/laurigates/loractl/issues/104)) ([ad87df4](https://github.com/laurigates/loractl/commit/ad87df4454476df74b33d8a6c7522f6f3aa5c4f1))
+* **encode:** load a ComfyUI-fp8 Qwen3-VL text encoder ([#105](https://github.com/laurigates/loractl/issues/105)) ([7166c64](https://github.com/laurigates/loractl/commit/7166c64edac89bfe4238764f171eadb2e29e8863))
+* **hf:** fetch the Qwen3-VL tokenizer on demand for ComfyUI layouts ([#103](https://github.com/laurigates/loractl/issues/103)) ([248d2e3](https://github.com/laurigates/loractl/commit/248d2e30be66ca0211bb3f887c76b550589ca25f))
+
 ## [0.9.0](https://github.com/laurigates/loractl/compare/v0.8.0...v0.9.0) (2026-07-16)
 
 
