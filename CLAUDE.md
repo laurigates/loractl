@@ -76,8 +76,11 @@ M15 (#82) opened direct Krea-2-Turbo training (amending ADR-0004's
 `model.checkpoint` filename override, and auto-detected loading of
 ComfyUI-style scaled-fp8 checkpoints (`float8_e4m3fn` + `weight_scale`) via
 a lazy `LUT[byte] · scale` dequant source (`src/fp8.rs`; burn-store 0.21 has
-no fp8 dtype) — legacy/malformed fp8 files fail loudly; follow-ups: training
-adapter (#83), timestep-shift parity (#84). See
+no fp8 dtype) — legacy/malformed fp8 files fail loudly; follow-up: training
+adapter (#83). Timestep-shift parity (#84) landed as `flow.shift_mode:
+resolution` — per-batch `exp(μ(gh·gw))` with Krea 2's ai-toolkit-documented
+anchors (0.5@256 → 1.15@6400 image tokens) as the `FlowConfig` defaults,
+golden-pinned; the krea2 example configs use it. See
 the roadmap in `README.md`.
 
 **Next direction (M14's remaining checkbox, #25):** the real run — train a

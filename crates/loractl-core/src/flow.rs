@@ -23,11 +23,20 @@
 //! - Timestep sampling (SD3 Eq. 19): `u ~ N(logit_mean, logit_std)`,
 //!   `t = sigmoid(u)`, then the constant shift transform.
 //!
-//! Krea 2's exact constants are unpublished; the FLUX/SD3-class defaults in
-//! [`FlowConfig`] are the reimplementation basis (per ADR-0004's "FLUX-style"
-//! language).
+//! ## Krea 2's shift constants (documented by ai-toolkit — #84)
+//!
+//! ai-toolkit trains Krea 2 (raw and turbo alike) with FLUX-family *dynamic*
+//! resolution-dependent shifting: its `krea2.py` `scheduler_config` pins
+//! `base_image_seq_len: 256`, `max_image_seq_len: 6400`, `base_shift: 0.5`,
+//! `max_shift: 1.15`, `time_shift_type: "exponential"`,
+//! `use_dynamic_shifting: true` — i.e. `μ` linear in the image-token count
+//! through `(256, 0.5)` and `(6400, 1.15)` (FLUX's own line ends at `4096`).
+//! Those are [`FlowConfig`]'s anchor defaults, applied per batch under
+//! [`ShiftMode::Resolution`] via [`resolve_shift`]. The turbo checkpoint was
+//! *distilled* at fixed `μ = 1.15` (an inference-side scheduling fact);
+//! training-side, ai-toolkit uses the same dynamic shift for raw and turbo.
 
-use crate::config::FlowConfig;
+use crate::config::{FlowConfig, ShiftMode};
 use burn::tensor::activation::sigmoid;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Tensor};
@@ -95,16 +104,38 @@ pub fn sample_timesteps<B: Backend>(
     logit_to_t(u, cfg)
 }
 
-/// The FLUX resolution-dependent shift for a given image sequence length.
+/// The FLUX-family resolution-dependent shift for a given image sequence
+/// length (= image-token count, `(h/patch)·(w/patch)` on the latent grid).
 ///
-/// FLUX defines `μ` linear in `image_seq_len` through the anchor points
-/// `(256, 0.5)` and `(4096, 1.15)`, and applies the *dynamic* form
-/// `exp(μ) / (exp(μ) + (1/t − 1))` — which equals [`shift_timesteps`]'
-/// constant form with `shift = exp(μ)`. **`μ` is a LOG shift**; this function
-/// returns the LINEAR shift `exp(μ)`, directly consumable as
-/// [`shift_timesteps`]' / [`FlowConfig::shift`]'s value (the μ-vs-exp(μ)
-/// confusion guard for M11). `exp(μ(256)) ≈ 1.6487`, `exp(μ(4096)) ≈ 3.1582`.
-pub fn resolution_shift(image_seq_len: usize) -> f64 {
-    let mu = 0.5 + (1.15 - 0.5) * (image_seq_len as f64 - 256.0) / (4096.0 - 256.0);
+/// `μ` is linear in `image_seq_len` through `cfg`'s anchor points
+/// `(base_image_seq_len, base_shift)` and `(max_image_seq_len, max_shift)` —
+/// extrapolated, never clamped, outside them (matching diffusers'
+/// `calculate_shift`). The dynamic form `exp(μ) / (exp(μ) + (1/t − 1))`
+/// equals [`shift_timesteps`]' constant form with `shift = exp(μ)`.
+/// **`μ` is a LOG shift**; this function returns the LINEAR shift `exp(μ)`,
+/// directly consumable as [`shift_timesteps`]' / [`FlowConfig::shift`]'s
+/// value (the μ-vs-exp(μ) confusion guard for M11). At the Krea 2 default
+/// anchors: `exp(μ(256)) ≈ 1.6487`, `exp(μ(6400)) ≈ 3.1582`.
+pub fn resolution_shift(image_seq_len: usize, cfg: FlowConfig) -> f64 {
+    let (x0, x1) = (cfg.base_image_seq_len as f64, cfg.max_image_seq_len as f64);
+    let mu =
+        cfg.base_shift + (cfg.max_shift - cfg.base_shift) * (image_seq_len as f64 - x0) / (x1 - x0);
     mu.exp()
+}
+
+/// Resolve the per-batch effective sampler config for an image sequence
+/// length (#84): under [`ShiftMode::Constant`] the config passes through
+/// unchanged; under [`ShiftMode::Resolution`] the constant `shift` is
+/// replaced by [`resolution_shift`]'s `exp(μ(image_seq_len))`, so the
+/// returned config is directly consumable by [`sample_timesteps`] /
+/// [`logit_to_t`]. Callers with no image resolution (the synthetic flow toy)
+/// must reject `Resolution` instead of calling this.
+pub fn resolve_shift(cfg: FlowConfig, image_seq_len: usize) -> FlowConfig {
+    match cfg.shift_mode {
+        ShiftMode::Constant => cfg,
+        ShiftMode::Resolution => FlowConfig {
+            shift: resolution_shift(image_seq_len, cfg),
+            ..cfg
+        },
+    }
 }

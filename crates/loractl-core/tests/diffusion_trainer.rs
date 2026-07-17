@@ -416,6 +416,65 @@ fn tiny_krea2_fp8_checkpoint_override_trains_e2e() {
     );
 }
 
+/// #84: `flow.shift_mode: resolution` (the ai-toolkit Krea 2 parity mode —
+/// per-batch shift `exp(μ(gh·gw))`) is actually WIRED into the training
+/// loop. A completes-with-finite-losses smoke cannot see the wiring (the
+/// constant fallback also completes — verified by mutation), so this is a
+/// differential kill-test in the `weight_decay_changes_the_loss_trajectory`
+/// mold: two reseeded runs, identical except for `shift_mode`, must produce
+/// DIFFERENT loss trajectories. The tiny buckets carry 6 image tokens, so
+/// resolution mode resolves to `exp(μ(6)) ≈ 1.606` while constant mode uses
+/// `shift = 3.0` — same seed, same RNG draw order, different `t` mapping. If
+/// the per-batch `resolve_shift` call is ever dropped, both runs become
+/// bit-identical and the inequality fails. (The resolved-shift *values* are
+/// golden-pinned in `flow_reference.rs`; the run contract is pinned by the
+/// main e2e above.)
+#[test]
+fn resolution_shift_mode_changes_the_loss_trajectory() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("diffusion-res-shift");
+    let dataset = staged_dataset(&out);
+
+    let run = |mode: loractl_core::config::ShiftMode, tag: &str| {
+        let mut cfg = config(&out, dataset.clone());
+        cfg.steps = 6;
+        cfg.output.checkpoint_every = 10_000; // final save only
+        cfg.output.dir = out.0.join(tag); // fresh dir: no resume cross-talk
+        cfg.flow.shift_mode = mode;
+
+        let mut losses = Vec::new();
+        let adapter = DiffusionTrainer
+            .train(&cfg, &mut |event| {
+                if let TrainEvent::Step { loss, .. } = event {
+                    losses.push(loss);
+                }
+            })
+            .unwrap_or_else(|e| panic!("the {tag} run completes: {e:#}"));
+        assert_eq!(losses.len(), 6, "{tag}: one Step per step");
+        assert!(
+            losses.iter().all(|l| l.is_finite()),
+            "{tag}: non-finite loss: {losses:?}"
+        );
+        assert_eq!(kohya_keys(&adapter).len(), 42, "{tag}: kohya export layout");
+        losses
+    };
+
+    let constant = run(loractl_core::config::ShiftMode::Constant, "constant");
+    // The second run reuses the first run's encoder cache — the shift mode
+    // must not perturb the cached latents/conditioning, only the sampled t.
+    let resolution = run(loractl_core::config::ShiftMode::Resolution, "resolution");
+
+    assert_ne!(
+        constant, resolution,
+        "shift_mode: resolution must change the sampled timesteps (and so the \
+         loss trajectory) vs the constant shift under the same seed — identical \
+         trajectories mean the per-batch resolve_shift is not wired into the \
+         training loop"
+    );
+}
+
 fn kohya_keys(path: &Path) -> Vec<String> {
     let bytes = std::fs::read(path).unwrap();
     let st = safetensors::SafeTensors::deserialize(&bytes).unwrap();

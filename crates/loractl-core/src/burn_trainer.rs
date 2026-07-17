@@ -64,7 +64,7 @@
 //! through the `&mut dyn FnMut(TrainEvent)` sink.
 
 use crate::adapter;
-use crate::config::{BackendKind, FlowConfig, Precision, Quant, TaskKind, TrainConfig};
+use crate::config::{BackendKind, FlowConfig, Precision, Quant, ShiftMode, TaskKind, TrainConfig};
 use crate::event::TrainEvent;
 use crate::flow;
 use crate::model::LoraMlp;
@@ -150,6 +150,18 @@ impl Trainer for BurnTrainer {
                  the flow-matching task trains a velocity net with no classifier sample path; \
                  set output.sample_every to 0",
                 config.output.sample_every
+            );
+        }
+        // The resolution-dependent shift (#84) needs an image-token count,
+        // which only the diffusion trainer's latent batches carry — the
+        // synthetic flow toy has no resolution. Fail loudly rather than
+        // silently fall back to the constant shift.
+        if config.task == TaskKind::FlowMatching && config.flow.shift_mode == ShiftMode::Resolution
+        {
+            anyhow::bail!(
+                "flow.shift_mode: resolution derives the shift from the image-token count, \
+                 which the synthetic flow toy does not have — it applies to the diffusion \
+                 trainer only; set flow.shift_mode to constant"
             );
         }
         // Frozen-base int8 quantization (#96) applies only to the diffusion

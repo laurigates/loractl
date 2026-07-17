@@ -62,4 +62,9 @@ compute:
   grad_checkpointing: true
 
 flow:
-  shift: 3.0                   # kohya/SD3 default; see flow::resolution_shift
+  shift_mode: resolution       # ai-toolkit Krea 2 parity (#84): per-batch shift
+                               # exp(μ), μ linear 0.5@256 → 1.15@6400 image
+                               # tokens (the anchor defaults; override with
+                               # base/max_image_seq_len + base/max_shift).
+                               # `constant` + `shift: 3.0` is the kohya/SD3
+                               # fallback.
