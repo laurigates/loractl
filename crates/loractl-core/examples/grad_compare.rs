@@ -70,6 +70,10 @@ mod run {
         let remapper = KeyRemapper::from_patterns(Mmdit::<AB>::key_remap().to_vec()).unwrap();
         let mut store = SafetensorsStore::from_file(base.join("raw.safetensors"))
             .remap(remapper)
+            // Bridge BaseLinear's `Plain`/`Quant` enum-variant path segment
+            // (`blocks.0.attn.wq.Plain.weight`) so the checkpoint's
+            // `blocks.0.attn.wq.weight` matches — as `load_module` does.
+            .skip_enum_variants(true)
             .with_from_adapter(PyTorchToBurnAdapter.chain(CastFloatsAdapter {
                 target: <AB::FloatElem as Element>::dtype(),
             }));
