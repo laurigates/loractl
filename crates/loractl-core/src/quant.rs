@@ -31,6 +31,7 @@
 //! citizen. When the 0.22 migration lands (issue #79), this module and the
 //! `BaseLinear::Quant` arm are the surface to re-evaluate and likely delete.
 
+use crate::config::Quant;
 use burn::backend::Autodiff;
 use burn::backend::NdArray;
 use burn::backend::autodiff::checkpoint::base::Checkpointer;
@@ -50,30 +51,46 @@ use burn::tensor::{Tensor, TensorPrimitive};
 /// expressible (burn's `BlockSize` dims are u8-bounded, d_in reaches 16384).
 pub const QUANT_BLOCK: usize = 32;
 
-/// The scheme every frozen-base weight is quantized with: symmetric int8
-/// (`Q8S`, zero-point-free), one f32 scale per `[1, QUANT_BLOCK]` block.
-/// Built on the backend's own `default_scheme` so the *storage* layout stays
-/// backend-appropriate (packed u32 on cubecl/cuda, native i8 on ndarray).
-pub fn int8_scheme<B: Backend>() -> QuantScheme {
+/// The scheme every frozen-base weight is quantized with: per-block symmetric
+/// (zero-point-free), one f32 scale per `[1, QUANT_BLOCK]` block, parametrized
+/// by the [`QuantValue`] the caller picks (`Q8S` for int8, `Q4S` for int4 —
+/// both symmetric; `QUANT_BLOCK = 32` tiles either since `32 % num_quants` is
+/// 0 for both). Built on the backend's own `default_scheme` so the *storage*
+/// layout stays backend-appropriate (packed u32 on cubecl/cuda — the generic
+/// `PackedU32` packs 8 int4 or 4 int8 per word — native i8 on ndarray).
+pub fn quant_scheme<B: Backend>(value: QuantValue) -> QuantScheme {
     <B::QuantizedTensorPrimitive as QTensorPrimitive>::default_scheme()
-        .with_value(QuantValue::Q8S)
+        .with_value(value)
         .with_level(QuantLevel::block([1, QUANT_BLOCK as u8]))
         .with_param(QuantParam::F32)
         .with_mode(QuantMode::Symmetric)
 }
 
-/// Quantizes one `[d_out, d_in]` linear weight with [`int8_scheme`]
-/// (min-max calibration — exact for symmetric int8). Panics when `d_in`
-/// does not divide into blocks: that is a module-construction programmer
-/// error, and mis-aligned blocks would silently mis-scale every row.
-pub fn quantize_linear_weight<B: Backend>(weight: Tensor<B, 2>) -> Tensor<B, 2> {
+/// Quantizes one `[d_out, d_in]` linear weight with [`quant_scheme`] at the
+/// given [`QuantValue`] (min-max calibration — exact for symmetric int8/int4).
+/// Panics when `d_in` does not divide into blocks: that is a
+/// module-construction programmer error, and mis-aligned blocks would silently
+/// mis-scale every row.
+pub fn quantize_linear_weight<B: Backend>(weight: Tensor<B, 2>, value: QuantValue) -> Tensor<B, 2> {
     let [d_out, d_in] = weight.dims();
     assert!(
         d_in % QUANT_BLOCK == 0,
         "linear weight [{d_out}, {d_in}]: the input dim must be a multiple of the quant block \
          ({QUANT_BLOCK})"
     );
-    weight.quantize_dynamic(&int8_scheme::<B>())
+    weight.quantize_dynamic(&quant_scheme::<B>(value))
+}
+
+/// The [`Quant`] config knob → the burn [`QuantValue`] the frozen base is
+/// quantized with. `None` → no quantization; `Int8` → `Q8S`; `Int4` → `Q4S`.
+/// Lives here (not in `config.rs`) so the config module stays free of burn
+/// imports — the same core-owns-the-vocabulary split as [`Quant`]'s `FromStr`.
+pub fn quant_value(q: Quant) -> Option<QuantValue> {
+    match q {
+        Quant::None => None,
+        Quant::Int8 => Some(QuantValue::Q8S),
+        Quant::Int4 => Some(QuantValue::Q4S),
+    }
 }
 
 /// The one quantized compute primitive the trainer needs: `x · dequant(wq)ᵀ`

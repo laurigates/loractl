@@ -3736,6 +3736,7 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "burn",
+ "burn-ndarray",
  "burn-store",
  "image",
  "memmap2",

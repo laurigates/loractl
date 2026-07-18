@@ -182,9 +182,10 @@ struct TrainCmd {
     #[arg(long, value_parser = parse_precision)]
     precision: Option<Precision>,
 
-    /// Override frozen-base quantization from the config: `none` (default) or
-    /// `int8` (the diffusion trainer's MMDiT base as per-block int8; ndarray
-    /// or cuda + f32 only — #96).
+    /// Override frozen-base quantization from the config: `none` (default),
+    /// `int8` (the diffusion trainer's MMDiT base as per-block int8, ~1/4 f32),
+    /// or `int4` (per-block int4, ~1/8 f32 — halves int8's resident base to fit
+    /// a 24 GB step); ndarray or cuda + f32 only — #96.
     #[arg(long, value_parser = parse_quant)]
     quant: Option<Quant>,
 

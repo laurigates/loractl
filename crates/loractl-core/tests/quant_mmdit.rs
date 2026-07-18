@@ -1,8 +1,12 @@
-//! Int8 frozen-base quantization of the Krea 2 MMDiT (PR-B2, #96).
+//! Frozen-base quantization of the Krea 2 MMDiT (PR-B2, #96) — int8 (`Q8S`)
+//! and int4 (`Q4S`).
 //!
-//! Four offline (ndarray) proofs that `Mmdit::into_quantized` swaps each
-//! frozen-base `Linear` for its int8 [`BaseLinear::Quant`] twin **without**
-//! disturbing behavior or the M6 LoRA attach seam:
+//! Offline (ndarray) proofs that `Mmdit::into_quantized` swaps each frozen-base
+//! `Linear` for its quantized [`BaseLinear::Quant`] twin **without** disturbing
+//! behavior or the M6 LoRA attach seam. The forward-equivalence and
+//! single-linear orientation proofs run for both schemes (int4 with looser
+//! tolerances — coarser quant); the attach-seam, one-step-train, and coverage
+//! proofs are scheme-independent and run on int8:
 //!
 //! 1. **Forward equivalence** — a quantized forward tracks the plain one
 //!    within a loose int8 bound. This is the test that proves the weight
@@ -19,6 +23,7 @@
 
 use burn::backend::{Autodiff, NdArray};
 use burn::tensor::backend::Backend;
+use burn::tensor::quantization::QuantValue;
 use burn::tensor::{Tensor, TensorData};
 use loractl_core::adapters::LoraAdapters;
 use loractl_core::lora::LoraDelta;
@@ -34,6 +39,17 @@ type AB = Autodiff<NdArray>;
 /// percent; a wrong weight orientation gives O(1) (or panics on a shape
 /// mismatch), so this catches a gross bug while tolerating int8 noise.
 const REL_TOL: f32 = 5.0e-2;
+
+/// The int4 (`Q4S`) counterpart of [`REL_TOL`]. int4 has 15 levels vs int8's
+/// 255, so per-weight error is ~17× coarser and the whole-model forward drifts
+/// more — the bound is looser but still catches a gross bug (a wrong weight
+/// orientation is O(1), far past this).
+const REL_TOL_INT4: f32 = 5.0e-1;
+
+/// Cosine-similarity floor for a correct quantized forward: int8 preserves the
+/// output direction to ~1e-3; int4's coarser quant loosens the floor a touch.
+const COS_MIN_INT8: f64 = 0.999;
+const COS_MIN_INT4: f64 = 0.99;
 
 /// Deterministic bounded input data: a strided `sin` ramp.
 fn ramp(n: usize, phase: f32) -> Vec<f32> {
@@ -97,10 +113,10 @@ fn zero_init_adapters<Bk: Backend>(model: &Mmdit<Bk>, device: &Bk::Device) -> Lo
 
 /// The cleanest orientation proof, free of whole-model amplification: quantize
 /// one `Linear` and compare `BaseLinear::Quant::forward` to `Linear::forward`
-/// on the same input. A correct transpose gives ~int8 precision (~0.3%); a
-/// wrong one gives O(1) (or a shape mismatch on non-square projections).
-#[test]
-fn single_linear_quant_matches_plain() {
+/// on the same input. A correct transpose gives ~scheme precision (int8 ~0.3%,
+/// int4 coarser); a wrong one gives O(1) (or a shape mismatch on non-square
+/// projections). `tol` is the per-scheme relative bound.
+fn single_linear_quant_matches(value: QuantValue, tol: f32) {
     use burn::module::Param;
     use burn::nn::LinearConfig;
     use loractl_core::mmdit::{BaseLinear, QuantLinear};
@@ -113,7 +129,7 @@ fn single_linear_quant_matches_plain() {
     let plain = flatten(lin.forward(x.clone()));
     // burn `Linear` weight is `[d_in, d_out]`; the quant path wants file layout
     // `[d_out, d_in]`, so transpose before quantizing (mirrors into_quantized).
-    let wq = quantize_linear_weight(lin.weight.val().transpose());
+    let wq = quantize_linear_weight(lin.weight.val().transpose(), value);
     let q = BaseLinear::Quant(QuantLinear {
         weight: Param::from_tensor(wq),
         bias: lin.bias.clone(),
@@ -126,15 +142,24 @@ fn single_linear_quant_matches_plain() {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     let rel = max_abs / peak;
-    eprintln!("single Linear quant vs plain: max|Δ|/peak = {rel:e}");
+    eprintln!("single Linear quant vs plain ({value:?}): max|Δ|/peak = {rel:e}");
     assert!(
-        rel <= 2.0e-2,
-        "single-Linear quant drifts {rel:e} — orientation/precision bug"
+        rel <= tol,
+        "single-Linear quant drifts {rel:e} ({value:?}) — orientation/precision bug"
     );
 }
 
 #[test]
-fn quantized_forward_matches_plain_within_int8_tolerance() {
+fn single_linear_int8_quant_matches_plain() {
+    single_linear_quant_matches(QuantValue::Q8S, 2.0e-2);
+}
+
+#[test]
+fn single_linear_int4_quant_matches_plain() {
+    single_linear_quant_matches(QuantValue::Q4S, 2.0e-1);
+}
+
+fn quantized_forward_matches_plain(value: QuantValue, rel_tol: f32, cos_min: f64) {
     let device = Default::default();
     let cfg = MmditConfig::tiny_krea2();
     let plain = Mmdit::<B>::init(cfg.clone(), &device);
@@ -152,7 +177,7 @@ fn quantized_forward_matches_plain_within_int8_tolerance() {
         mask.clone(),
     ));
     // The clone now copies materialized weights; quantize the clone in place.
-    let quant = plain.clone().into_quantized(&device);
+    let quant = plain.clone().into_quantized(value, &device);
     let out_quant = flatten(quant.forward(img, context, t, pos, mask));
 
     assert_eq!(out_plain.len(), out_quant.len(), "output length mismatch");
@@ -165,7 +190,7 @@ fn quantized_forward_matches_plain_within_int8_tolerance() {
         .fold(0.0f32, f32::max);
     let rel = max_abs / peak;
     let cos = cosine(&out_plain, &out_quant);
-    eprintln!("quant vs plain: max|Δ|/peak = {rel:e}, cos = {cos:.6}");
+    eprintln!("quant vs plain ({value:?}): max|Δ|/peak = {rel:e}, cos = {cos:.6}");
 
     // Quantization actually happened (not a silent Plain passthrough)...
     assert!(
@@ -174,17 +199,27 @@ fn quantized_forward_matches_plain_within_int8_tolerance() {
     );
     // ...and the whole quantized forward tracks the plain one: a wrong weight
     // orientation would give O(1) drift (or a shape-mismatch panic on the
-    // non-square projections), not int8 noise. Both bounds are loose relative
-    // to the observed ~0.2% / ~1.0 so they fail only on a gross bug.
+    // non-square projections), not quant noise. Both bounds are loose relative
+    // to the observed drift so they fail only on a gross bug.
     assert!(
-        rel <= REL_TOL,
-        "quantized forward drifts rel = {rel:e} from plain (tol {REL_TOL:e}) — \
+        rel <= rel_tol,
+        "quantized forward drifts rel = {rel:e} from plain ({value:?}, tol {rel_tol:e}) — \
          suspect the weight orientation in into_quantized/BaseLinear::forward"
     );
     assert!(
-        cos >= 0.999,
-        "quantized forward direction diverged (cos = {cos:.6}) — suspect orientation"
+        cos >= cos_min,
+        "quantized forward direction diverged ({value:?}, cos = {cos:.6}) — suspect orientation"
     );
+}
+
+#[test]
+fn quantized_forward_matches_plain_within_int8_tolerance() {
+    quantized_forward_matches_plain(QuantValue::Q8S, REL_TOL, COS_MIN_INT8);
+}
+
+#[test]
+fn quantized_forward_matches_plain_within_int4_tolerance() {
+    quantized_forward_matches_plain(QuantValue::Q4S, REL_TOL_INT4, COS_MIN_INT4);
 }
 
 /// Cosine similarity of two flattened outputs.
@@ -199,7 +234,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 fn zero_init_adapters_are_a_noop_on_quantized_base() {
     let device = Default::default();
     let cfg = MmditConfig::tiny_krea2();
-    let base = Mmdit::<B>::init(cfg.clone(), &device).into_quantized(&device);
+    let base = Mmdit::<B>::init(cfg.clone(), &device).into_quantized(QuantValue::Q8S, &device);
     let set = zero_init_adapters(&base, &device);
 
     let (img, context, t, pos, mask) = inputs::<B>(&cfg, &device);
@@ -235,7 +270,8 @@ fn one_step_lora_train_on_quantized_base() {
     // burn 0.21's `Autodiff` has no `quantize` op (todo!()), so quantize on
     // the inner backend and lift the module with `from_inner` — the exact
     // path the trainer uses (see tests/quant.rs).
-    let base_inner = Mmdit::<B>::init(cfg.clone(), &device).into_quantized(&device);
+    let base_inner =
+        Mmdit::<B>::init(cfg.clone(), &device).into_quantized(QuantValue::Q8S, &device);
     let base = <Mmdit<AB> as AutodiffModule<AB>>::from_inner(base_inner);
 
     let mut set = zero_init_adapters(&base, &device);
@@ -355,8 +391,10 @@ fn all_base_linears_mut_covers_every_into_quantized_site() {
     // After into_quantized, every comprehensive site is `Quant` except those
     // whose d_in is not block-aligned — on tiny_krea2 that is exactly `tmlp.fc1`
     // (tdim = 16). This is the agreement between the accessor and into_quantized.
-    let mut quantized =
-        Mmdit::<B>::init(MmditConfig::tiny_krea2(), &device).into_quantized(&device);
+    // Block alignment is scheme-independent, so the Plain/Quant split is the
+    // same for int8 and int4; int8 stands in for both here.
+    let mut quantized = Mmdit::<B>::init(MmditConfig::tiny_krea2(), &device)
+        .into_quantized(QuantValue::Q8S, &device);
     let mut plain_sites: Vec<String> = quantized
         .all_base_linears_mut()
         .into_iter()
