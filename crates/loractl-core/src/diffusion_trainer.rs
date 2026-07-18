@@ -79,7 +79,7 @@ use crate::event::TrainEvent;
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
 use crate::mmdit::{BaseLinear, Mmdit, MmditConfig, krea2_positions, patchify};
-use crate::quant::{QuantBackend, quant_value, quantize_linear_weight};
+use crate::quant::{QuantBackend, quant_value, quantize_linear_weight_chunked};
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
 use crate::qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
 use crate::train::Trainer;
@@ -829,8 +829,12 @@ pub fn load_fp8_encoder<B: burn::tensor::backend::Backend>(
 ///
 /// - **Base-linear WEIGHT keys** go through the per-tensor quant pass: force
 ///   the file snapshot to a single transient f32 `[d_out, d_in]` tensor,
-///   quantize it to the chosen scheme, replace the placeholder, drop the f32.
-///   The full-model f32 tensors are never collected together.
+///   quantize it to the chosen scheme (as the row chunks
+///   [`dequant_chunk_rows`](crate::quant::dequant_chunk_rows) prescribes for
+///   `chunk_bytes` — a pure function of `(shape, threshold)`, so the layout
+///   matches the `into_quantized_chunked` skeleton by construction, #128),
+///   replace the placeholder, drop the f32. The full-model f32 tensors are
+///   never collected together.
 /// - **Everything else** (norms, modulations, first/last/projector, the base
 ///   linears' biases, and any site `into_quantized` left `Plain` on an
 ///   unaligned `d_in`) flows through the store applier over the SAME lazy
@@ -854,19 +858,27 @@ pub fn load_fp8_encoder<B: burn::tensor::backend::Backend>(
 /// Every `Quant` site MUST find its weight in the checkpoint (else bail), the
 /// applier must have no `unused` file tensors and no *genuine* `missing` param.
 /// The applier legitimately reports each `Quant` weight as `missing` — it
-/// visits the QFloat `Param<Tensor>` via `map_float` but its snapshot was
+/// visits the QFloat `Param<Tensor>`s via `map_float` (per row chunk, as
+/// `{path}.weight.{i}` since the weight is a `Vec`) but their snapshot was
 /// partitioned into the quant pass — so "missing" is filtered against the set
-/// of weights the quant pass actually overwrote; anything left is a real gap.
+/// of weights the quant pass actually overwrote (matching both the bare
+/// `.weight` key and its `.weight.{i}` chunk keys); anything left is a real
+/// gap.
 // `pub` so the on-box memory/quality probe (`examples/quant_probe.rs`) loads the
 // real base through the EXACT path the trainer uses — the VRAM and dequant-error
 // numbers it reports then describe production behavior, not a replica that could
 // drift. Not part of the crate's stable surface; it moves with the trainer.
+// 8 args: the #128 `chunk_bytes` pushed this over clippy's 7-arg line. The
+// signature is a two-caller internal seam (trainer + on-box probe), and a
+// one-off params struct would only move the same eight names one level down.
+#[allow(clippy::too_many_arguments)]
 pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     mut module: Mmdit<B>,
     path: &Path,
     remap: &[(&str, &str)],
     what: &str,
     value: QuantValue,
+    chunk_bytes: u64,
     device: &B::Device,
     sink: &mut dyn FnMut(TrainEvent),
 ) -> Result<Mmdit<B>> {
@@ -891,6 +903,8 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     //    (step 4).
     let mut quantized = 0usize;
     let mut left_plain = 0usize;
+    let mut chunked_sites = 0usize;
+    let mut total_chunks = 0usize;
     let mut covered: HashSet<String> = HashSet::new();
     for (path_key, base) in module.all_base_linears_mut() {
         let weight_key = format!("{path_key}.weight");
@@ -903,13 +917,21 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
                         path.display()
                     )
                 })?;
-                // Force ONE transient f32 [d_out, d_in]; quantize; drop it.
+                // Force ONE transient f32 [d_out, d_in]; quantize (as row
+                // chunks under the #128 threshold); drop it.
                 let data = snapshot
                     .to_data()
                     .map_err(|e| anyhow!("forcing {weight_key} from {}: {e:?}", path.display()))?
                     .convert_dtype(DType::F32);
                 let w = Tensor::<B, 2>::from_data(data, device);
-                q.weight = Param::from_tensor(quantize_linear_weight(w, value));
+                let chunks = quantize_linear_weight_chunked(w, value, chunk_bytes);
+                if chunks.len() > 1 {
+                    chunked_sites += 1;
+                    // Count only SPLIT sites' chunks, so the warning's
+                    // "split N sites into K chunks" arithmetic reads true.
+                    total_chunks += chunks.len();
+                }
+                q.weight = chunks.into_iter().map(Param::from_tensor).collect();
                 quantized += 1;
                 covered.insert(weight_key);
             }
@@ -930,6 +952,16 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
              left full-precision (unaligned d_in)"
         ),
     });
+    // Chunk accounting (#128): only when the threshold actually split a site,
+    // so default runs over tiny fixtures keep their exact event stream.
+    if chunked_sites > 0 {
+        sink(TrainEvent::Warning {
+            message: format!(
+                "{what}: dequant chunking split {chunked_sites} of {quantized} quantized sites \
+                 into {total_chunks} row chunks (threshold {chunk_bytes} bytes)"
+            ),
+        });
+    }
 
     // 4. Applier over the REST — norms, modulations, first/last/projector, base
     //    biases, and any Plain base weight. Same adapter chain as load_module's
@@ -956,13 +988,26 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
             result.unused
         );
     }
-    // Every quantized Quant weight is expected in `missing` (its QFloat param is
-    // visited but its snapshot went to the quant pass). A GENUINE missing param
-    // is any `missing` entry not covered by the quant pass — no silent gap.
+    // Every quantized Quant weight is expected in `missing` (its QFloat params
+    // are visited but their snapshot went to the quant pass). Since the weight
+    // is a Vec of row chunks, the applier reports PER-CHUNK paths
+    // (`{site}.weight.{i}`), so a missing entry is covered when it matches a
+    // quant-pass key exactly OR is an index segment under one. A GENUINE
+    // missing param is anything else — no silent gap.
+    let covered_by = |p: &str| {
+        covered.contains(p)
+            || matches!(
+                p.rsplit_once('.'),
+                Some((prefix, idx))
+                    if !idx.is_empty()
+                        && idx.bytes().all(|b| b.is_ascii_digit())
+                        && covered.contains(prefix)
+            )
+    };
     let real_missing: Vec<&(String, String)> = result
         .missing
         .iter()
-        .filter(|(p, _)| !covered.contains(p))
+        .filter(|(p, _)| !covered_by(p))
         .collect();
     if !real_missing.is_empty() {
         bail!(
@@ -1028,15 +1073,23 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         // streams the checkpoint into the quantized skeleton one tensor at a
         // time (never the ~49 GB f32 model); `from_inner` then lifts it into the
         // autodiff backend the training loop steps. `value` (`Q8S`/`Q4S`) is the
-        // scheme both the skeleton and the streaming loader quantize with.
-        let inner =
-            Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized(value, &device);
+        // scheme both the skeleton and the streaming loader quantize with, and
+        // `chunk_bytes` (from `compute.dequant_chunk_mib`, #128) the row-chunk
+        // threshold both produce the same layout under (a pure function of
+        // shape + threshold).
+        let chunk_bytes = u64::from(config.compute.dequant_chunk_mib) << 20;
+        let inner = Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized_chunked(
+            value,
+            chunk_bytes,
+            &device,
+        );
         let inner = load_quant_module(
             inner,
             &denoiser,
             &Mmdit::<AB::InnerBackend>::key_remap(),
             "MMDiT",
             value,
+            chunk_bytes,
             &device,
             sink,
         )?;

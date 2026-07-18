@@ -441,14 +441,29 @@ impl<'de> Deserialize<'de> for Quant {
     }
 }
 
+/// Default for [`ComputeConfig::dequant_chunk_mib`]: 512 MiB splits only the
+/// largest weight dequant — `tproj.fc` `[36864, 6144]` ≈ 864 MiB f32 on the
+/// real krea2 config — while leaving the ~36 MiB trunk tiles (and every tiny
+/// fixture) single-chunk. Note: ADR-0005's sweep also recorded a recurring
+/// 1,576,693,760-byte failing allocation that matches NO single weight's
+/// dequant size; whether the default threshold moves the real step's peak is
+/// exactly what the on-box `step-probe` rerun measures (lower thresholds,
+/// e.g. 64, split the SwiGLU/attention weights too).
+pub const DEFAULT_DEQUANT_CHUNK_MIB: u32 = 512;
+
 /// Compute backend + device selection.
 ///
-/// `#[serde(default)]` plus the derived `Default` (`{ backend: Ndarray,
-/// device: 0 }`) means every existing YAML/JSON — which carries no `compute:`
-/// block — deserializes exactly as before onto the ndarray CPU backend, so
-/// `just test` and CI stay offline (acceptance #2 of #18). The M13 memory
-/// knobs (`precision`, `grad_checkpointing`) default off the same way.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `#[serde(default)]` plus the hand-written `Default` (`{ backend: Ndarray,
+/// device: 0, .. }`) means every existing YAML/JSON — which carries no
+/// `compute:` block — deserializes exactly as before onto the ndarray CPU
+/// backend, so `just test` and CI stay offline (acceptance #2 of #18). The
+/// M13 memory knobs (`precision`, `grad_checkpointing`) default off the same
+/// way. (`Default` is hand-written, not derived, because `dequant_chunk_mib`
+/// defaults to [`DEFAULT_DEQUANT_CHUNK_MIB`], not `0` — and the struct-level
+/// `#[serde(default)]` constructs a missing `compute:` block from
+/// `Self::default()`, so a derived all-zeros default would silently disable
+/// chunking.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComputeConfig {
     /// The compute backend to run on.
@@ -472,6 +487,34 @@ pub struct ComputeConfig {
     /// guard — every other combination fails loudly.
     #[serde(default)]
     pub quant: Quant,
+    /// Chunked-dequant threshold in MiB (#128) — applies to the quant path
+    /// only (`quant: int8|int4`; ignored otherwise). A quantized frozen-base
+    /// weight whose f32 size exceeds this threshold is stored (and
+    /// dequantized, forward and backward) as row chunks each at or below the
+    /// threshold, so no full-weight f32 transient ever materializes. `0`
+    /// disables chunking. The default ([`DEFAULT_DEQUANT_CHUNK_MIB`], 512)
+    /// splits only the largest (`tproj`-class) weights; smaller values
+    /// (e.g. `16`) split the ~36 MiB trunk tiles too. The chunked
+    /// QUANTIZATION is bit-identical to whole-tensor quantization (the quant
+    /// blocks live within rows — see `quant::dequant_chunk_rows`), and the
+    /// forward is bit-identical on ndarray (pinned by tests); on GPU
+    /// backends the per-chunk matmul may tile differently, so expect
+    /// f32-rounding-level equivalence there. Backward-gradient accumulation
+    /// order also differs across chunk ops.
+    pub dequant_chunk_mib: u32,
+}
+
+impl Default for ComputeConfig {
+    fn default() -> Self {
+        Self {
+            backend: BackendKind::default(),
+            device: 0,
+            precision: Precision::default(),
+            grad_checkpointing: false,
+            quant: Quant::default(),
+            dequant_chunk_mib: DEFAULT_DEQUANT_CHUNK_MIB,
+        }
+    }
 }
 
 /// Which training objective a run drives (M8, #19).

@@ -81,6 +81,74 @@ pub fn quantize_linear_weight<B: Backend>(weight: Tensor<B, 2>, value: QuantValu
     weight.quantize_dynamic(&quant_scheme::<B>(value))
 }
 
+/// Row-chunk layout for a `[d_out, d_in]` weight under a dequant-transient
+/// byte threshold (#128): the number of `d_out` rows in each chunk, in order.
+/// Chunks concatenate along `d_out`; the counts always sum to `d_out`.
+///
+/// A **pure function of `(shape, threshold)`** — both quantize paths
+/// ([`Mmdit::into_quantized`](crate::mmdit::Mmdit::into_quantized)'s skeleton
+/// and the streaming loader
+/// [`load_quant_module`](crate::diffusion_trainer::load_quant_module)) call
+/// this, so they produce the same chunk layout by construction.
+///
+/// Semantics: `chunk_bytes == 0` disables chunking (one chunk); a weight
+/// whose full f32 size (`d_out · d_in · 4`) is at or below the threshold
+/// stays one chunk (byte-identical behavior to the unchunked code); larger
+/// weights split into balanced row chunks, each of whose f32 size
+/// (`rows · d_in · 4`) stays at or below the threshold — except that a chunk
+/// is never smaller than one row (a single row wider than the threshold
+/// cannot be split further; blocks live *within* rows, so a row is the
+/// smallest bit-identical unit).
+pub fn dequant_chunk_rows(d_out: usize, d_in: usize, chunk_bytes: u64) -> Vec<usize> {
+    let full_bytes = (d_out as u64) * (d_in as u64) * 4;
+    if chunk_bytes == 0 || full_bytes <= chunk_bytes || d_out <= 1 {
+        return vec![d_out];
+    }
+    let row_bytes = (d_in as u64) * 4;
+    let max_rows = (chunk_bytes / row_bytes).max(1) as usize;
+    // Balanced ceil-split: n_chunks is the minimum count that keeps every
+    // chunk at or under max_rows; the first `rem` chunks take one extra row.
+    let n_chunks = d_out.div_ceil(max_rows);
+    let base = d_out / n_chunks;
+    let rem = d_out % n_chunks;
+    (0..n_chunks)
+        .map(|i| if i < rem { base + 1 } else { base })
+        .collect()
+}
+
+/// The chunk-aware sibling of [`quantize_linear_weight`] (#128): quantizes a
+/// `[d_out, d_in]` weight as the row chunks [`dequant_chunk_rows`] prescribes,
+/// returning one `QFloat` tensor per chunk (in `d_out` order).
+///
+/// The quant scheme's blocks are `[1, QUANT_BLOCK]` — strictly **within** a
+/// row along `d_in` — so quantizing a row chunk `[rows, d_in]` separately is
+/// **bit-identical** to quantizing the whole `[d_out, d_in]` tensor and
+/// taking those rows (per-block scales see exactly the same 32 values either
+/// way; pinned in `tests/quant.rs`). A single-chunk layout takes the exact
+/// [`quantize_linear_weight`] path (no `narrow`), so the default threshold is
+/// byte-identical to the unchunked code.
+pub fn quantize_linear_weight_chunked<B: Backend>(
+    weight: Tensor<B, 2>,
+    value: QuantValue,
+    chunk_bytes: u64,
+) -> Vec<Tensor<B, 2>> {
+    let [d_out, d_in] = weight.dims();
+    let rows = dequant_chunk_rows(d_out, d_in, chunk_bytes);
+    if rows.len() == 1 {
+        return vec![quantize_linear_weight(weight, value)];
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut start = 0usize;
+    for r in rows {
+        out.push(quantize_linear_weight(
+            weight.clone().narrow(0, start, r),
+            value,
+        ));
+        start += r;
+    }
+    out
+}
+
 /// The [`Quant`] config knob → the burn [`QuantValue`] the frozen base is
 /// quantized with. `None` → no quantization; `Int8` → `Q8S`; `Int4` → `Q4S`.
 /// Lives here (not in `config.rs`) so the config module stays free of burn

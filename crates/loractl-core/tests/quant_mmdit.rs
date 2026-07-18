@@ -131,7 +131,7 @@ fn single_linear_quant_matches(value: QuantValue, tol: f32) {
     // `[d_out, d_in]`, so transpose before quantizing (mirrors into_quantized).
     let wq = quantize_linear_weight(lin.weight.val().transpose(), value);
     let q = BaseLinear::Quant(QuantLinear {
-        weight: Param::from_tensor(wq),
+        weight: vec![Param::from_tensor(wq)],
         bias: lin.bias.clone(),
     });
     let quant = flatten(q.forward(x));
@@ -315,6 +315,181 @@ fn one_step_lora_train_on_quantized_base() {
             "after one step the LoRA B at {target} must have moved off zero"
         );
     }
+}
+
+/// #128 chunked dequant through the REAL streaming loader: loading tiny-krea2
+/// with a tiny byte threshold (forcing multi-chunk sites) must produce a
+/// forward BIT-IDENTICAL to the unchunked load — chunk boundaries never split
+/// the reduction dim, and the chunk layout is a pure function of
+/// `(shape, threshold)` shared by the `into_quantized_chunked` skeleton and
+/// `load_quant_module`. (The config knob is MiB-grained, so on the tiny
+/// fixture — max weight 64 KiB — forcing chunks needs the byte-level seam
+/// this test drives; the real model chunks at the default 512 MiB.)
+#[test]
+fn chunked_streaming_load_forward_matches_unchunked_exactly() {
+    use loractl_core::TrainEvent;
+    use loractl_core::diffusion_trainer::load_quant_module;
+    use loractl_core::mmdit::BaseLinear;
+
+    let device = Default::default();
+    let cfg = MmditConfig::tiny_krea2();
+    let checkpoint = std::path::Path::new("tests/fixtures/tiny-krea2/raw.safetensors");
+    // 2 KiB: every block-aligned tiny site (e.g. 64x64 f32 = 16 KiB) splits.
+    let chunk_bytes = 2048u64;
+
+    let load = |bytes: u64, warnings: &mut Vec<String>| {
+        let skeleton = Mmdit::<B>::init(cfg.clone(), &device).into_quantized_chunked(
+            QuantValue::Q8S,
+            bytes,
+            &device,
+        );
+        let mut sink = |event: TrainEvent| {
+            if let TrainEvent::Warning { message } = event {
+                warnings.push(message);
+            }
+        };
+        load_quant_module(
+            skeleton,
+            checkpoint,
+            &Mmdit::<B>::key_remap(),
+            "MMDiT",
+            QuantValue::Q8S,
+            bytes,
+            &device,
+            &mut sink,
+        )
+        .expect("streaming quantized load must succeed")
+    };
+
+    let mut plain_warnings = Vec::new();
+    let whole = load(0, &mut plain_warnings);
+    assert!(
+        !plain_warnings
+            .iter()
+            .any(|m| m.contains("dequant chunking split")),
+        "an unchunked load must not report chunking: {plain_warnings:?}"
+    );
+
+    let mut chunk_warnings = Vec::new();
+    let mut chunked = load(chunk_bytes, &mut chunk_warnings);
+    assert!(
+        chunk_warnings
+            .iter()
+            .any(|m| m.contains("dequant chunking split")),
+        "the tiny threshold must actually engage chunking: {chunk_warnings:?}"
+    );
+    // Chunking engaged structurally too: some quant site holds > 1 chunk.
+    let multi_chunk_sites = chunked
+        .all_base_linears_mut()
+        .into_iter()
+        .filter(|(_, base)| matches!(base, BaseLinear::Quant(q) if q.weight.len() > 1))
+        .count();
+    assert!(
+        multi_chunk_sites > 0,
+        "at a 2 KiB threshold the tiny sites must split into row chunks"
+    );
+
+    let (img, context, t, pos, mask) = inputs::<B>(&cfg, &device);
+    let out_whole = flatten(whole.forward(
+        img.clone(),
+        context.clone(),
+        t.clone(),
+        pos.clone(),
+        mask.clone(),
+    ));
+    let out_chunked = flatten(chunked.forward(img, context, t, pos, mask));
+    assert_eq!(
+        out_whole, out_chunked,
+        "the chunked streaming load must forward bit-identically to the unchunked one"
+    );
+}
+
+/// The multi-chunk path's FIRST execution on real cuda: strided per-chunk
+/// `quantize_dynamic`, per-chunk `quant_matmul_t`, `Tensor::cat`, and the
+/// `Vec<Param>` store/applier paths are all runtime-only surfaces — a green
+/// compile proves nothing for load paths (see
+/// `.claude/rules/burn-store-skip-enum-variants.md`). Chunked vs unchunked is
+/// asserted CLOSE rather than bit-identical here: cubecl's matmul may tile
+/// the narrower per-chunk shapes differently, so only f32-rounding-level
+/// drift is allowed (the quantized VALUES are bit-identical by construction —
+/// blocks live within rows, pinned on ndarray above).
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires an NVIDIA GPU (CUDA toolkit at build time); run via `just test-cuda`"]
+fn cuda_chunked_streaming_load_matches_unchunked() {
+    use burn::backend::Cuda;
+    use loractl_core::TrainEvent;
+    use loractl_core::diffusion_trainer::load_quant_module;
+    use loractl_core::mmdit::BaseLinear;
+
+    let device = Default::default();
+    let cfg = MmditConfig::tiny_krea2();
+    let checkpoint = std::path::Path::new("tests/fixtures/tiny-krea2/raw.safetensors");
+    // 2 KiB: every block-aligned tiny site (e.g. 64x64 f32 = 16 KiB) splits.
+    let chunk_bytes = 2048u64;
+
+    let load = |bytes: u64, warnings: &mut Vec<String>| {
+        let skeleton = Mmdit::<Cuda>::init(cfg.clone(), &device).into_quantized_chunked(
+            QuantValue::Q8S,
+            bytes,
+            &device,
+        );
+        let mut sink = |event: TrainEvent| {
+            if let TrainEvent::Warning { message } = event {
+                warnings.push(message);
+            }
+        };
+        load_quant_module(
+            skeleton,
+            checkpoint,
+            &Mmdit::<Cuda>::key_remap(),
+            "MMDiT",
+            QuantValue::Q8S,
+            bytes,
+            &device,
+            &mut sink,
+        )
+        .expect("cuda streaming quantized load must succeed")
+    };
+
+    let mut plain_warnings = Vec::new();
+    let whole = load(0, &mut plain_warnings);
+    let mut chunk_warnings = Vec::new();
+    let mut chunked = load(chunk_bytes, &mut chunk_warnings);
+    assert!(
+        chunk_warnings
+            .iter()
+            .any(|m| m.contains("dequant chunking split")),
+        "the tiny threshold must actually engage chunking on cuda: {chunk_warnings:?}"
+    );
+    let multi_chunk_sites = chunked
+        .all_base_linears_mut()
+        .into_iter()
+        .filter(|(_, base)| matches!(base, BaseLinear::Quant(q) if q.weight.len() > 1))
+        .count();
+    assert!(
+        multi_chunk_sites > 0,
+        "at a 2 KiB threshold the tiny sites must split into row chunks"
+    );
+
+    let (img, context, t, pos, mask) = inputs::<Cuda>(&cfg, &device);
+    let out_whole = flatten(whole.forward(
+        img.clone(),
+        context.clone(),
+        t.clone(),
+        pos.clone(),
+        mask.clone(),
+    ));
+    let out_chunked = flatten(chunked.forward(img, context, t, pos, mask));
+    let worst = out_whole
+        .iter()
+        .zip(&out_chunked)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    assert!(
+        worst < 1e-4,
+        "chunked cuda forward must match unchunked to f32 rounding (worst abs diff {worst})"
+    );
 }
 
 #[test]

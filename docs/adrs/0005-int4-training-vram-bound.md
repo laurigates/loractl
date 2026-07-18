@@ -139,7 +139,9 @@ directions are **falsified by the measurement**, one is narrowed:
    this data (branch kept — it composes with the retention fix below).
 3. **The binding constraint is the backward dequant-transient working set,
    and the gap is only ~1–2 GB.** The recurring failed allocations are
-   1,576,693,760 B (txt-fusion/tproj-class) and 37,748,736 B (trunk tiles).
+   1,576,693,760 B (identity unresolved — it matches no single weight's
+   dequant size; the largest weight dequant is `tproj.fc` at ≈ 864 MiB) and
+   37,748,736 B (trunk tiles).
    The route is now **chunked dequant in `QuantMatmulT`** at the
    packed-int/byte level (burn 0.21's `q_slice` is `unimplemented!()` on
    cuda — no QFloat `Tensor::slice`), largest transient first; base-weight
