@@ -41,19 +41,23 @@ offload/spill/unified-memory mechanism, by design:
 
 ## The levers (and the measured non-levers)
 
-In order of attack:
+Updated by the 2026-07-18 step-probe sweep (ADR-0005 **addendum**; table on
+#96):
 
-1. **Fewer trained sites** — fewer LoRA targets means less optimizer state
-   and fewer co-resident dequant/gradient buffers. ADR-0005 names only the
-   *direction* ("fewer trained sites / fewer LoRA targets"); the concrete
-   first cut is the attention-only default (`blocks\.\d+\.attn\.`) in #126's
-   `krea2-comfyui.yaml` — a set the ADR does not itself prescribe, and
-   **not yet measured to fit**.
-2. **Base-weight streaming** and **reduced dequantized-weight retention in
-   the backward pass** (a burn-autodiff memory concern) are the follow-ups.
+1. **Chunked dequant in `QuantMatmulT` (#128)** — the one live lever. The
+   backward's ~14–15 GB dequant-transient working set misses fitting by only
+   ~1–2 GB; chunk the largest transients (1.58 GB txt-fusion/tproj-class
+   first) at the packed-int/byte level — burn 0.21's `q_slice` is
+   `unimplemented!()` on cuda, so never `Tensor::slice` a QFloat.
+2. **Base-weight streaming** — the fallback if chunking alone is marginal.
+3. **Post-load pool reclaim** — measured safe on stock but insufficient
+   alone (PR #125, closed); composes with #1 once the step state shrinks.
 
-Non-levers, measured or argued in ADR-0005: **resolution** (byte-identical
-peak at 384px) and **LoRA rank** (adapter params are a small fraction).
+Non-levers, **measured**: **resolution** (byte-identical peak at 384px),
+**trained-site count** (1 site peaks and fails identically to 196 — the
+transients arise at every quantized site regardless of adapters; `lora.targets`
+is a scope/quality choice only), and **LoRA rank** (params are a small
+fraction).
 
 Separately open: int4's ~7% worst-case dequant error and what it does to
 adapter quality (the #25 ComfyUI A/B) — memory fit and output quality are
@@ -71,7 +75,8 @@ don't re-derive peaks from `nvidia-smi` eyeballing.
 - Upstream [tracel-ai/cubecl#1401] remains open and **may still be real for
   other workloads** (the original reporter's ~16 GB-resident generation
   workload). Our contribution to that thread was made under the wrong theory
-  and needs correcting — tracked separately.
+  and was corrected on the thread (2026-07-18), including the
+  free-VRAM-at-first-failure discriminator for classifying such panics.
 - The sync-before-reclaim experiment is closed (zero measured effect) and its
   fork branch deleted; ADR-0005 is its record.
 
