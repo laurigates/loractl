@@ -15,10 +15,12 @@
 //! (`.claude/rules/burn-wgpu-metal-numerics.md`). This path has never run on the
 //! broken GPU configs (the int8 QLoRA trainer is guarded to `(ndarray|cuda,
 //! f32)`), so the quant-vs-plain contrast below is a genuinely new datum:
-//!   - quant f16 B-grads ~1.0 where plain f16 B-grads are ~0.0 → the custom-op
-//!     activation-tracking shape dodges the generic-autodiff defect.
-//!   - quant f16 B-grads ALSO ~0.0 → the "hand-write a custom backward to
-//!     sidestep burn#5162" avenue is dead; the pruning defect is upstream.
+//!
+//! - quant f16 B-grads ~1.0 where plain f16 B-grads are ~0.0 → the custom-op
+//!   activation-tracking shape dodges the generic-autodiff defect.
+//! - quant f16 B-grads ALSO ~0.0 → the "hand-write a custom backward to
+//!   sidestep burn#5162" avenue is dead; the pruning defect is upstream.
+//!
 //! Each arm is `catch_unwind`-guarded: a config that cannot even quantize/run
 //! (e.g. wgpu int8, or an f16 dequant-to-f32 path) is a recorded result.
 //!
