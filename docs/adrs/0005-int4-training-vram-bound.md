@@ -113,3 +113,47 @@ attribution:
 - **Upstream note:** tracel-ai/cubecl#1401's "reclaim race" framing does not
   explain this particular failure; PR #3's graceful-abort is the only
   upstreamable slice.
+
+## Addendum (2026-07-18, same day — the prescribed measurement ran)
+
+The `step_probe` sweep this ADR's follow-up called for (landed in #126) ran on
+the RTX 4090 the same day: 5 LoRA target sets (1 / 56 / 84 / 112 / 196 of 196
+injectable sites) × {no reclaim, post-load reclaim}, uncontended card, int4,
+512px, 3 steps. Full table: the 2026-07-18 sweep comment on
+[#96](https://github.com/laurigates/loractl/issues/96). Two of this ADR's
+directions are **falsified by the measurement**, one is narrowed:
+
+1. **"Fewer trained sites" is NOT a memory lever.** A single trained site
+   peaks (~24 GB) and fails identically to all 196. The co-resident
+   dequant/gradient transients arise at **every** quantized site because the
+   activations are tracked through the whole autodiff graph regardless of
+   which sites carry adapters — trained-site count changes optimizer state
+   only, a rounding error here. (Decision 3's "fewer trained sites" lever is
+   withdrawn; the attention-only config default in #126 stands as a
+   scope/quality choice only.)
+2. **Post-load pool reclaim is safe but NOT sufficient.** The explicit
+   `sync → memory_cleanup → sync` bracket works on stock cubecl 0.10 at
+   quiescence (validated twice: 15.1 → 10.3 GB) but the step's ~14–15 GB
+   transient working set refills the card regardless: reclaimed base
+   ~10.3 GB + step state ≈ 24.7 GB vs ~23.6 GB usable. PR #125 closed on
+   this data (branch kept — it composes with the retention fix below).
+3. **The binding constraint is the backward dequant-transient working set,
+   and the gap is only ~1–2 GB.** The recurring failed allocations are
+   1,576,693,760 B (txt-fusion/tproj-class) and 37,748,736 B (trunk tiles).
+   The route is now **chunked dequant in `QuantMatmulT`** at the
+   packed-int/byte level (burn 0.21's `q_slice` is `unimplemented!()` on
+   cuda — no QFloat `Tensor::slice`), largest transient first; base-weight
+   streaming remains the fallback. Tracked as
+   [#128](https://github.com/laurigates/loractl/issues/128).
+
+Two operational findings from the same sweep, recorded here because they
+change how future measurements must be read:
+
+- **A run that "survives" at the pool ceiling is not a working run.** The
+  3/3-step runs rode 13k–92k OOM panics and died before export; one produced
+  a *finite but garbage* loss (4.9e8) with no preceding panic — **silent
+  forward corruption at the ceiling**. The fit gate is a run with **zero**
+  panics, not a survived storm.
+- Device-global VRAM telemetry is meaningless on the shared box without a
+  contention guard — an idle ComfyUI can hold ~18 GB of cached models and
+  re-grab the card mid-run.

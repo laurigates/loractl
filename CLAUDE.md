@@ -89,9 +89,11 @@ the exported adapter loads and visibly conditions generation in ComfyUI /
 Krea-2-Turbo. The cuda route is **VRAM-bound**, per on-hardware measurement
 ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)): the int4 training
 step's working set is ≈ 25.5 GB vs the 24 GB RTX 4090, dominated by
-dequant/gradient buffers that scale with the number of *trained sites* —
-**resolution-independent** (a 384px probe peaked byte-identically), so
-lowering resolution does not help. The quant knobs themselves landed and
+dequant/gradient transients arising at **every** quantized site —
+**resolution-independent** (384px peaked byte-identically) and, per the
+2026-07-18 sweep (ADR-0005 addendum), **trained-site-count-independent**
+(1 site fails like 196), so neither lowering resolution nor narrowing
+`lora.targets` helps. The quant knobs themselves landed and
 are correct: `compute.quant: int8` (#96) and `int4` (Q4S, #119) load the
 frozen ~12.8B MMDiT base per-block quantized (`src/quant.rs`,
 `BaseLinear::Quant`) while the LoRA adapters train in f32 (QLoRA), streamed
@@ -100,13 +102,15 @@ restricted to `(ndarray|cuda, f32)` by the trainer guard (wgpu untested,
 non-f32 rejected — burn#5162). Per ADR-0005 and the #96 measurements,
 **int4 (~10.1 GB reclaimed resident base) is the 24 GB training route;
 int8 (~17.1 GB) fits load/inference only — its training step OOMs.** The
-unblock is footprint reduction: start with fewer LoRA targets
-(`config/examples/krea2-comfyui.yaml` now defaults to attention-only —
-`blocks\.\d+\.attn\.`, this repo's first cut at the "fewer trained sites"
-direction ADR-0005 names, not a target set the ADR itself prescribes, and
-not yet measured to fit) and measure with the step probe (`just step-probe`,
-#126); base-weight streaming and reduced dequantized-weight retention in
-backward are the follow-up levers. The
+unblock is **#128 — chunked dequant in `QuantMatmulT`** (the backward's
+~14–15 GB transient working set misses fitting by only ~1–2 GB; largest
+transient is the 1.58 GB txt-fusion/tproj-class buffer; `q_slice` is
+unimplemented on cuda in burn 0.21, so chunk at the packed-byte level),
+with base-weight streaming as fallback. Post-load pool reclaim was measured
+safe-but-insufficient (PR #125, closed; branch composes with #128). Verify
+any fix with `just step-probe` (#126) — the fit gate is a **zero-panic**
+run, never a survived OOM storm (a ceiling-riding run can silently corrupt
+the forward). The
 wgpu f16 + grad-checkpointing route (`config/examples/krea2-lora.yaml`,
 fits the 48 GiB Metal host) stays blocked by burn's GPU autodiff bug
 (burn#5162, unchanged). Strategy and gap analysis:
