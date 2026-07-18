@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/laurigates/loractl/compare/v0.11.0...v0.12.0) (2026-07-18)
+
+
+### Features
+
+* **core:** ADR-0005 step-VRAM probe + memory-lever configs ([#126](https://github.com/laurigates/loractl/issues/126)) ([f5bf4aa](https://github.com/laurigates/loractl/commit/f5bf4aad629106482285f48926e4c4c8f8a26fec))
+
 ## [0.11.0](https://github.com/laurigates/loractl/compare/v0.10.0...v0.11.0) (2026-07-18)
 
 
