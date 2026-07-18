@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/loractl-core", "crates/loractl-cli", "crates/loractl-api"]
+members = [
+    "crates/loractl-core",
+    "crates/loractl-cli",
+    "crates/loractl-api",
+    "crates/loractl-bench",
+]
 
 [workspace.package]
 version = "0.10.0" # x-release-please-version
