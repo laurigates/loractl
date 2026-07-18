@@ -30,8 +30,17 @@ dataset:
 lora:
   rank: 16
   alpha: 16.0
+  # Per ADR-0005, start with FEWER trained sites: the step's dominant
+  # co-resident dequant/gradient buffers scale with the trained-site count
+  # (resolution is measured NOT to be a lever), and the full 'blocks\.' set
+  # is measured NOT to fit — its step working set is ≈ 25.5 GB > 24 GB.
+  # The attention-only subset below is the ADR-directed starting point,
+  # pending the on-box sweep (`just step-probe`); it is not yet measured to
+  # fit. Alternatives to sweep:
+  #   - pattern: 'blocks\.'               # every trunk projection (OOMs on 24 GB)
+  #   - pattern: 'attn\.(wq|wv)$'         # minimal q/v-only set
   targets:
-    - pattern: 'blocks\.'           # every MMDiT trunk projection
+    - pattern: 'blocks\.\d+\.attn\.'    # attention projections only
 
 optim:
   lr: 1.0e-4
@@ -43,12 +52,16 @@ output:
   dir: output/krea2-lora
   name: krea2-lora
 
-# The numerically-clean GPU route on a 24 GB NVIDIA card: cuda f32 + int8
-# frozen-base quantization (the ~12.8B base fits at ~20 GB as int8).
+# The numerically-clean GPU route on a 24 GB NVIDIA card: cuda f32 + int4
+# frozen-base quantization. Measured on the RTX 4090 (ADR-0005 / #96):
+# int8's reclaimed resident base is ~17.1 GB (its step OOMed); int4 reclaims
+# to ~10.1 GB, ~13.9 GB free on a 24 GB card. Whether a given target set's
+# step fits in that headroom is exactly what `just step-probe` measures — no
+# target set is measured to fit yet.
 compute:
   backend: cuda
   precision: f32
-  quant: int8
+  quant: int4
   grad_checkpointing: true
 
 flow:

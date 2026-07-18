@@ -66,6 +66,7 @@
 //! no CLI. Parity: `tests/mmdit_parity.rs` vs `reference/mmdit_reference.py`.
 
 use crate::adapters::{LoraAdapters, LoraSite};
+use crate::config::ModelVariant;
 use crate::quant::{QUANT_BLOCK, QuantBackend, quantize_linear_weight};
 use burn::module::{Module, Param};
 use burn::nn::{Gelu, Linear, LinearConfig};
@@ -210,6 +211,60 @@ impl MmditConfig {
     pub fn swiglu_dim(features: usize, multiplier: usize) -> usize {
         let raw = (2 * features / 3) * multiplier;
         raw.div_ceil(128) * 128
+    }
+
+    /// The MMDiT architecture for a config-level [`ModelVariant`] — the one
+    /// home of the variant → architecture mapping (the diffusion trainer's
+    /// `variant_configs` delegates here). Turbo is architecturally identical
+    /// to Krea2 (same 430 tensor keys); the variants differ only in the
+    /// default denoiser filename.
+    ///
+    /// Lives here rather than in `config.rs` deliberately: `ModelVariant` is
+    /// plain-serde config vocabulary and `config.rs` stays free of burn-adjacent
+    /// model code, while this file owns the architectures (same split as
+    /// `quant::quant_value` for [`crate::config::Quant`]).
+    pub fn for_variant(variant: ModelVariant) -> Self {
+        match variant {
+            ModelVariant::Krea2 | ModelVariant::Krea2Turbo => Self::krea2(),
+            ModelVariant::TinyKrea2 => Self::tiny_krea2(),
+        }
+    }
+
+    /// Every injectable LoRA site of this architecture: the trunk blocks'
+    /// attention and MLP projections, advertised to
+    /// [`build_adapters`](crate::adapters::build_adapters). Paths mirror the
+    /// checkpoint (`blocks.{i}.attn.wq`, …), so a config `targets` pattern
+    /// written against the reference naming matches.
+    ///
+    /// Config-derived only (no model instantiation), so target-set tooling
+    /// (e.g. `examples/step_probe.rs`) can enumerate the ~12.8B model's sites
+    /// without building it. [`Mmdit::injectable_sites`] delegates here; path
+    /// strings and order are pinned by `tests/quant_mmdit.rs`.
+    pub fn injectable_sites(&self) -> Vec<LoraSite> {
+        let f = self.features;
+        let hd = self.head_dim();
+        let kv_out = hd * self.kvheads;
+        let inner = Self::swiglu_dim(f, self.multiplier);
+        let mut sites = Vec::with_capacity(self.layers * 7);
+        for i in 0..self.layers {
+            let p = format!("blocks.{i}");
+            for (name, d_in, d_out) in [
+                ("attn.wq", f, f),
+                ("attn.wk", f, kv_out),
+                ("attn.wv", f, kv_out),
+                ("attn.wo", f, f),
+                ("mlp.gate", f, inner),
+                ("mlp.up", f, inner),
+                ("mlp.down", inner, f),
+            ] {
+                sites.push(LoraSite {
+                    path: format!("{p}.{name}"),
+                    d_in,
+                    d_out,
+                });
+            }
+        }
+        sites
     }
 }
 
@@ -930,32 +985,11 @@ impl<B: Backend> Mmdit<B> {
     /// projections, advertised to
     /// [`build_adapters`](crate::adapters::build_adapters). Paths mirror the
     /// checkpoint (`blocks.{i}.attn.wq`, …), so a config `targets` pattern
-    /// written against the reference naming matches.
+    /// written against the reference naming matches. Pure delegation to
+    /// [`MmditConfig::injectable_sites`] — the enumeration is config-derived,
+    /// so tooling can list sites without instantiating the model.
     pub fn injectable_sites(&self) -> Vec<LoraSite> {
-        let f = self.config.features;
-        let hd = self.config.head_dim();
-        let kv_out = hd * self.config.kvheads;
-        let inner = MmditConfig::swiglu_dim(f, self.config.multiplier);
-        let mut sites = Vec::with_capacity(self.config.layers * 7);
-        for i in 0..self.config.layers {
-            let p = format!("blocks.{i}");
-            for (name, d_in, d_out) in [
-                ("attn.wq", f, f),
-                ("attn.wk", f, kv_out),
-                ("attn.wv", f, kv_out),
-                ("attn.wo", f, f),
-                ("mlp.gate", f, inner),
-                ("mlp.up", f, inner),
-                ("mlp.down", inner, f),
-            ] {
-                sites.push(LoraSite {
-                    path: format!("{p}.{name}"),
-                    d_in,
-                    d_out,
-                });
-            }
-        }
-        sites
+        self.config.injectable_sites()
     }
 
     /// Replace every frozen-base [`BaseLinear::Plain`] site with its quantized

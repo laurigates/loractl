@@ -1,3 +1,9 @@
+# Forward recipe arguments to shell bodies as real positionals ($1.., $@), so a
+# recipe can pass `"$@"` through with quoting/backslashes byte-intact (the
+# step-probe regexes below need this). Existing `{{...}}` interpolations are
+# unaffected.
+set positional-arguments
+
 default:
     @just --list
 
@@ -228,6 +234,20 @@ run-cuda config="config/examples/lora.yaml":
 # quant-probe <denoiser> int4`.
 quant-probe denoiser quant="int8":
     cargo run --release -p loractl-core --features cuda --example quant_probe -- {{denoiser}} --quant {{quant}}
+
+# ADR-0005 step-VRAM probe (#96, #25): run a few REAL DiffusionTrainer steps
+# from a config and report peak resident VRAM per LoRA target set — the
+# co-resident dequant/gradient buffers scale with the number of TRAINED
+# sites (resolution is measured NOT to be a lever), so this is the sweep
+# that picks a target set fitting the 24 GB card. Linux+NVIDIA + the real
+# multi-GB checkpoints; a warm encode cache skips the slow CPU encode phase.
+# e.g. `just step-probe config/examples/krea2-comfyui.yaml --target 'attn\.(wq|wv)$' --steps 3`
+# Args forward through `"$@"` (set positional-arguments, top of file) so a
+# quoted regex like 'attn\.(wq|wv)$' or 'blocks\.\d+\.attn\.' reaches the probe
+# byte-intact — a bare {{args}} interpolation would strip the quoting and
+# corrupt the pattern (0 sites matched → bogus fit verdict).
+step-probe *args:
+    cargo run --release -p loractl-core --features cuda --example step_probe -- "$@"
 
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.

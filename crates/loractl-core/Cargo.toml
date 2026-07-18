@@ -122,3 +122,9 @@ mmdit-real = []
 burn-ndarray = { version = "0.21", default-features = false, features = [
     "export_tests",
 ] }
+# ADR-0005 step-VRAM probe (`examples/step_probe.rs`): loads a TrainConfig
+# from YAML the same way the CLI does (file layer only — the probe documents
+# itself as env-free). Examples build against dev-dependencies, so the
+# library surface is untouched; same version + feature the CLI already pins,
+# so no new external surface rides into Cargo.lock.
+figment = { version = "0.10", features = ["yaml"] }
