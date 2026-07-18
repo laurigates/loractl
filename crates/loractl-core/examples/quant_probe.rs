@@ -34,10 +34,9 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(feature = "cuda")]
 mod run {
-    use anyhow::{Context, Result, bail};
+    use anyhow::{Context, Result, anyhow, bail};
     use burn::backend::{Cuda, cuda::CudaDevice};
-    use burn::tensor::Tensor;
-    use burn_store::ModuleSnapshot;
+    use burn::tensor::backend::Backend;
     use loractl_core::TrainEvent;
     use loractl_core::config::Quant;
     use loractl_core::diffusion_trainer::load_quant_module;
@@ -143,20 +142,33 @@ mod run {
             sites.len()
         );
 
-        // Resident VRAM.
-        match (base_vram, resident_vram_mib()) {
-            (Some(before), Some(after)) => {
-                println!(
-                    "resident VRAM: {after} MiB ({scheme_label} base ≈ {} MiB above the {before} MiB baseline)",
-                    after.saturating_sub(before)
-                );
-            }
-            (_, Some(after)) => println!("resident VRAM: {after} MiB"),
-            _ => println!("resident VRAM: nvidia-smi unavailable"),
-        }
+        // Resident VRAM, measured TWICE: right after the streaming load (which
+        // leaves the transient f32 dequant pool pages cached — cubecl returns
+        // fully-free pages only on an explicit cleanup), then after
+        // `memory_cleanup` reclaims them. The reclaimed figure is the true
+        // resident base the training loop sees (~1/8 of f32 for int4); the
+        // difference is the streaming transients (identical for int8/int4, so
+        // int4's win is the smaller reclaimed base, not smaller transients).
+        let after_load = resident_vram_mib();
+        // `<Cuda as Backend>::` pins the type-alias float default (f32); a bare
+        // `Cuda::sync` leaves `F` unconstrained here.
+        <Cuda as Backend>::sync(&device).map_err(|e| anyhow!("post-load sync: {e:?}"))?;
+        <Cuda as Backend>::memory_cleanup(&device);
+        <Cuda as Backend>::sync(&device).map_err(|e| anyhow!("post-cleanup sync: {e:?}"))?;
+        let after_reclaim = resident_vram_mib();
+        let report = |label: &str, now: Option<u64>| match (base_vram, now) {
+            (Some(before), Some(after)) => println!(
+                "resident VRAM {label}: {after} MiB ({scheme_label} ≈ {} MiB above the {before} MiB baseline)",
+                after.saturating_sub(before)
+            ),
+            (_, Some(after)) => println!("resident VRAM {label}: {after} MiB"),
+            _ => println!("resident VRAM {label}: nvidia-smi unavailable"),
+        };
+        report("after load", after_load);
+        report("after reclaim", after_reclaim);
 
         // Dequant fidelity on a spread of real sites: re-materialize each
-        // sampled f32 weight from the checkpoint and compare to the int8 twin.
+        // sampled f32 weight from the checkpoint and compare to the quantized twin.
         // (Re-forcing a handful of tensors is cheap; the point is real-weight
         // error, which the tiny fixtures cannot show.)
         let mut snaps = if loractl_core::fp8::is_fp8_checkpoint(&denoiser)? {
