@@ -106,22 +106,21 @@ use burn::backend::Wgpu;
 use burn::backend::{Cuda, cuda::CudaDevice};
 
 /// The per-variant architecture bundle: (MMDiT, encoder, VAE, caption budget).
+///
+/// The MMDiT arm delegates to [`MmditConfig::for_variant`] — the one home of
+/// the variant → denoiser-architecture mapping (Turbo is architecturally
+/// identical to Krea2; the variants differ only in the default denoiser
+/// filename).
 fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
+    let mmdit = MmditConfig::for_variant(variant);
     match variant {
-        // Turbo is architecturally identical to Krea2 (same 430 tensor
-        // keys); the variants differ only in the default denoiser filename.
         ModelVariant::Krea2 | ModelVariant::Krea2Turbo => (
-            MmditConfig::krea2(),
+            mmdit,
             Qwen3VlConfig::krea2_4b(),
             QwenVaeConfig::qwen_image(),
             512,
         ),
-        ModelVariant::TinyKrea2 => (
-            MmditConfig::tiny_krea2(),
-            Qwen3VlConfig::tiny(),
-            QwenVaeConfig::tiny(),
-            16,
-        ),
+        ModelVariant::TinyKrea2 => (mmdit, Qwen3VlConfig::tiny(), QwenVaeConfig::tiny(), 16),
     }
 }
 
