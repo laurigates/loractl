@@ -56,9 +56,16 @@ attribution:
    failure with and without it.
 5. **Peak attribution.** loractl alone climbs to **~23.4 GB**; the only other
    GPU consumer is an idle ComfyUI at a constant **386 MiB**. The working set
-   is a slow activation ramp then a **~+7 GB spike** at the backward pass — the
-   dominant reducible consumer. Total working set ≈ 25.5 GB, ~1.5–2 GB over the
-   24 GB card.
+   is a slow activation ramp then a **~+7 GB spike** at the backward pass. Total
+   working set ≈ 25.5 GB, ~1.5–2 GB over the 24 GB card.
+6. **The pressure is resolution-INDEPENDENT (measured, not assumed).** Re-running
+   at 384px (from 512px) produced a **byte-identical peak** (~23.67 GB in_use)
+   and the same OOM. The dominant pool holds **~10.9 GB in 328 weight-tile-sized
+   buffers (~33 MB each)** plus a second pool of ~3.5 GB in 161 buffers — these
+   are **dequantized-weight / gradient** allocations that scale with the number
+   of *trained sites*, not image size. Image activations are a minor fraction.
+   **Lowering resolution does not help** — the earlier assumption that the +7 GB
+   spike was resolution-driven attention activations is falsified.
 
 ## Decision
 
@@ -73,10 +80,15 @@ attribution:
      activation offload/recompute lives here.
    - **loractl** — owns the model, training loop, and config; base-weight
      streaming and resolution/batch/target choices live here.
-3. **The unblock is a loractl/burn memory-reduction, targeting the +7 GB
-   backward spike:** lower training resolution (attention activations scale
-   ~quadratically), more aggressive activation checkpointing, and/or base-weight
-   streaming — pursued in that order of cost.
+3. **The unblock is a loractl/burn memory-reduction on the resolution-INDEPENDENT
+   weight/gradient/dequant footprint** (lowering resolution is measured NOT to
+   help — see Investigation #6). Effective levers, weight-side: **fewer trained
+   sites** (fewer LoRA targets → less optimizer state and fewer simultaneous
+   dequant/gradient buffers), **base-weight streaming**, and **reducing
+   simultaneous dequantized-weight retention in the backward pass** (a
+   burn-autodiff memory concern — `QuantMatmulT` already dequantizes transiently,
+   but ~10.9 GB of weight-tile buffers are co-resident at peak). Ineffective:
+   lower resolution, LoRA rank (params are a small fraction).
 4. **The one cubecl change worth keeping** is defensive only:
    `laurigates/cubecl` PR #3 makes the four `NotFound` panic sites recover as
    stream errors instead of aborting the device thread (the same direction as
@@ -93,9 +105,11 @@ attribution:
   a stream sync before the OOM reclaim) is closed and its fork branch deleted.
   This ADR is its record: it had zero measured effect because the memory is
   genuinely live above cubecl, not GPU-work-in-flight.
-- **Open follow-up (loractl):** implement/validate the resolution +
-  checkpointing reduction so int4/real fits 24 GB; if activation offload is
-  needed, assess what burn 0.21 exposes. Tracked under #119 / #96.
+- **Open follow-up (loractl):** reduce the resolution-independent weight/gradient
+  footprint so int4/real fits 24 GB — start with fewer LoRA targets (measure the
+  co-resident dequant/gradient buffers per site), then base-weight streaming or
+  reducing simultaneous dequant retention in backward. A 384px probe confirmed
+  resolution is not a lever. Tracked under #119 / #96.
 - **Upstream note:** tracel-ai/cubecl#1401's "reclaim race" framing does not
   explain this particular failure; PR #3's graceful-abort is the only
   upstreamable slice.
