@@ -162,6 +162,16 @@ run those locally too when a change touches a feature-gated path or the
 dependency graph. rustfmt is default style; expect it to reflow multi-line
 signatures onto one line.
 
+Hosted CI is GPU-free (the `ndarray` default). The real GPU proofs live in a
+**dispatchable** `.github/workflows/gpu.yml` (#113) that runs on the
+self-hosted RTX 4090 (`popos`): `gh workflow run gpu.yml` (cuda smokes,
+`just test-cuda`), `-f suite=all` (adds the wgpu smokes, likely red on the
+Vulkan path until burn#5162), and `-f int8_probe=true` (the #96 on-box int8
+VRAM/dequant proof, `just quant-probe`). It mirrors CAEF's bench.yml/ci.yml
+template — including the `Swatinem/rust-cache` `cache-bin: false` gotcha for
+the persistent runner. Needs the popos runner registered to this repo (see the
+gpu.yml header).
+
 ## Architecture — the one rule that matters
 
 The workspace is three crates:

@@ -1,0 +1,9 @@
+# actionlint config. Declares the custom labels of the self-hosted RTX 4090
+# runner used by gpu.yml (#113), so actionlint doesn't flag them as unknown.
+# Mirrors the runner labels CAEF (custom-attention-engine-framework) registers
+# on the same class of hardware.
+self-hosted-runner:
+  labels:
+    - gpu
+    - cuda
+    - wgpu

@@ -1,0 +1,146 @@
+name: GPU
+
+# Dispatchable self-hosted RTX 4090 GPU CI (#113). Adopts CAEF's
+# (custom-attention-engine-framework) proven bench.yml / ci.yml template on
+# the same class of hardware (very likely the same physical 4090 as `popos`).
+#
+# workflow_dispatch ONLY — hosted CI (ci.yml) stays GPU-free (the `ndarray`
+# default backend already runs there). This job is opt-in: dispatch it to turn
+# the manual on-box proofs (the burn#5162 numerics probes, the #96 int8
+# VRAM/dequant proof, the cuda/wgpu smokes) into a repeatable CI artifact
+# instead of a hand-run on the box.
+#
+# Runner: the self-hosted popos box, registered with the same labels CAEF uses
+# ([self-hosted, gpu] + gpu,cuda / gpu,wgpu). It processes one job at a time,
+# so these jobs never contend for the GPU within a run.
+#
+#   gh workflow run gpu.yml                          # cuda smokes (default)
+#   gh workflow run gpu.yml -f suite=all             # cuda + wgpu smokes
+#   gh workflow run gpu.yml -f int8_probe=true       # + the #96 int8 proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Which GPU smoke suite(s) to run"
+        required: true
+        type: choice
+        options:
+          - cuda
+          - wgpu
+          - all
+        default: cuda
+      int8_probe:
+        description: "Also run the #96 on-box int8 VRAM/dequant proof (quant_probe)"
+        required: false
+        type: boolean
+        default: false
+      denoiser:
+        description: "Krea-2 denoiser checkpoint for the int8 probe (staged on the runner)"
+        required: false
+        type: string
+        # The checkpoint is already staged in the box's ComfyUI models tree
+        # (see CLAUDE.local.md). Overridable per-dispatch.
+        default: /mnt/sabrent/comfyui-workspace/ComfyUI/models/diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
+
+permissions:
+  contents: read
+
+concurrency:
+  # One GPU run at a time — the runner serializes anyway, but this keeps
+  # re-dispatches from piling up in the queue.
+  group: gpu-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # cuda f32 is the known-clean GPU path on this box (burn#5162 does NOT affect
+  # cuda f32; see .claude/rules/burn-wgpu-metal-numerics.md). Runs the same
+  # smokes `just test-cuda` runs locally: the synthetic f32 + grad-checkpointing
+  # smoke and the tiny-krea2 diffusion e2e.
+  cuda-smokes:
+    name: cuda smokes (self-hosted GPU)
+    if: inputs.suite == 'cuda' || inputs.suite == 'all'
+    runs-on: [self-hosted, gpu, cuda]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Persistent self-hosted runner: caching ~/.cargo/bin snapshots the
+          # host's rustup/cargo proxies and clobbers them on restore (the CAEF
+          # cache-bin gotcha — observed deleting the rustup binary itself).
+          # Hosted runners are ephemeral so the default is harmless there.
+          cache-bin: "false"
+
+      # `just` is present on the box (it drives these recipes manually today),
+      # so call the recipe directly — the strongest CI parity (single source of
+      # truth, no hand-copied cargo line to drift). Mirrors `just test-cuda`.
+      - name: cuda GPU smokes
+        run: just test-cuda
+
+  # wgpu on this Linux box resolves to the Vulkan path, which burn#5162
+  # corrupts (params-only pruned backward — see the cross-platform truth table
+  # in .claude/rules/burn-wgpu-metal-numerics.md). This job may come back RED
+  # until the upstream fix lands; it is kept as the CAEF-mirror portability
+  # proof and the canary that flips green when burn#5162 is fixed.
+  wgpu-smokes:
+    name: wgpu smokes (self-hosted GPU)
+    if: inputs.suite == 'wgpu' || inputs.suite == 'all'
+    runs-on: [self-hosted, gpu, wgpu]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Persistent self-hosted runner — see the cuda job's cache-bin note.
+          cache-bin: "false"
+
+      - name: wgpu GPU smokes
+        run: just test-wgpu
+
+  # The #96 on-box int8 proof: load a real Krea-2 denoiser as per-block int8 at
+  # full krea2() depth on cuda and report coverage, resident VRAM, and
+  # real-weight dequant error. Runnable NOW — the quant_probe is load +
+  # dequant-error measurement (no training step), so it is NOT blocked by
+  # cubecl#1401 (that blocks only a real training step). Opt-in via int8_probe
+  # because it loads ~20 GB and needs the multi-GB checkpoint staged on the box.
+  int8-probe:
+    name: int8 quant probe (#96, self-hosted GPU)
+    if: inputs.int8_probe
+    runs-on: [self-hosted, gpu, cuda]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Persistent self-hosted runner — see the cuda job's cache-bin note.
+          cache-bin: "false"
+
+      # Mirrors `just quant-probe <denoiser>`.
+      - name: int8 VRAM / dequant proof
+        run: just quant-probe "${{ inputs.denoiser }}"
+
+  # FUTURE (#115): once loractl-bench grows a runnable `bench` binary, add a
+  # bench job here using CAEF's two-pass warm-run methodology — the first
+  # (warm-up / tune) pass is context only; the second clean-warm pass produces
+  # the reportable RESULT / SANITY lines. This GPU workflow is where those
+  # numbers get produced. The bench crate is currently scaffold-only (lib.rs,
+  # no bin), so there is nothing to run yet.
