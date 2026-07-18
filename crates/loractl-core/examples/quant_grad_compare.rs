@@ -42,6 +42,7 @@ mod run {
     use burn::module::{AutodiffModule, Module};
     use burn::optim::GradientsParams;
     use burn::tensor::backend::{AutodiffBackend, Backend};
+    use burn::tensor::quantization::QuantValue;
     use burn::tensor::{Element, Tensor, TensorData};
     use burn_store::{
         KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
@@ -100,7 +101,8 @@ mod run {
             bail!("load errors: {:?}", result.errors);
         }
         let inner = if quantize {
-            inner.into_quantized(&device)
+            // This backward diagnostic targets the int8 (`Q8S`) path.
+            inner.into_quantized(QuantValue::Q8S, &device)
         } else {
             inner
         };

@@ -79,7 +79,7 @@ use crate::event::TrainEvent;
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
 use crate::mmdit::{BaseLinear, Mmdit, MmditConfig, krea2_positions, patchify};
-use crate::quant::{QuantBackend, quantize_linear_weight};
+use crate::quant::{QuantBackend, quant_value, quantize_linear_weight};
 use crate::qwen_vae::{QwenVae, QwenVaeConfig};
 use crate::qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
 use crate::train::Trainer;
@@ -88,6 +88,7 @@ use burn::backend::{Autodiff, NdArray};
 use burn::module::{AutodiffModule, Module, Param};
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::quantization::QuantValue;
 use burn::tensor::{DType, Distribution, Element, ElementConversion, Tensor};
 use burn_store::{
     KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
@@ -312,32 +313,38 @@ impl Trainer for DiffusionTrainer {
         std::fs::create_dir_all(&config.output.dir)
             .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
 
-        // Frozen-base int8 quantization (#96) is validated only on the two
+        // Frozen-base quantization (int8/int4, #96) is validated only on the two
         // numerically-clean f32 paths — ndarray (the offline/CI path) and cuda
-        // (the real 24 GB run) — because burn's int8 q-ops need those backends
+        // (the real 24 GB run) — because burn's quant q-ops need those backends
         // and its non-f32 autodiff is broken on GPU (burn#5162). Gate it here,
         // BEFORE the backend/precision match below, so the quant-specific
-        // message wins over the more generic ones (e.g. wgpu+int8 says "use
+        // message wins over the more generic ones (e.g. wgpu+quant says "use
         // f16", not "wgpu not built"). Every illegal combo fails loudly — never
         // a silent full-precision or wrong-backend load. Compiled always (a
-        // pure config check), like the rest of this validation.
-        if config.compute.quant == Quant::Int8 {
+        // pure config check), like the rest of this validation. int4 gets the
+        // identical restriction as int8 (same dequant-to-f32 compute path).
+        if config.compute.quant != Quant::None {
+            let quant_label = match config.compute.quant {
+                Quant::Int8 => "int8",
+                Quant::Int4 => "int4",
+                Quant::None => unreachable!("guarded by the != None above"),
+            };
             match config.compute.backend {
                 BackendKind::Ndarray | BackendKind::Cuda => {}
                 BackendKind::Wgpu => bail!(
-                    "int8 base quantization is validated on cuda and ndarray; wgpu is untested — \
-                     use compute.precision: f16 for wgpu memory savings"
+                    "{quant_label} base quantization is validated on cuda and ndarray; wgpu is \
+                     untested — use compute.precision: f16 for wgpu memory savings"
                 ),
                 BackendKind::Candle | BackendKind::Tch => bail!(
-                    "compute.quant = int8 is not supported on the {:?} backend (no quantized \
-                     matmul q-ops); use ndarray (offline/CI) or cuda (the 24 GB real run)",
+                    "compute.quant = {quant_label} is not supported on the {:?} backend (no \
+                     quantized matmul q-ops); use ndarray (offline/CI) or cuda (the 24 GB real run)",
                     config.compute.backend
                 ),
             }
             if config.compute.precision != Precision::F32 {
                 bail!(
                     "quantization dequantizes to f32; set compute.precision to f32 \
-                     (got compute.precision = {:?} with compute.quant = int8)",
+                     (got compute.precision = {:?} with compute.quant = {quant_label})",
                     config.compute.precision
                 );
             }
@@ -809,19 +816,22 @@ pub fn load_fp8_encoder<B: burn::tensor::backend::Backend>(
 
 /// Load a checkpoint into an **already-[`into_quantized`](Mmdit::into_quantized)**
 /// MMDiT, quantizing each frozen base weight from the file **one tensor at a
-/// time** — the int8 twin of [`load_module`] / [`load_fp8_module`] (PR-B3, #96).
+/// time** — the quantized twin of [`load_module`] / [`load_fp8_module`]
+/// (PR-B3, #96). `value` is the scheme the placeholders were built with
+/// ([`quant_value`](crate::quant::quant_value): `Q8S` for int8, `Q4S` for int4).
 ///
 /// ## Memory discipline (the whole point)
 ///
 /// The full f32 MMDiT is ~49 GB; this loader must **never** materialize it. It
-/// receives a module whose `Quant` sites already hold int8 placeholders (the
-/// ~14 GB skeleton) and overwrites every tensor through two lazy, streaming
-/// seams — peak ≈ the int8 skeleton + ONE transient f32 layer weight:
+/// receives a module whose `Quant` sites already hold quantized placeholders
+/// (the ~14 GB int8 / ~8 GB int4 skeleton) and overwrites every tensor through
+/// two lazy, streaming seams — peak ≈ the quantized skeleton + ONE transient
+/// f32 layer weight:
 ///
 /// - **Base-linear WEIGHT keys** go through the per-tensor quant pass: force
 ///   the file snapshot to a single transient f32 `[d_out, d_in]` tensor,
-///   quantize it to int8, replace the placeholder, drop the f32. The full-model
-///   f32 tensors are never collected together.
+///   quantize it to the chosen scheme, replace the placeholder, drop the f32.
+///   The full-model f32 tensors are never collected together.
 /// - **Everything else** (norms, modulations, first/last/projector, the base
 ///   linears' biases, and any site `into_quantized` left `Plain` on an
 ///   unaligned `d_in`) flows through the store applier over the SAME lazy
@@ -857,6 +867,7 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     path: &Path,
     remap: &[(&str, &str)],
     what: &str,
+    value: QuantValue,
     device: &B::Device,
     sink: &mut dyn FnMut(TrainEvent),
 ) -> Result<Mmdit<B>> {
@@ -875,9 +886,10 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     let mut by_key: HashMap<String, TensorSnapshot> =
         snapshots.into_iter().map(|s| (s.full_path(), s)).collect();
 
-    // 2. Quant pass, ONE tensor at a time: overwrite each Quant site's int8
-    //    weight from the checkpoint. A site left Plain by into_quantized keeps
-    //    its weight key in `by_key` for the applier (step 4).
+    // 2. Quant pass, ONE tensor at a time: overwrite each Quant site's
+    //    quantized weight from the checkpoint. A site left Plain by
+    //    into_quantized keeps its weight key in `by_key` for the applier
+    //    (step 4).
     let mut quantized = 0usize;
     let mut left_plain = 0usize;
     let mut covered: HashSet<String> = HashSet::new();
@@ -898,7 +910,7 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
                     .map_err(|e| anyhow!("forcing {weight_key} from {}: {e:?}", path.display()))?
                     .convert_dtype(DType::F32);
                 let w = Tensor::<B, 2>::from_data(data, device);
-                q.weight = Param::from_tensor(quantize_linear_weight(w));
+                q.weight = Param::from_tensor(quantize_linear_weight(w, value));
                 quantized += 1;
                 covered.insert(weight_key);
             }
@@ -911,10 +923,12 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     // 3. Loud accounting (review): a surprise misalignment on the real model —
     //    where every base linear is block-aligned and should quantize — must be
     //    visible here, not a silent OOM later.
+    // Scheme label from the value's bit width: Q8S → "int8", Q4S → "int4".
+    let scheme_label = format!("int{}", value.size_bits());
     sink(TrainEvent::Warning {
         message: format!(
-            "{what}: int8-quantized {quantized} frozen-base linear sites, {left_plain} left \
-             full-precision (unaligned d_in)"
+            "{what}: {scheme_label}-quantized {quantized} frozen-base linear sites, {left_plain} \
+             left full-precision (unaligned d_in)"
         ),
     });
 
@@ -1005,21 +1019,25 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
 
     // ---- Phase 2: the denoiser + adapters. ----
     let denoiser = denoiser_path(&config.model, &base);
-    let mmdit = if config.compute.quant == Quant::Int8 {
-        // int8 frozen base (#96). Build + load + quantize on the NON-autodiff
-        // INNER backend, at the TARGET device directly — NOT default+to_device:
-        // a lifted QFloat module cannot `.to_device()` (`Autodiff::q_to_device`
-        // is unimplemented), and `into_quantized` requires a non-autodiff
-        // backend (burn 0.21's `Autodiff::quantize_dynamic` is `todo!()`).
-        // `load_quant_module` streams the checkpoint into the int8 skeleton one
-        // tensor at a time (never the ~49 GB f32 model); `from_inner` then lifts
-        // it into the autodiff backend the training loop steps.
-        let inner = Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized(&device);
+    let mmdit = if let Some(value) = quant_value(config.compute.quant) {
+        // Quantized frozen base (int8/int4, #96). Build + load + quantize on the
+        // NON-autodiff INNER backend, at the TARGET device directly — NOT
+        // default+to_device: a lifted QFloat module cannot `.to_device()`
+        // (`Autodiff::q_to_device` is unimplemented), and `into_quantized`
+        // requires a non-autodiff backend (burn 0.21's
+        // `Autodiff::quantize_dynamic` is `todo!()`). `load_quant_module`
+        // streams the checkpoint into the quantized skeleton one tensor at a
+        // time (never the ~49 GB f32 model); `from_inner` then lifts it into the
+        // autodiff backend the training loop steps. `value` (`Q8S`/`Q4S`) is the
+        // scheme both the skeleton and the streaming loader quantize with.
+        let inner =
+            Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized(value, &device);
         let inner = load_quant_module(
             inner,
             &denoiser,
             &Mmdit::<AB::InnerBackend>::key_remap(),
             "MMDiT",
+            value,
             &device,
             sink,
         )?;

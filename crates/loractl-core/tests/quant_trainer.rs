@@ -39,14 +39,24 @@ static TRAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// A unique temp dir, removed on drop.
 struct TempDir(PathBuf);
 
+/// Per-process monotonic counter making every `TempDir` path unique even when
+/// two threads construct one at the same nanosecond. The guard-matrix tests run
+/// fully parallel (no `TRAIN_LOCK`), so a `pid+nanos`-only name collided under
+/// macOS's coarse clock — two tests then shared an `out/` dir and raced in
+/// `create_dir_all`, masking the guard message. The counter removes the race.
+static TEMPDIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl TempDir {
     fn new(tag: &str) -> Self {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("loractl-{tag}-{}-{nanos}", std::process::id()));
+        let seq = TEMPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "loractl-{tag}-{}-{nanos}-{seq}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
@@ -134,12 +144,12 @@ fn kohya_keys(path: &Path) -> Vec<String> {
 //    dataset and run under the default (offline) features.
 // ---------------------------------------------------------------------------
 
-fn quant_bail(backend: BackendKind, precision: Precision) -> String {
+fn quant_bail(backend: BackendKind, precision: Precision, quant: Quant) -> String {
     let out = TempDir::new("quant-guard");
     let mut cfg = config(&out, PathBuf::from("unused-dataset"), 4);
     cfg.compute.backend = backend;
     cfg.compute.precision = precision;
-    cfg.compute.quant = Quant::Int8;
+    cfg.compute.quant = quant;
     let err = DiffusionTrainer
         .train(&cfg, &mut |_event| {})
         .expect_err("the illegal quant combo must refuse");
@@ -148,7 +158,7 @@ fn quant_bail(backend: BackendKind, precision: Precision) -> String {
 
 #[test]
 fn quant_int8_on_wgpu_is_rejected_as_untested() {
-    let message = quant_bail(BackendKind::Wgpu, Precision::F32);
+    let message = quant_bail(BackendKind::Wgpu, Precision::F32, Quant::Int8);
     assert!(
         message.contains("wgpu is untested") && message.contains("f16"),
         "wgpu+int8 must point at f16 for wgpu memory savings, got: {message}"
@@ -157,7 +167,7 @@ fn quant_int8_on_wgpu_is_rejected_as_untested() {
 
 #[test]
 fn quant_int8_on_candle_is_rejected() {
-    let message = quant_bail(BackendKind::Candle, Precision::F32);
+    let message = quant_bail(BackendKind::Candle, Precision::F32, Quant::Int8);
     assert!(
         message.contains("not supported on the Candle") && message.contains("int8"),
         "candle+int8 must name the unsupported backend, got: {message}"
@@ -166,7 +176,7 @@ fn quant_int8_on_candle_is_rejected() {
 
 #[test]
 fn quant_int8_on_tch_is_rejected() {
-    let message = quant_bail(BackendKind::Tch, Precision::F32);
+    let message = quant_bail(BackendKind::Tch, Precision::F32, Quant::Int8);
     assert!(
         message.contains("not supported on the Tch"),
         "tch+int8 must name the unsupported backend, got: {message}"
@@ -176,10 +186,50 @@ fn quant_int8_on_tch_is_rejected() {
 #[test]
 fn quant_int8_with_non_f32_precision_is_rejected() {
     // ndarray passes the backend check; f16 then trips the precision guard.
-    let message = quant_bail(BackendKind::Ndarray, Precision::F16);
+    let message = quant_bail(BackendKind::Ndarray, Precision::F16, Quant::Int8);
     assert!(
         message.contains("dequantizes to f32") && message.contains("f32"),
         "int8+f16 must say quantization dequantizes to f32, got: {message}"
+    );
+}
+
+// int4 gets the identical guard matrix as int8 (same dequant-to-f32 path,
+// restricted to the two numerically-clean f32 backends).
+
+#[test]
+fn quant_int4_on_wgpu_is_rejected_as_untested() {
+    let message = quant_bail(BackendKind::Wgpu, Precision::F32, Quant::Int4);
+    assert!(
+        message.contains("wgpu is untested") && message.contains("f16"),
+        "wgpu+int4 must point at f16 for wgpu memory savings, got: {message}"
+    );
+}
+
+#[test]
+fn quant_int4_on_candle_is_rejected() {
+    let message = quant_bail(BackendKind::Candle, Precision::F32, Quant::Int4);
+    assert!(
+        message.contains("not supported on the Candle") && message.contains("int4"),
+        "candle+int4 must name the unsupported backend, got: {message}"
+    );
+}
+
+#[test]
+fn quant_int4_on_tch_is_rejected() {
+    let message = quant_bail(BackendKind::Tch, Precision::F32, Quant::Int4);
+    assert!(
+        message.contains("not supported on the Tch"),
+        "tch+int4 must name the unsupported backend, got: {message}"
+    );
+}
+
+#[test]
+fn quant_int4_with_non_f32_precision_is_rejected() {
+    // ndarray passes the backend check; f16 then trips the precision guard.
+    let message = quant_bail(BackendKind::Ndarray, Precision::F16, Quant::Int4);
+    assert!(
+        message.contains("dequantizes to f32") && message.contains("f32"),
+        "int4+f16 must say quantization dequantizes to f32, got: {message}"
     );
 }
 
@@ -322,6 +372,80 @@ fn tiny_krea2_int8_trains_end_to_end_and_exports_kohya() {
     );
 }
 
+/// The int4 twin of the ndarray e2e: `quant: int4` streams the base as `Q4S`
+/// through the SAME loader, the forward runs (a wrong orientation would
+/// shape-mismatch on the non-square projections), losses are finite, and the
+/// kohya export is the same 42-key layout. Proves int4 is a correct trainable
+/// scheme parametrization of the int8 path — on-box memory fit is the separate
+/// PR-B4 probe. Needs burn-ndarray's `export_tests` (the dev-dependency) so
+/// ndarray can quantize `Q4S`.
+#[test]
+fn tiny_krea2_int4_trains_end_to_end_and_exports_kohya() {
+    const STEPS: u64 = 12;
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("quant-int4-e2e");
+    let dataset = staged_dataset(&out);
+
+    let mut cfg = config(&out, dataset, STEPS);
+    cfg.compute.quant = Quant::Int4; // ndarray + f32 + int4 — the legal CI path
+
+    let mut losses = Vec::new();
+    let mut checkpoints = Vec::new();
+    let mut finished = None;
+    let mut quant_accounting = None;
+    let adapter = DiffusionTrainer
+        .train(&cfg, &mut |event| match event {
+            TrainEvent::Step { loss, .. } => losses.push(loss),
+            TrainEvent::Checkpoint { step, path } => checkpoints.push((step, path)),
+            TrainEvent::Finished { adapter_path } => finished = Some(adapter_path),
+            TrainEvent::Warning { message } if message.contains("int4-quantized") => {
+                quant_accounting = Some(message)
+            }
+            _ => {}
+        })
+        .expect("the ndarray int4 tiny Krea 2 run completes");
+
+    assert_eq!(losses.len(), STEPS as usize, "one Step per step");
+    assert!(
+        losses.iter().all(|l| l.is_finite()),
+        "non-finite loss with int4 base: {losses:?}"
+    );
+
+    // Same 52/1 split as int8 — block alignment is scheme-independent — but the
+    // accounting must name int4 (the scheme actually used).
+    let accounting = quant_accounting.expect("the int4 loader must emit its accounting Warning");
+    assert!(
+        accounting.contains("int4-quantized 52 frozen-base linear sites")
+            && accounting.contains("1 left full-precision"),
+        "unexpected int4 quant accounting: {accounting}"
+    );
+
+    // Same ComfyUI-loadable kohya export as every other tiny-krea2 run (42 keys).
+    let adapter = finished.unwrap_or(adapter);
+    let keys = kohya_keys(&adapter);
+    assert_eq!(keys.len(), 42, "unexpected int4 export keys: {keys:?}");
+    assert_eq!(checkpoints.len(), 2, "checkpoints at steps 5 and 10");
+
+    // The adapter genuinely trained on top of the frozen int4 base: zero-init
+    // `B` (lora_up) moved off zero (gradients flow through the custom quant op).
+    let bytes = std::fs::read(&adapter).unwrap();
+    let st = safetensors::SafeTensors::deserialize(&bytes).unwrap();
+    let up = st
+        .tensor("transformer_blocks.0.attn.to_q.lora_up.weight")
+        .expect("up tensor present");
+    let sum: f32 = up
+        .data()
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
+        .sum();
+    assert!(
+        sum > 0.0,
+        "lora_up must have moved off its zero init (int4)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3. fp8 → int8 requant — the scaled-fp8 tiny checkpoint loaded with int8.
 // ---------------------------------------------------------------------------
@@ -430,4 +554,52 @@ fn tiny_krea2_cuda_int8_trains_e2e() {
     );
     let keys = kohya_keys(&finished.unwrap_or(adapter));
     assert_eq!(keys.len(), 42, "unexpected cuda int8 export keys: {keys:?}");
+}
+
+/// The int4 twin of the cuda e2e (`cuda + f32 + int4`) — the exact production
+/// configuration for the #25 24 GB real run, exercised on the tiny bundle. cuda
+/// quantizes `Q4S` natively via cubecl's generic `PackedU32` store (no
+/// `export_tests` needed, unlike ndarray). Run via `just test-cuda`.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires an NVIDIA GPU (CUDA toolkit at build time); run via `just test-cuda`"]
+fn tiny_krea2_cuda_int4_trains_e2e() {
+    const STEPS: u64 = 12;
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("quant-cuda-int4");
+    let dataset = staged_dataset(&out);
+
+    let mut cfg = config(&out, dataset, STEPS);
+    cfg.compute.backend = BackendKind::Cuda; // cuda + f32 (default precision) + int4
+    cfg.compute.quant = Quant::Int4;
+
+    let mut losses = Vec::new();
+    let mut finished = None;
+    let mut quant_accounting = None;
+    let adapter = DiffusionTrainer
+        .train(&cfg, &mut |event| match event {
+            TrainEvent::Step { loss, .. } => losses.push(loss),
+            TrainEvent::Finished { adapter_path } => finished = Some(adapter_path),
+            TrainEvent::Warning { message } if message.contains("int4-quantized") => {
+                quant_accounting = Some(message)
+            }
+            _ => {}
+        })
+        .expect("the cuda int4 tiny Krea 2 run completes");
+
+    assert_eq!(losses.len() as u64, STEPS, "one Step per step");
+    assert!(
+        losses.iter().all(|l| l.is_finite()),
+        "non-finite loss on cuda int4: {losses:?}"
+    );
+    assert!(
+        quant_accounting
+            .as_deref()
+            .is_some_and(|m| m.contains("int4-quantized 52 frozen-base linear sites")),
+        "cuda int4 quant accounting missing/unexpected: {quant_accounting:?}"
+    );
+    let keys = kohya_keys(&finished.unwrap_or(adapter));
+    assert_eq!(keys.len(), 42, "unexpected cuda int4 export keys: {keys:?}");
 }

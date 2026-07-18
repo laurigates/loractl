@@ -381,15 +381,23 @@ impl<'de> Deserialize<'de> for Precision {
 /// Frozen-base quantization of the diffusion trainer's MMDiT (#96 — the #24
 /// follow-up).
 ///
-/// `Int8` loads the ~12.8B Krea 2 base as weight-only, per-block symmetric
-/// int8 ([`quant::int8_scheme`](crate::quant::int8_scheme)) while the LoRA
-/// adapters train in f32 — the QLoRA pattern — cutting the resident base to
-/// ~1/4 of f32 so it fits a 24 GB GPU. Like [`Precision`], the enum and its
-/// `Deserialize` are **always compiled** and route through `FromStr`; the
-/// diffusion trainer's guard matrix restricts it to the numerically-validated
-/// `(ndarray, f32)` / `(cuda, f32)` combos and fails loudly everywhere else
-/// (wgpu is untested, candle/tch have no quant q-ops) — never a silent
-/// fallback.
+/// Both variants load the ~12.8B Krea 2 base as weight-only, per-block
+/// symmetric quantization ([`quant::quant_scheme`](crate::quant::quant_scheme))
+/// while the LoRA adapters train in f32 — the QLoRA pattern — so the resident
+/// base fits a 24 GB GPU:
+///
+/// - `Int8` (`Q8S`) cuts the base to ~1/4 of f32 (~14 GB on the real model);
+///   a training step's forward+backward working set then peaks near 24 GB.
+/// - `Int4` (`Q4S`) cuts the base to ~1/8 of f32 (~8 GB): 4-bit weights + the
+///   same f32 per-block scales. It does NOT shrink the transient f32 dequant
+///   working set (dequant is identical), but halving the *resident* base frees
+///   ~6 GB of headroom — enough to keep a step's peak well under 24 GB.
+///
+/// Like [`Precision`], the enum and its `Deserialize` are **always compiled**
+/// and route through `FromStr`; the diffusion trainer's guard matrix restricts
+/// both quant modes to the numerically-validated `(ndarray, f32)` /
+/// `(cuda, f32)` combos and fails loudly everywhere else (wgpu is untested,
+/// candle/tch have no quant q-ops) — never a silent fallback.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Quant {
@@ -399,6 +407,9 @@ pub enum Quant {
     None,
     /// Weight-only per-block symmetric int8 for the frozen base (`quant.rs`).
     Int8,
+    /// Weight-only per-block symmetric int4 (`Q4S`) for the frozen base
+    /// (`quant.rs`) — ~1/8 of f32, halving int8's resident base.
+    Int4,
 }
 
 // No `clap::ValueEnum` here for the same reason as `BackendKind`/`Precision`:
@@ -411,7 +422,8 @@ impl FromStr for Quant {
         match s.to_ascii_lowercase().as_str() {
             "none" | "off" | "f32" => Ok(Self::None),
             "int8" | "i8" => Ok(Self::Int8),
-            other => Err(format!("unknown quant {other:?} (none|int8)")),
+            "int4" | "i4" => Ok(Self::Int4),
+            other => Err(format!("unknown quant {other:?} (none|int8|int4)")),
         }
     }
 }
@@ -454,9 +466,10 @@ pub struct ComputeConfig {
     pub grad_checkpointing: bool,
     /// Frozen-base quantization (#96). `int8` loads the diffusion trainer's
     /// MMDiT base as per-block symmetric int8 (~1/4 the f32 weight memory);
-    /// `none` (default) keeps the full-precision base. Restricted to
-    /// `(ndarray|cuda, f32)` by the trainer guard — every other combination
-    /// fails loudly.
+    /// `int4` uses symmetric int4 (~1/8 the f32 weight memory, halving int8's
+    /// resident base to fit a 24 GB step); `none` (default) keeps the
+    /// full-precision base. Restricted to `(ndarray|cuda, f32)` by the trainer
+    /// guard — every other combination fails loudly.
     #[serde(default)]
     pub quant: Quant,
 }

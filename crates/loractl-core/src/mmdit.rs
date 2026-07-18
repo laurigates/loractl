@@ -71,6 +71,7 @@ use burn::module::{Module, Param};
 use burn::nn::{Gelu, Linear, LinearConfig};
 use burn::tensor::activation::{sigmoid, silu, softmax};
 use burn::tensor::backend::Backend;
+use burn::tensor::quantization::QuantValue;
 use burn::tensor::{DType, Tensor, TensorData};
 
 /// Additive-mask sentinel — finite **in f16 too** (f16 max ≈ 65504, so a
@@ -335,7 +336,8 @@ fn apply_rope<B: Backend>(x: Tensor<B, 4>, tables: &RopeTables<B>) -> Tensor<B, 
     Tensor::cat(vec![y0, y1], 4).reshape([b, h, l, hd])
 }
 
-/// A frozen int8-quantized replacement for a base [`Linear`] at a trunk site.
+/// A frozen quantized replacement for a base [`Linear`] at a trunk site (int8
+/// `Q8S` or int4 `Q4S`, per [`Mmdit::into_quantized`]'s chosen scheme).
 ///
 /// The weight is a burn-native `QFloat` tensor in **file layout `[d_out, d_in]`**
 /// (never transposed) — the layout
@@ -343,10 +345,10 @@ fn apply_rope<B: Backend>(x: Tensor<B, 4>, tables: &RopeTables<B>) -> Tensor<B, 
 /// burn's `Linear` stores its weight `[d_in, d_out]` and computes `x·W`;
 /// [`Mmdit::into_quantized`] transposes to `[d_out, d_in]` before quantizing,
 /// and [`BaseLinear::forward`] restores `x·W` as `x · dequant(wq)ᵀ`, so a
-/// quantized site equals its plain twin up to int8 error.
+/// quantized site equals its plain twin up to the scheme's quant error.
 #[derive(Module, Debug)]
 pub struct QuantLinear<B: Backend> {
-    /// Frozen int8 weight in FILE layout `[d_out, d_in]` (a `QFloat`
+    /// Frozen quantized weight in FILE layout `[d_out, d_in]` (a `QFloat`
     /// primitive; never transposed, never receives a gradient — the quant op
     /// treats it as a constant).
     pub weight: Param<Tensor<B, 2>>,
@@ -355,15 +357,16 @@ pub struct QuantLinear<B: Backend> {
 }
 
 /// The frozen base linear at an injectable site: either the plain loaded
-/// [`Linear`] (the default — byte-identical to pre-quant behavior) or its int8
-/// [`QuantLinear`] twin. The M6 LoRA adapter attaches on top of *this* output
-/// at [`site`], unaffected by which arm is active — quantizing the base does
-/// not disturb the attach seam.
+/// [`Linear`] (the default — byte-identical to pre-quant behavior) or its
+/// quantized [`QuantLinear`] twin. The M6 LoRA adapter attaches on top of
+/// *this* output at [`site`], unaffected by which arm is active — quantizing
+/// the base does not disturb the attach seam.
 #[derive(Module, Debug)]
 pub enum BaseLinear<B: Backend> {
     /// The plain, full-precision loaded linear.
     Plain(Linear<B>),
-    /// An int8-quantized frozen linear (the memory knob for the ~12B base).
+    /// A quantized frozen linear (the memory knob for the ~12B base — int8 or
+    /// int4).
     Quant(QuantLinear<B>),
 }
 
@@ -383,7 +386,8 @@ impl<B: Backend> BaseLinear<B> {
 
 impl<B: QuantBackend> BaseLinear<B> {
     /// Forward through whichever arm is active — a numerical drop-in for
-    /// [`Linear::forward`] up to int8 error. `Plain` delegates directly;
+    /// [`Linear::forward`] up to the scheme's quant error. `Plain` delegates
+    /// directly;
     /// `Quant` flattens the leading dims to a `[n, d_in]` matrix (mirroring
     /// burn `Linear`'s own batch-flatten), runs the weight-as-constant
     /// [`quant_matmul_t`](crate::quant::QuantBackend::quant_matmul_t)
@@ -864,7 +868,7 @@ impl<B: Backend> Mmdit<B> {
             LinearConfig::new(d_in, d_out).with_bias(false).init(device)
         };
         // Quantizable base sites start `Plain` (with bias, like `lin`);
-        // `into_quantized` swaps in the int8 twin.
+        // `into_quantized` swaps in the quantized (int8/int4) twin.
         let base = |d_in: usize, d_out: usize| BaseLinear::Plain(lin(d_in, d_out));
         let fusion_block = || {
             TextFusionBlock::init(
@@ -954,13 +958,14 @@ impl<B: Backend> Mmdit<B> {
         sites
     }
 
-    /// Replace every frozen-base [`BaseLinear::Plain`] site with its int8
-    /// [`BaseLinear::Quant`] twin (weight-only, per-block symmetric int8 via
-    /// [`quantize_linear_weight`]) — the memory knob for the ~12B base
-    /// (#24 → #96). burn's `Linear` stores its weight `[d_in, d_out]` and
-    /// computes `x·W`; the quant path wants file layout `[d_out, d_in]` and
-    /// computes `x · dequant(wq)ᵀ`, so each weight is **transposed** before
-    /// quantizing and the two are numerically equal up to int8 error (proven
+    /// Replace every frozen-base [`BaseLinear::Plain`] site with its quantized
+    /// [`BaseLinear::Quant`] twin (weight-only, per-block symmetric at the given
+    /// [`QuantValue`] via [`quantize_linear_weight`]) — the memory knob for the
+    /// ~12B base (#24 → #96): `Q8S` (int8, ~1/4 of f32) or `Q4S` (int4, ~1/8).
+    /// burn's `Linear` stores its weight `[d_in, d_out]` and computes `x·W`; the
+    /// quant path wants file layout `[d_out, d_in]` and computes
+    /// `x · dequant(wq)ᵀ`, so each weight is **transposed** before quantizing
+    /// and the two are numerically equal up to the scheme's quant error (proven
     /// in `tests/quant_mmdit.rs`). The M6 LoRA seam is untouched — adapters
     /// attach on the quantized site's output exactly as on the plain one.
     ///
@@ -976,24 +981,24 @@ impl<B: Backend> Mmdit<B> {
     /// — the pattern `tests/quant.rs` and `tests/quant_mmdit.rs` follow. The
     /// `device` argument is reserved for a future scheme that needs it
     /// (`quantize_dynamic` quantizes on each tensor's own device today).
-    pub fn into_quantized(mut self, _device: &B::Device) -> Self {
+    pub fn into_quantized(mut self, value: QuantValue, _device: &B::Device) -> Self {
         for block in &mut self.blocks {
-            quantize_attention(&mut block.attn);
-            quantize_swiglu(&mut block.mlp);
+            quantize_attention(&mut block.attn, value);
+            quantize_swiglu(&mut block.mlp, value);
         }
         for block in &mut self.txtfusion.layerwise_blocks {
-            quantize_attention(&mut block.attn);
-            quantize_swiglu(&mut block.mlp);
+            quantize_attention(&mut block.attn, value);
+            quantize_swiglu(&mut block.mlp, value);
         }
         for block in &mut self.txtfusion.refiner_blocks {
-            quantize_attention(&mut block.attn);
-            quantize_swiglu(&mut block.mlp);
+            quantize_attention(&mut block.attn, value);
+            quantize_swiglu(&mut block.mlp, value);
         }
-        quantize_field(&mut self.tmlp.fc1);
-        quantize_field(&mut self.tmlp.fc2);
-        quantize_field(&mut self.tproj.fc);
-        quantize_field(&mut self.txtmlp.fc1);
-        quantize_field(&mut self.txtmlp.fc2);
+        quantize_field(&mut self.tmlp.fc1, value);
+        quantize_field(&mut self.tmlp.fc2, value);
+        quantize_field(&mut self.tproj.fc, value);
+        quantize_field(&mut self.txtmlp.fc1, value);
+        quantize_field(&mut self.txtmlp.fc2, value);
         self
     }
 
@@ -1098,11 +1103,11 @@ impl<B: Backend> Mmdit<B> {
 }
 
 /// Quantize one base site in place: a block-aligned [`BaseLinear::Plain`]
-/// becomes its int8 [`BaseLinear::Quant`] twin (the `[d_in, d_out]` Linear
-/// weight transposed to file layout `[d_out, d_in]`, then
-/// [`quantize_linear_weight`]); a `Quant` arm, or a `Plain` whose `d_in` is
-/// not a multiple of [`QUANT_BLOCK`], is left untouched.
-fn quantize_field<B: Backend>(base: &mut BaseLinear<B>) {
+/// becomes its [`BaseLinear::Quant`] twin at the given [`QuantValue`] (the
+/// `[d_in, d_out]` Linear weight transposed to file layout `[d_out, d_in]`,
+/// then [`quantize_linear_weight`]); a `Quant` arm, or a `Plain` whose `d_in`
+/// is not a multiple of [`QUANT_BLOCK`], is left untouched.
+fn quantize_field<B: Backend>(base: &mut BaseLinear<B>, value: QuantValue) {
     let BaseLinear::Plain(lin) = base else {
         return;
     };
@@ -1110,7 +1115,7 @@ fn quantize_field<B: Backend>(base: &mut BaseLinear<B>) {
     if !d_in.is_multiple_of(QUANT_BLOCK) {
         return;
     }
-    let wq = quantize_linear_weight(lin.weight.val().transpose());
+    let wq = quantize_linear_weight(lin.weight.val().transpose(), value);
     let bias = lin.bias.clone();
     *base = BaseLinear::Quant(QuantLinear {
         weight: Param::from_tensor(wq),
@@ -1119,19 +1124,19 @@ fn quantize_field<B: Backend>(base: &mut BaseLinear<B>) {
 }
 
 /// Quantize an attention block's five projections in place.
-fn quantize_attention<B: Backend>(attn: &mut MmditAttention<B>) {
-    quantize_field(&mut attn.wq);
-    quantize_field(&mut attn.wk);
-    quantize_field(&mut attn.wv);
-    quantize_field(&mut attn.gate);
-    quantize_field(&mut attn.wo);
+fn quantize_attention<B: Backend>(attn: &mut MmditAttention<B>, value: QuantValue) {
+    quantize_field(&mut attn.wq, value);
+    quantize_field(&mut attn.wk, value);
+    quantize_field(&mut attn.wv, value);
+    quantize_field(&mut attn.gate, value);
+    quantize_field(&mut attn.wo, value);
 }
 
 /// Quantize a SwiGLU's three projections in place.
-fn quantize_swiglu<B: Backend>(mlp: &mut SwiGlu<B>) {
-    quantize_field(&mut mlp.gate);
-    quantize_field(&mut mlp.up);
-    quantize_field(&mut mlp.down);
+fn quantize_swiglu<B: Backend>(mlp: &mut SwiGlu<B>, value: QuantValue) {
+    quantize_field(&mut mlp.gate, value);
+    quantize_field(&mut mlp.up, value);
+    quantize_field(&mut mlp.down, value);
 }
 
 impl<B: QuantBackend> Mmdit<B> {

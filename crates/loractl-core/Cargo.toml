@@ -108,3 +108,17 @@ qwen3vl-real = []
 # Opt-in real Krea-2-Raw MMDiT staged-parity test (`tests/mmdit_real.rs`,
 # M11; depth-truncated — see the test docs). Fixtures: `just mmdit-real-reference`.
 mmdit-real = []
+
+[dev-dependencies]
+# int4 (Q4S) frozen-base quantization goldens (#96). burn-ndarray gates its Q4
+# `quantize` behind the empty `export_tests` feature (Q8/int8 is always on; Q4 is
+# not) — so the offline int4 quant tests need it enabled. As a dev-dependency it
+# feature-unifies into `cargo test` (the same burn-ndarray the lib pulls via
+# `burn/ndarray`, now with export_tests), but stays OUT of `cargo build`/
+# `just install` — the real cuda run never touches the ndarray Q4 path.
+# `default-features = false` so it adds only export_tests to whatever features
+# burn already turns on; unification is additive, so std/simd/etc. are unaffected
+# and the int8 goldens are untouched (export_tests only ADDS the Q4/Q2 arms).
+burn-ndarray = { version = "0.21", default-features = false, features = [
+    "export_tests",
+] }

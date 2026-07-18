@@ -221,11 +221,13 @@ test-cuda:
 run-cuda config="config/examples/lora.yaml":
     cargo run --release -p loractl-cli --features cuda -- train {{config}} --backend cuda
 
-# On-box int8 validation (#96): load a real Krea-2 denoiser as int8 at full
-# krea2() depth on cuda and report coverage, resident VRAM, and real-weight
-# dequant error. Linux+NVIDIA + a 24 GB GPU; needs the multi-GB checkpoint.
-quant-probe denoiser:
-    cargo run --release -p loractl-core --features cuda --example quant_probe -- {{denoiser}}
+# On-box quantization validation (#96): load a real Krea-2 denoiser at full
+# krea2() depth on cuda as int8 (default) or int4 and report coverage, resident
+# VRAM (int8 ≈ 13–15 GB, int4 ≈ 8 GB), and real-weight dequant error.
+# Linux+NVIDIA + a 24 GB GPU; needs the multi-GB checkpoint. int4: `just
+# quant-probe <denoiser> int4`.
+quant-probe denoiser quant="int8":
+    cargo run --release -p loractl-core --features cuda --example quant_probe -- {{denoiser}} --quant {{quant}}
 
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.
@@ -239,6 +241,10 @@ reference:
 # Regenerate the per-block int8 quantization golden (#96; torch via uv, no network).
 quant-reference:
     uv run reference/quant_reference.py
+
+# Regenerate the per-block int4 (Q4S) quantization golden (#96; torch via uv, no network).
+quant-int4-reference:
+    uv run reference/quant_int4_reference.py
 
 # Regenerate the BurnTrainer step-loss golden (#49 H9; needs torch via uv).
 #
