@@ -86,20 +86,31 @@ the roadmap in `README.md`.
 **Next direction (M14's remaining checkbox, #25):** the real run — train a
 LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer` and prove
 the exported adapter loads and visibly conditions generation in ComfyUI /
-Krea-2-Turbo. Two routes, both currently blocked on memory-vs-numerics:
-wgpu f16 + grad checkpointing (`config/examples/krea2-lora.yaml`) fits the
-48 GiB Metal host but burn's GPU autodiff is broken (burn#5162, all
-platforms); **cuda f32 is numerically clean and wired into
-`DiffusionTrainer` (f32-only), but full-depth f32 (~49 GB) exceeds the
-24 GB RTX 4090 host — the `compute.quant: int8` frozen-base quantization
-(#96, the #24 follow-up) is the practical route.** That knob has now
-landed (offline-validated): the diffusion trainer's ~12.8B MMDiT base loads
-as per-block symmetric int8 (`src/quant.rs`, `BaseLinear::Quant`) while the
-LoRA adapters train in f32 (QLoRA), streamed one layer at a time so the
-~49 GB f32 model is never materialized; restricted to `(ndarray|cuda, f32)`
-by the trainer guard (wgpu untested, non-f32 rejected — burn#5162). On-box
-memory on the 24 GB card is the remaining #96 checkbox (PR-B4). Strategy and
-gap analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+Krea-2-Turbo. The cuda route is **VRAM-bound**, per on-hardware measurement
+([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)): the int4 training
+step's working set is ≈ 25.5 GB vs the 24 GB RTX 4090, dominated by
+dequant/gradient buffers that scale with the number of *trained sites* —
+**resolution-independent** (a 384px probe peaked byte-identically), so
+lowering resolution does not help. The quant knobs themselves landed and
+are correct: `compute.quant: int8` (#96) and `int4` (Q4S, #119) load the
+frozen ~12.8B MMDiT base per-block quantized (`src/quant.rs`,
+`BaseLinear::Quant`) while the LoRA adapters train in f32 (QLoRA), streamed
+one layer at a time so the ~49 GB f32 model is never materialized;
+restricted to `(ndarray|cuda, f32)` by the trainer guard (wgpu untested,
+non-f32 rejected — burn#5162). Per ADR-0005 and the #96 measurements,
+**int4 (~10.1 GB reclaimed resident base) is the 24 GB training route;
+int8 (~17.1 GB) fits load/inference only — its training step OOMs.** The
+unblock is footprint reduction: start with fewer LoRA targets
+(`config/examples/krea2-comfyui.yaml` now defaults to attention-only —
+`blocks\.\d+\.attn\.`, this repo's first cut at the "fewer trained sites"
+direction ADR-0005 names, not a target set the ADR itself prescribes, and
+not yet measured to fit) and measure with the step probe (`just step-probe`,
+#126); base-weight streaming and reduced dequantized-weight retention in
+backward are the follow-up levers. The
+wgpu f16 + grad-checkpointing route (`config/examples/krea2-lora.yaml`,
+fits the 48 GiB Metal host) stays blocked by burn's GPU autodiff bug
+(burn#5162, unchanged). Strategy and gap analysis:
+[ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 ## Commands
 

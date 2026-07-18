@@ -113,9 +113,10 @@ jobs:
 
   # The #96 on-box int8 proof: load a real Krea-2 denoiser as per-block int8 at
   # full krea2() depth on cuda and report coverage, resident VRAM, and
-  # real-weight dequant error. Runnable NOW — the quant_probe is load +
-  # dequant-error measurement (no training step), so it is NOT blocked by
-  # cubecl#1401 (that blocks only a real training step). Opt-in via int8_probe
+  # real-weight dequant error. The quant_probe is load + dequant-error
+  # measurement only (no training step), so it runs regardless of the training
+  # step's status — the real training step is VRAM-bound per ADR-0005
+  # (docs/adrs/0005-int4-training-vram-bound.md). Opt-in via int8_probe
   # because it loads ~20 GB and needs the multi-GB checkpoint staged on the box.
   int8-probe:
     name: int8 quant probe (#96, self-hosted GPU)

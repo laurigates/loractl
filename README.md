@@ -277,7 +277,7 @@ compute:
   device: 0                # GPU ordinal; ignored by ndarray. wgpu: 0 = default/best GPU
   precision: f32           # f32 (default) | f16 (wgpu only — M13; halves weight memory)
   grad_checkpointing: false # recompute activations during backward (M13; numerically identical)
-  quant: none              # none (default) | int8 (frozen-base int8; ndarray/cuda + f32 only — #96)
+  quant: none              # none (default) | int8 | int4 (frozen-base quant; ndarray/cuda + f32 only — #96/#119)
 ```
 
 - **`ndarray`** is the default and is **always** available — it needs no extra
@@ -306,25 +306,33 @@ The GPU backend is a **portability** target (the loop runs, loss decreases),
 not a bit-exact numerics one — per ADR-0001 the numerics-golden parity tests
 stay on ndarray, since GPU float-reduction order differs.
 
-### Frozen-base quantization (int8, #96)
+### Frozen-base quantization (int8/int4, #96/#119)
 
 A third memory knob, orthogonal to `precision`, quantizes the diffusion
-trainer's **frozen MMDiT base** to weight-only per-block symmetric int8 while
-the LoRA adapters stay f32 — the **QLoRA** pattern:
+trainer's **frozen MMDiT base** to weight-only per-block symmetric int8 or
+int4 (Q4S) while the LoRA adapters stay f32 — the **QLoRA** pattern:
 
 ```yaml
 compute:
   backend: cuda            # or ndarray (offline/CI)
-  precision: f32           # int8 dequantizes to f32 — f16/bf16 are rejected
-  quant: int8              # none (default) | int8
+  precision: f32           # quantized weights dequantize to f32 — f16/bf16 are rejected
+  quant: int4              # none (default) | int8 | int4
 ```
 
 - **The point:** `precision: f16` only fits the ~12.8B Krea 2 base on a large
   (48 GB) Metal host, and burn's GPU autodiff is broken in f16 (burn#5162).
-  `quant: int8` cuts the resident base to ~1/4 of f32 (~14 GB of int8 weights +
-  scales; **~17–19 GB** total with adapters, activations, and optimizer state),
-  which is the practical route to training on a **24 GB** card via the
-  numerically-clean **cuda f32** path.
+  On the **24 GB** card the measured reality
+  ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)) is: `int8` (~1/4 of
+  f32) reclaims to a **~17.1 GB** resident base — it loads, but the training
+  step OOMs; `int4` (Q4S per-block, ~1/8 of f32) cuts the reclaimed resident
+  base to **~10.1 GB** (~14.9 GB before reclaim). Whether the *step* then fits
+  is a separate question the base size alone doesn't settle: the full
+  `blocks\.` target set is measured **not** to fit (step working set
+  ≈ 25.5 GB vs 24 GB, resolution-independent), and reduced target sets are
+  as-yet unmeasured — the `just step-probe` sweep (#126) is the measurement.
+  So int4 + the numerically-clean **cuda f32** path is the quant choice for the
+  24 GB training route (int8 fits load/inference only), gated on a small-enough
+  trained-target set.
 - **Where it applies:** the diffusion trainer's base only — the base weights are
   frozen int8 constants (a custom autodiff matmul dequantizes transiently per
   layer, so gradients flow to the adapters, never the base), and every
@@ -340,8 +348,13 @@ compute:
   transient f32 tensor.
 - **Validated offline** on the tiny-krea2 bundle (`cargo test`): the loader
   produces a correct trainable quantized model (finite losses, the 42-key kohya
-  export, resume). **On-box memory on the 24 GB RTX 4090 is not yet validated —
-  that is the next PR ([#96](https://github.com/laurigates/loractl/issues/96)).**
+  export, resume). **On-box memory on the 24 GB RTX 4090 is now measured**
+  ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)): the quantized base
+  loads and fits (int8 **~17.1 GB** / int4 **~10.1 GB** reclaimed resident),
+  but the full-target-set training step is **VRAM-bound** — working set
+  ≈ 25.5 GB vs 24 GB, resolution-independent — so the remaining
+  [#96](https://github.com/laurigates/loractl/issues/96) work is footprint
+  reduction (fewer LoRA targets first).
 
 ## Observability (GlitchTip / Sentry)
 
@@ -431,7 +444,7 @@ burn, the full gap analysis) is [ADR-0004](docs/adrs/0004-krea2-image-diffusion-
 - [x] **M11 — Krea 2 MMDiT denoiser** ([#22](https://github.com/laurigates/loractl/issues/22))**.** `Mmdit` ports `krea-ai/krea-2`'s `SingleStreamDiT` — a **single-stream** DiT (text + image tokens concatenated through 28 identical blocks, not FLUX's double-stream): **zero-centered RMSNorm** (`weight = scale + 1`, eps 1e-5, f32), **gated-sigmoid attention** (`wo(attn · σ(gate(x)))`), QK-norm, GQA 48/12, **rotation-matrix RoPE** over 3 position axes `[32, 48, 48]` at θ=1e3 (text at the origin, image on the patch grid), shared 6-way timestep modulation with per-block learned bias, the 2+2-block **text-fusion transformer** that collapses the M10 conditioner's 12-layer stack, and the reference's pad-to-256/masking/output-slice semantics. Proven by staged parity vs the official `mmdit.py` (fetched at a pinned commit by `just mmdit-reference`) on a checked-in tiny fixture, plus an opt-in **real-weights staged proof** at real widths, depth-truncated to fit a 48 GiB host (`just mmdit-real-reference && just test-mmdit-real`; full-depth runs arrive via M13's `precision: f16` knob). The M6 LoRA attaches across every trunk projection (`blocks.N.attn.{wq,wk,wv,wo}` + `mlp.{gate,up,down}`): zero-init adapters are a bit-identical no-op and one real step routes gradients to the adapters only.
 - [x] **M12 — Image dataset pipeline** ([#23](https://github.com/laurigates/loractl/issues/23))**.** `dataset` implements the kohya/ai-toolkit convention `DatasetConfig` was scaffolded for: scan a folder of images + same-named `.txt` captions (missing caption = unconditional example), group into **aspect-ratio buckets** (every dimension a multiple of 16 — Krea 2's `ae.compression · patch` grid), resize cover-style + center-crop, and cache **VAE latents + conditioning stacks** as safetensors under `<dataset>/.loractl-cache/`, keyed by image file name (latents) / stem (conditioning), bucket shape, and a hashed encoder fingerprint. Encoders are injected as closures — M14 wires the real frozen `QwenVae`/`Qwen3VlConditioner`, the offline tests wire mocks — and the cache-reuse test passes encoders that *panic*, proving warm epochs are pure tensor reads. Per-bucket batching never mixes shapes.
 - [x] **M13 — Single-GPU 12B fit** ([#24](https://github.com/laurigates/loractl/issues/24))**.** Two config-toggleable memory knobs, both overridable per layer (YAML → env → flag): **`compute.precision: f16`** (wgpu only; any other backend fails loudly — the M7 no-silent-fallback rule) halves resident weight memory, the knob that fits the ~12B Krea 2 base (~49 GB f32 → **~24.6 GB f16**) on this 48 GiB host; **`compute.grad_checkpointing: true`** swaps burn's `Autodiff` to `BalancedCheckpointing` (recompute activations during backward) — proven **bit-identical** to stored activations on the synthetic task, since recomputation replays the same deterministic ops. The wgpu smoke gains an f16 + checkpointing variant (`just test-wgpu`, Metal). Deliberately *not* built: 8-bit Adam — LoRA optimizer state lives only on the adapters (tens of MB at rank 16), not the multi-GB full-finetune case it exists for; and NF4/int8 base quantization — f16 already fits this host, so packed-int8 is tracked on [#24](https://github.com/laurigates/loractl/issues/24) as the follow-up that would unlock ≤16 GB GPUs.
-- [ ] **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25))**.** *Code landed; the real-run interop proof is the remaining checkbox.* `DiffusionTrainer` composes the whole stack as one `impl Trainer` behind a two-armed factory on `model.base` (the constructor seam, unchanged otherwise): the M12 pipeline caches M9 latents + M10 conditioning **then drops the encoders before the MMDiT loads** (peak memory never holds both), the M8 objective (`x_t = (1−t)x₀ + tε`, target `v = ε − x₀`, logit-normal+shift timesteps) drives the M11 denoiser through the M6 adapter injection, and every checkpoint + the final artifact is a **kohya-ss export**. The offline proof composes the per-milestone tiny fixtures into a dimension-matched **tiny Krea 2** (`just krea2-reference`) and trains it end to end through the real loading paths: events framed, `B` off zero, kohya key grammar pinned, and a reseeded warm-cache rerun **bit-identical**. Per-step loss is deliberately not asserted to decrease — fresh `(t, ε)` each step makes it noise-dominated by construction. Remaining for the checkbox: train on `krea/Krea-2-Raw` (wgpu f16 + checkpointing, `config/examples/krea2-lora.yaml`) and prove the export conditions Krea-2-Turbo in ComfyUI.
+- [ ] **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25))**.** *Code landed; the real-run interop proof is the remaining checkbox.* `DiffusionTrainer` composes the whole stack as one `impl Trainer` behind a two-armed factory on `model.base` (the constructor seam, unchanged otherwise): the M12 pipeline caches M9 latents + M10 conditioning **then drops the encoders before the MMDiT loads** (peak memory never holds both), the M8 objective (`x_t = (1−t)x₀ + tε`, target `v = ε − x₀`, logit-normal+shift timesteps) drives the M11 denoiser through the M6 adapter injection, and every checkpoint + the final artifact is a **kohya-ss export**. The offline proof composes the per-milestone tiny fixtures into a dimension-matched **tiny Krea 2** (`just krea2-reference`) and trains it end to end through the real loading paths: events framed, `B` off zero, kohya key grammar pinned, and a reseeded warm-cache rerun **bit-identical**. Per-step loss is deliberately not asserted to decrease — fresh `(t, ε)` each step makes it noise-dominated by construction. Remaining for the checkbox: train on `krea/Krea-2-Raw` and prove the export conditions Krea-2-Turbo in ComfyUI. Route status: wgpu f16 + checkpointing (`config/examples/krea2-lora.yaml`) is blocked by burn#5162; cuda + int4 (`quant: int4`, [#119](https://github.com/laurigates/loractl/issues/119)) is **VRAM-bound** per [ADR-0005](docs/adrs/0005-int4-training-vram-bound.md) — working set ≈ 25.5 GB vs 24 GB, resolution-independent — with the footprint levers (fewer LoRA targets first) in progress.
 - [x] **M15 — Train on Krea-2-Turbo** ([#82](https://github.com/laurigates/loractl/issues/82))**.** Turbo is architecturally identical to Raw — the same 430 tensor keys, per-tensor distillation deltas of 3–11% — so the M11 port, key remap, and M8 objective apply unchanged; what blocked turbo training was purely the load seam, and M15 opens it (amending [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md)'s "train on Raw, apply to Turbo" decision). `variant: krea2-turbo` reuses the Krea 2 config and encoder-cache fingerprint but defaults the denoiser filename to `turbo.safetensors`, and an optional `model.checkpoint` overrides the filename for any variant. The widely-distributed ComfyUI-style **scaled-fp8** repacks (13.1 GB vs 26.3 GB bf16: `float8_e4m3fn` weights + f32 0-d `weight_scale` sidecars) now load: burn-store 0.21 has no `F8_E4M3` dtype arm, so `src/fp8.rs` lazily dequantizes `LUT[byte] · weight_scale` to f32 (exact 256-entry e4m3fn LUT; per-tensor and per-output-channel scales) and feeds the same remap → transpose → cast → apply pipeline — auto-detected from the safetensors header, so bf16/f32 checkpoints keep the proven burn-store path and the mmap streaming memory profile survives. Out-of-contract files fail loudly rather than half-load: the legacy ComfyUI `scaled_fp8` convention, unknown scale shapes, and unexpected leftover keys (e.g. the `fp8mixed` repack's baked-in `last.up`/`last.down` LoRA) are all hard errors. Follow-up tracked separately: a Turbo training adapter ([#83](https://github.com/laurigates/loractl/issues/83)). Dynamic timestep-shift parity ([#84](https://github.com/laurigates/loractl/issues/84)) landed as `flow.shift_mode: resolution`: per-batch `exp(μ(gh·gw))` with Krea 2's ai-toolkit-documented anchors (μ linear 0.5@256 → 1.15@6400 image tokens) as the `FlowConfig` defaults, golden-pinned against the PyTorch reference; the krea2 example configs train with it, matching how ai-toolkit trains raw and turbo alike.
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern
