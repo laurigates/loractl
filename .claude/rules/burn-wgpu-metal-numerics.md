@@ -53,8 +53,12 @@ Consequences:
   one GPU compiler.
 - **cuda f32 is the first fully-clean GPU configuration** for loractl: the
   synthetic path runs end-to-end (`just test-cuda`; CLI `--backend cuda`).
-  A real ~12B run on the 24 GB box still needs f16-on-cuda (blocked on the
-  f16 defect) or int8/NF4 (#24) — f32 weights (~49 GB) don't fit.
+  A real ~12B run on the 24 GB box needs frozen-base quantization — f32
+  weights (~49 GB) don't fit. int4 (Q4S) landed via #119, but even int4 is
+  **VRAM-bound at the full target set**
+  ([ADR-0005](../../docs/adrs/0005-int4-training-vram-bound.md)): the route is
+  int4 + footprint levers (fewer LoRA targets first), not quant alone.
+  (f16-on-cuda stays blocked on the f16 defect above.)
 
 ## Discriminators already established (don't re-derive)
 
