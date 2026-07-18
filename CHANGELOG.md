@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.0](https://github.com/laurigates/loractl/compare/v0.10.0...v0.11.0) (2026-07-18)
+
+
+### Features
+
+* **bench:** scaffold loractl-bench measurement harness crate ([#115](https://github.com/laurigates/loractl/issues/115)) ([d5fa97b](https://github.com/laurigates/loractl/commit/d5fa97b7002ad8c76c1ab607bfab3157f27b7073))
+* **cli:** per-component model path-override flags ([#108](https://github.com/laurigates/loractl/issues/108)) ([42d219b](https://github.com/laurigates/loractl/commit/42d219bd53c5ab64a4cece458f5cbdb4bc765aad))
+* **core:** QuantMatmulT-backward GPU diagnostic (quant_grad_compare) ([#114](https://github.com/laurigates/loractl/issues/114)) ([c3f0c76](https://github.com/laurigates/loractl/commit/c3f0c765ace0964d892d577e5dca386fd5739396))
+* **flow:** resolution-based timestep shift with Krea 2 endpoints ([#107](https://github.com/laurigates/loractl/issues/107)) ([7ff5ef5](https://github.com/laurigates/loractl/commit/7ff5ef58f6545b4a0c0a092b41e7e9dd172e35d9))
+* **quant:** int4 (Q4S) frozen-base quantization to fit a 24 GB step ([#119](https://github.com/laurigates/loractl/issues/119)) ([a2149db](https://github.com/laurigates/loractl/commit/a2149db850aa2bb41f3a171f27390a37f1b6978e))
+
+
+### Bug Fixes
+
+* **core:** restore example loads with skip_enum_variants ([#117](https://github.com/laurigates/loractl/issues/117)) ([4bc4757](https://github.com/laurigates/loractl/commit/4bc4757c98f65f1776fc1e9390f7b581aab5512f))
+
 ## [0.10.0](https://github.com/laurigates/loractl/compare/v0.9.0...v0.10.0) (2026-07-16)
 
 
