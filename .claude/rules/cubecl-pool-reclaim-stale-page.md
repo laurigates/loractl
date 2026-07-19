@@ -46,9 +46,11 @@ Updated by the 2026-07-18 step-probe sweep (ADR-0005 **addendum**; table on
 
 1. **Chunked dequant in `QuantMatmulT` (#128)** — the one live lever. The
    backward's ~14–15 GB dequant-transient working set misses fitting by only
-   ~1–2 GB; chunk the largest transients (1.58 GB txt-fusion/tproj-class
-   first) at the packed-int/byte level — burn 0.21's `q_slice` is
-   `unimplemented!()` on cuda, so never `Tensor::slice` a QFloat.
+   ~1–2 GB; chunk the largest weight transients first (`tproj.fc` ≈ 864 MiB
+   is the biggest — the sweep's recurring 1.58 GB alloc matches no single
+   weight and remains unattributed) at the packed-int/byte level — burn
+   0.21's `q_slice` is `unimplemented!()` on cuda, so never `Tensor::slice`
+   a QFloat.
 2. **Base-weight streaming** — the fallback if chunking alone is marginal.
 3. **Post-load pool reclaim** — measured safe on stock but insufficient
    alone (PR #125, closed); composes with #1 once the step state shrinks.

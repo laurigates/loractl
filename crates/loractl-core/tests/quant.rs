@@ -29,7 +29,10 @@ use burn::backend::autodiff::checkpoint::strategy::BalancedCheckpointing;
 use burn::backend::{Autodiff, NdArray};
 use burn::tensor::quantization::QuantValue;
 use burn::tensor::{Tensor, TensorData};
-use loractl_core::quant::{QUANT_BLOCK, QuantBackend, quantize_linear_weight};
+use loractl_core::quant::{
+    QUANT_BLOCK, QuantBackend, dequant_chunk_rows, quantize_linear_weight,
+    quantize_linear_weight_chunked,
+};
 
 type Cpu = NdArray;
 
@@ -265,4 +268,222 @@ fn non_divisible_input_dim_panics() {
     let device = Default::default();
     let w = Tensor::<Cpu, 2>::zeros([4, 33], &device);
     let _ = quantize_linear_weight(w, QuantValue::Q8S);
+}
+
+// ---------------------------------------------------------------------------
+// #128 chunked dequant: the row-chunk layout is a pure function of
+// (shape, threshold); chunked quantization is BIT-IDENTICAL to whole-tensor
+// quantization (blocks live within rows); the chunked forward is bit-identical
+// and the chunked backward matches within accumulation-order tolerance.
+// ---------------------------------------------------------------------------
+
+/// The layout contract of `dequant_chunk_rows`: 0 disables, at/below the
+/// threshold stays whole, larger weights split into balanced row chunks each
+/// at/below the threshold (never below one row), always summing to `d_out`.
+#[test]
+fn dequant_chunk_rows_layout_contract() {
+    // 0 disables chunking regardless of size.
+    assert_eq!(dequant_chunk_rows(1000, 96, 0), vec![1000]);
+    // At/below the threshold: a single chunk.
+    assert_eq!(dequant_chunk_rows(12, 96, 12 * 96 * 4), vec![12]);
+    // Above the threshold: balanced chunks, each <= max_rows (here 5).
+    assert_eq!(dequant_chunk_rows(12, 96, 96 * 4 * 5), vec![4, 4, 4]);
+    assert_eq!(dequant_chunk_rows(13, 96, 96 * 4 * 5), vec![5, 4, 4]);
+    // A row wider than the threshold cannot split further: one row per chunk.
+    assert_eq!(dequant_chunk_rows(4, 96, 1), vec![1, 1, 1, 1]);
+    // Counts always sum to d_out.
+    for (d_out, d_in, bytes) in [(53, 96, 700), (16, 96, 96 * 4 * 3), (7, 32, 200)] {
+        let rows = dequant_chunk_rows(d_out, d_in, bytes);
+        assert_eq!(rows.iter().sum::<usize>(), d_out, "rows must sum to d_out");
+    }
+}
+
+/// Quantizing row chunks separately is bit-identical to quantizing the whole
+/// `[d_out, d_in]` weight and taking those rows: the scheme's blocks are
+/// `[1, QUANT_BLOCK]` — strictly within a row — so a chunk's per-block scales
+/// see exactly the same 32 values either way. This is the numerical premise
+/// the whole #128 design stands on.
+fn chunked_quantize_bit_identical(path: &str, value: QuantValue) {
+    let device = Default::default();
+    let g = golden(path);
+    let [d_out, d_in] = [g.w.1[0], g.w.1[1]];
+    let w = tensor::<Cpu>(&g.w, &device);
+
+    let whole_dq = quantize_linear_weight(w.clone(), value).dequantize();
+
+    // Force >= 3 chunks.
+    let chunk_bytes = (d_in * 4 * d_out.div_ceil(3)) as u64;
+    let chunks = quantize_linear_weight_chunked(w, value, chunk_bytes);
+    assert!(
+        chunks.len() >= 3,
+        "test setup must force >= 3 chunks, got {}",
+        chunks.len()
+    );
+
+    let mut start = 0usize;
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let rows = chunk.dims()[0];
+        let chunk_dq = chunk.dequantize();
+        assert_eq!(
+            chunk_dq.into_data(),
+            whole_dq.clone().narrow(0, start, rows).into_data(),
+            "chunk {i} ({value:?}) must dequantize bit-identically to the whole-tensor rows"
+        );
+        start += rows;
+    }
+    assert_eq!(start, d_out, "chunks must cover every row exactly once");
+}
+
+#[test]
+fn int8_chunked_quantize_is_bit_identical_to_whole() {
+    chunked_quantize_bit_identical(INT8_GOLDEN, QuantValue::Q8S);
+}
+
+#[test]
+fn int4_chunked_quantize_is_bit_identical_to_whole() {
+    chunked_quantize_bit_identical(INT4_GOLDEN, QuantValue::Q4S);
+}
+
+/// The chunked `BaseLinear::Quant` forward (per-chunk `quant_matmul_t` +
+/// concat along the output dim) is EXACTLY equal to the single-chunk forward:
+/// splitting along `d_out` never splits the reduction dim, so every output
+/// element is the same dot product in the same order.
+fn chunked_forward_exact(path: &str, value: QuantValue) {
+    use burn::module::Param;
+    use loractl_core::mmdit::{BaseLinear, QuantLinear};
+
+    let device = Default::default();
+    let g = golden(path);
+    let [d_out, d_in] = [g.w.1[0], g.w.1[1]];
+    let w = tensor::<Cpu>(&g.w, &device);
+    let x = tensor::<Cpu>(&g.x, &device);
+    // A non-trivial bias so the bias path is exercised too.
+    let bias = Tensor::<Cpu, 1>::from_data(
+        TensorData::new(
+            (0..d_out).map(|i| i as f32 * 0.01 - 0.05).collect(),
+            [d_out],
+        ),
+        &device,
+    );
+
+    let single = BaseLinear::Quant(QuantLinear {
+        weight: quantize_linear_weight_chunked(w.clone(), value, 0)
+            .into_iter()
+            .map(Param::from_tensor)
+            .collect(),
+        bias: Some(Param::from_tensor(bias.clone())),
+    });
+    let chunk_bytes = (d_in * 4 * d_out.div_ceil(3)) as u64;
+    let chunks = quantize_linear_weight_chunked(w, value, chunk_bytes);
+    // Pin non-vacuity: a fixture-shape change must not silently degrade this
+    // to a single-chunk (trivially-equal) comparison.
+    assert!(
+        chunks.len() >= 3,
+        "test setup must force >= 3 chunks (got {})",
+        chunks.len()
+    );
+    let chunked = BaseLinear::Quant(QuantLinear {
+        weight: chunks.into_iter().map(Param::from_tensor).collect(),
+        bias: Some(Param::from_tensor(bias)),
+    });
+
+    let y_single = single.forward(x.clone());
+    let y_chunked = chunked.forward(x);
+    assert_eq!(
+        y_single.into_data(),
+        y_chunked.into_data(),
+        "chunked forward must be bit-identical to the single-chunk forward ({value:?})"
+    );
+}
+
+#[test]
+fn int8_chunked_forward_is_bit_identical_to_unchunked() {
+    chunked_forward_exact(INT8_GOLDEN, QuantValue::Q8S);
+}
+
+#[test]
+fn int4_chunked_forward_is_bit_identical_to_unchunked() {
+    chunked_forward_exact(INT4_GOLDEN, QuantValue::Q4S);
+}
+
+/// Under `Autodiff`, the chunked path's x-gradient equals the unchunked one
+/// within a tight tolerance: `grad_x = Σ_i grad_out_i · dequant(wq_i)`
+/// accumulates ACROSS chunk ops, so the summation association differs from the
+/// single `grad_out · dequant(wq)` — bit-equality is not the right assert here
+/// (unlike the forward), but the relative error stays at f32 rounding scale.
+fn chunked_grad_equivalence<AD>(path: &str, value: QuantValue)
+where
+    AD: burn::tensor::backend::AutodiffBackend<InnerBackend = Cpu> + QuantBackend,
+{
+    let device = Default::default();
+    let g = golden(path);
+    let [d_out, d_in] = [g.w.1[0], g.w.1[1]];
+    let w = tensor::<Cpu>(&g.w, &device);
+    let x_inner = tensor::<Cpu>(&g.x, &device);
+
+    let chunk_bytes = (d_in * 4 * d_out.div_ceil(3)) as u64;
+    let chunks = quantize_linear_weight_chunked(w.clone(), value, chunk_bytes);
+    assert!(chunks.len() >= 3, "test setup must force >= 3 chunks");
+    let wq_whole = quantize_linear_weight(w, value);
+
+    // Path 1: single-op backward over the whole quantized weight.
+    let x1: Tensor<AD, 2> = Tensor::from_inner(x_inner.clone()).require_grad();
+    let wq: Tensor<AD, 2> = Tensor::from_inner(wq_whole);
+    let y1 = AD::quant_matmul_t(x1.clone(), &wq);
+    let loss1 = (y1.clone() * y1.clone()).sum();
+    let gx1 = x1
+        .grad(&loss1.backward())
+        .expect("x must receive a gradient");
+
+    // Path 2: one op per chunk, concatenated — x's gradient accumulates
+    // across the chunk ops.
+    let x2: Tensor<AD, 2> = Tensor::from_inner(x_inner).require_grad();
+    let ys: Vec<Tensor<AD, 2>> = chunks
+        .into_iter()
+        .map(|c| {
+            let wq_i: Tensor<AD, 2> = Tensor::from_inner(c);
+            AD::quant_matmul_t(x2.clone(), &wq_i)
+        })
+        .collect();
+    let y2 = Tensor::cat(ys, 1);
+    let loss2 = (y2.clone() * y2.clone()).sum();
+    let gx2 = x2
+        .grad(&loss2.backward())
+        .expect("x must receive a gradient");
+
+    // Forward: bit-identical (the same per-element dot products).
+    assert_eq!(
+        y1.inner().into_data(),
+        y2.inner().into_data(),
+        "chunked op forward diverged from the whole-weight op ({value:?})"
+    );
+    // Backward: tight relative tolerance (accumulation order differs).
+    let g1 = gx1.clone().into_data().into_vec::<f32>().unwrap();
+    let g2 = gx2.into_data().into_vec::<f32>().unwrap();
+    let peak = g1.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-12);
+    let max_abs = g1
+        .iter()
+        .zip(&g2)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    let rel = max_abs / peak;
+    assert!(
+        rel < 1e-5,
+        "chunked x-gradient drifts rel = {rel:e} from the unchunked one ({value:?})"
+    );
+}
+
+#[test]
+fn int8_chunked_backward_matches_unchunked_within_tolerance() {
+    chunked_grad_equivalence::<Autodiff<Cpu>>(INT8_GOLDEN, QuantValue::Q8S);
+}
+
+#[test]
+fn int8_chunked_backward_survives_balanced_checkpointing() {
+    chunked_grad_equivalence::<Autodiff<Cpu, BalancedCheckpointing>>(INT8_GOLDEN, QuantValue::Q8S);
+}
+
+#[test]
+fn int4_chunked_backward_matches_unchunked_within_tolerance() {
+    chunked_grad_equivalence::<Autodiff<Cpu>>(INT4_GOLDEN, QuantValue::Q4S);
 }

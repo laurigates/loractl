@@ -66,8 +66,8 @@
 //! no CLI. Parity: `tests/mmdit_parity.rs` vs `reference/mmdit_reference.py`.
 
 use crate::adapters::{LoraAdapters, LoraSite};
-use crate::config::ModelVariant;
-use crate::quant::{QUANT_BLOCK, QuantBackend, quantize_linear_weight};
+use crate::config::{DEFAULT_DEQUANT_CHUNK_MIB, ModelVariant};
+use crate::quant::{QUANT_BLOCK, QuantBackend, quantize_linear_weight_chunked};
 use burn::module::{Module, Param};
 use burn::nn::{Gelu, Linear, LinearConfig};
 use burn::tensor::activation::{sigmoid, silu, softmax};
@@ -394,8 +394,10 @@ fn apply_rope<B: Backend>(x: Tensor<B, 4>, tables: &RopeTables<B>) -> Tensor<B, 
 /// A frozen quantized replacement for a base [`Linear`] at a trunk site (int8
 /// `Q8S` or int4 `Q4S`, per [`Mmdit::into_quantized`]'s chosen scheme).
 ///
-/// The weight is a burn-native `QFloat` tensor in **file layout `[d_out, d_in]`**
-/// (never transposed) — the layout
+/// The weight is a sequence of burn-native `QFloat` row-chunk tensors in
+/// **file layout `[d_out, d_in]`** that **concatenate along `d_out` in
+/// order** (single-chunk for any weight at/below the #128 dequant-chunk
+/// threshold; never transposed) — the layout
 /// [`quant_matmul_t`](crate::quant::QuantBackend::quant_matmul_t) consumes.
 /// burn's `Linear` stores its weight `[d_in, d_out]` and computes `x·W`;
 /// [`Mmdit::into_quantized`] transposes to `[d_out, d_in]` before quantizing,
@@ -403,12 +405,35 @@ fn apply_rope<B: Backend>(x: Tensor<B, 4>, tables: &RopeTables<B>) -> Tensor<B, 
 /// quantized site equals its plain twin up to the scheme's quant error.
 #[derive(Module, Debug)]
 pub struct QuantLinear<B: Backend> {
-    /// Frozen quantized weight in FILE layout `[d_out, d_in]` (a `QFloat`
-    /// primitive; never transposed, never receives a gradient — the quant op
-    /// treats it as a constant).
-    pub weight: Param<Tensor<B, 2>>,
+    /// Frozen quantized weight in FILE layout `[d_out, d_in]` (`QFloat`
+    /// primitives; never transposed, never receives a gradient — the quant op
+    /// treats it as a constant), stored as **row chunks along `d_out`** that
+    /// concatenate in order (#128): chunk `i` holds rows
+    /// `[sum(rows[..i]) .. sum(rows[..=i]))` of the full weight, per
+    /// [`dequant_chunk_rows`](crate::quant::dequant_chunk_rows). A weight at
+    /// or below the chunk threshold is a single chunk (byte-identical to the
+    /// pre-#128 unchunked layout). Chunking caps the per-matmul f32 dequant
+    /// transient — forward and backward — at one chunk instead of one full
+    /// weight (the ADR-0005 backward working-set fix).
+    pub weight: Vec<Param<Tensor<B, 2>>>,
     /// Optional bias `[d_out]`, kept in full precision (never quantized).
     pub bias: Option<Param<Tensor<B, 1>>>,
+}
+
+impl<B: Backend> QuantLinear<B> {
+    /// Dequantize every row chunk and concatenate back into the full
+    /// `[d_out, d_in]` f32 weight. **Diagnostics only** (e.g. the dequant-error
+    /// sampling in `examples/quant_probe.rs`) — it materializes exactly the
+    /// full-weight f32 transient the chunked forward exists to avoid.
+    pub fn dequantized_weight(&self) -> Tensor<B, 2> {
+        let mut chunks: Vec<Tensor<B, 2>> =
+            self.weight.iter().map(|w| w.val().dequantize()).collect();
+        if chunks.len() == 1 {
+            chunks.pop().expect("QuantLinear holds at least one chunk")
+        } else {
+            Tensor::cat(chunks, 0)
+        }
+    }
 }
 
 /// The frozen base linear at an injectable site: either the plain loaded
@@ -455,10 +480,28 @@ impl<B: QuantBackend> BaseLinear<B> {
                 let mut out_dims = x.dims();
                 let d_in = out_dims[D - 1];
                 let n: usize = out_dims[..D - 1].iter().product();
-                let wq = q.weight.val();
-                let d_out = wq.dims()[0]; // file layout [d_out, d_in]
                 let x2 = x.reshape([n, d_in]);
-                let mut y = B::quant_matmul_t(x2, &wq); // [n, d_out]
+                // Single chunk (the default for every weight at/below the
+                // chunk threshold): exactly the pre-#128 op sequence — one
+                // matmul, no cat. Multi-chunk: one weight-as-constant matmul
+                // per row chunk (each dequantizing only its own chunk-sized
+                // f32 transient, forward AND backward), concatenated along
+                // the output dim — chunks concatenate along d_out in order.
+                let mut y = if let [only] = q.weight.as_slice() {
+                    let wq = only.val(); // file layout [d_out, d_in]
+                    B::quant_matmul_t(x2, &wq) // [n, d_out]
+                } else {
+                    let ys: Vec<Tensor<B, 2>> = q
+                        .weight
+                        .iter()
+                        .map(|w| {
+                            let wq = w.val(); // [rows_i, d_in]
+                            B::quant_matmul_t(x2.clone(), &wq) // [n, rows_i]
+                        })
+                        .collect();
+                    Tensor::cat(ys, 1) // [n, d_out]
+                };
+                let d_out = y.dims()[1];
                 if let Some(bias) = &q.bias {
                     y = y + bias.val().reshape([1, d_out]);
                 }
@@ -994,7 +1037,8 @@ impl<B: Backend> Mmdit<B> {
 
     /// Replace every frozen-base [`BaseLinear::Plain`] site with its quantized
     /// [`BaseLinear::Quant`] twin (weight-only, per-block symmetric at the given
-    /// [`QuantValue`] via [`quantize_linear_weight`]) — the memory knob for the
+    /// [`QuantValue`] via
+    /// [`quantize_linear_weight_chunked`]) — the memory knob for the
     /// ~12B base (#24 → #96): `Q8S` (int8, ~1/4 of f32) or `Q4S` (int4, ~1/8).
     /// burn's `Linear` stores its weight `[d_in, d_out]` and computes `x·W`; the
     /// quant path wants file layout `[d_out, d_in]` and computes
@@ -1002,6 +1046,12 @@ impl<B: Backend> Mmdit<B> {
     /// and the two are numerically equal up to the scheme's quant error (proven
     /// in `tests/quant_mmdit.rs`). The M6 LoRA seam is untouched — adapters
     /// attach on the quantized site's output exactly as on the plain one.
+    ///
+    /// Delegates to [`into_quantized_chunked`](Self::into_quantized_chunked)
+    /// at the default row-chunk threshold
+    /// ([`DEFAULT_DEQUANT_CHUNK_MIB`], #128) — byte-identical to the
+    /// pre-chunking behavior for any weight at or below the threshold (every
+    /// test fixture is).
     ///
     /// A site whose `d_in` is not a multiple of [`QUANT_BLOCK`] is left
     /// `Plain` (the block scheme can't tile it). On the real Krea 2 config
@@ -1015,24 +1065,41 @@ impl<B: Backend> Mmdit<B> {
     /// — the pattern `tests/quant.rs` and `tests/quant_mmdit.rs` follow. The
     /// `device` argument is reserved for a future scheme that needs it
     /// (`quantize_dynamic` quantizes on each tensor's own device today).
-    pub fn into_quantized(mut self, value: QuantValue, _device: &B::Device) -> Self {
+    pub fn into_quantized(self, value: QuantValue, device: &B::Device) -> Self {
+        self.into_quantized_chunked(value, u64::from(DEFAULT_DEQUANT_CHUNK_MIB) << 20, device)
+    }
+
+    /// [`into_quantized`](Self::into_quantized) with an explicit row-chunk
+    /// threshold in **bytes** (#128; `0` disables chunking): each quantized
+    /// weight whose f32 size exceeds `chunk_bytes` is stored as the row
+    /// chunks [`dequant_chunk_rows`](crate::quant::dequant_chunk_rows)
+    /// prescribes — a pure function of `(shape, threshold)`, so the streaming
+    /// loader (`load_quant_module`) reproduces the same layout when it
+    /// overwrites these placeholder weights from a checkpoint. The trainer
+    /// threads `compute.dequant_chunk_mib` here.
+    pub fn into_quantized_chunked(
+        mut self,
+        value: QuantValue,
+        chunk_bytes: u64,
+        _device: &B::Device,
+    ) -> Self {
         for block in &mut self.blocks {
-            quantize_attention(&mut block.attn, value);
-            quantize_swiglu(&mut block.mlp, value);
+            quantize_attention(&mut block.attn, value, chunk_bytes);
+            quantize_swiglu(&mut block.mlp, value, chunk_bytes);
         }
         for block in &mut self.txtfusion.layerwise_blocks {
-            quantize_attention(&mut block.attn, value);
-            quantize_swiglu(&mut block.mlp, value);
+            quantize_attention(&mut block.attn, value, chunk_bytes);
+            quantize_swiglu(&mut block.mlp, value, chunk_bytes);
         }
         for block in &mut self.txtfusion.refiner_blocks {
-            quantize_attention(&mut block.attn, value);
-            quantize_swiglu(&mut block.mlp, value);
+            quantize_attention(&mut block.attn, value, chunk_bytes);
+            quantize_swiglu(&mut block.mlp, value, chunk_bytes);
         }
-        quantize_field(&mut self.tmlp.fc1, value);
-        quantize_field(&mut self.tmlp.fc2, value);
-        quantize_field(&mut self.tproj.fc, value);
-        quantize_field(&mut self.txtmlp.fc1, value);
-        quantize_field(&mut self.txtmlp.fc2, value);
+        quantize_field(&mut self.tmlp.fc1, value, chunk_bytes);
+        quantize_field(&mut self.tmlp.fc2, value, chunk_bytes);
+        quantize_field(&mut self.tproj.fc, value, chunk_bytes);
+        quantize_field(&mut self.txtmlp.fc1, value, chunk_bytes);
+        quantize_field(&mut self.txtmlp.fc2, value, chunk_bytes);
         self
     }
 
@@ -1139,9 +1206,10 @@ impl<B: Backend> Mmdit<B> {
 /// Quantize one base site in place: a block-aligned [`BaseLinear::Plain`]
 /// becomes its [`BaseLinear::Quant`] twin at the given [`QuantValue`] (the
 /// `[d_in, d_out]` Linear weight transposed to file layout `[d_out, d_in]`,
-/// then [`quantize_linear_weight`]); a `Quant` arm, or a `Plain` whose `d_in`
-/// is not a multiple of [`QUANT_BLOCK`], is left untouched.
-fn quantize_field<B: Backend>(base: &mut BaseLinear<B>, value: QuantValue) {
+/// then [`quantize_linear_weight_chunked`] under the row-chunk threshold);
+/// a `Quant` arm, or a `Plain` whose `d_in` is not a multiple of
+/// [`QUANT_BLOCK`], is left untouched.
+fn quantize_field<B: Backend>(base: &mut BaseLinear<B>, value: QuantValue, chunk_bytes: u64) {
     let BaseLinear::Plain(lin) = base else {
         return;
     };
@@ -1149,28 +1217,32 @@ fn quantize_field<B: Backend>(base: &mut BaseLinear<B>, value: QuantValue) {
     if !d_in.is_multiple_of(QUANT_BLOCK) {
         return;
     }
-    let wq = quantize_linear_weight(lin.weight.val().transpose(), value);
+    let chunks = quantize_linear_weight_chunked(lin.weight.val().transpose(), value, chunk_bytes);
     let bias = lin.bias.clone();
     *base = BaseLinear::Quant(QuantLinear {
-        weight: Param::from_tensor(wq),
+        weight: chunks.into_iter().map(Param::from_tensor).collect(),
         bias,
     });
 }
 
 /// Quantize an attention block's five projections in place.
-fn quantize_attention<B: Backend>(attn: &mut MmditAttention<B>, value: QuantValue) {
-    quantize_field(&mut attn.wq, value);
-    quantize_field(&mut attn.wk, value);
-    quantize_field(&mut attn.wv, value);
-    quantize_field(&mut attn.gate, value);
-    quantize_field(&mut attn.wo, value);
+fn quantize_attention<B: Backend>(
+    attn: &mut MmditAttention<B>,
+    value: QuantValue,
+    chunk_bytes: u64,
+) {
+    quantize_field(&mut attn.wq, value, chunk_bytes);
+    quantize_field(&mut attn.wk, value, chunk_bytes);
+    quantize_field(&mut attn.wv, value, chunk_bytes);
+    quantize_field(&mut attn.gate, value, chunk_bytes);
+    quantize_field(&mut attn.wo, value, chunk_bytes);
 }
 
 /// Quantize a SwiGLU's three projections in place.
-fn quantize_swiglu<B: Backend>(mlp: &mut SwiGlu<B>, value: QuantValue) {
-    quantize_field(&mut mlp.gate, value);
-    quantize_field(&mut mlp.up, value);
-    quantize_field(&mut mlp.down, value);
+fn quantize_swiglu<B: Backend>(mlp: &mut SwiGlu<B>, value: QuantValue, chunk_bytes: u64) {
+    quantize_field(&mut mlp.gate, value, chunk_bytes);
+    quantize_field(&mut mlp.up, value, chunk_bytes);
+    quantize_field(&mut mlp.down, value, chunk_bytes);
 }
 
 impl<B: QuantBackend> Mmdit<B> {

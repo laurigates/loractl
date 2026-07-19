@@ -120,12 +120,16 @@ mod run {
                 println!("  {message}");
             }
         };
+        // Same default row-chunk threshold as `into_quantized` above, so the
+        // skeleton and the streamed load agree on the chunk layout (#128).
+        let chunk_bytes = u64::from(loractl_core::config::DEFAULT_DEQUANT_CHUNK_MIB) << 20;
         let mut module = load_quant_module(
             module,
             &denoiser,
             &Mmdit::<Cuda>::key_remap(),
             "MMDiT",
             value,
+            chunk_bytes,
             &device,
             &mut sink,
         )?;
@@ -206,10 +210,10 @@ mod run {
             };
             let ref_data = snap.to_data().map_err(|e| anyhow::anyhow!("{e:?}"))?;
             let reference: Vec<f32> = ref_data.convert::<f32>().into_vec::<f32>().unwrap();
+            // Dequantize the row chunks back into the full [d_out, d_in]
+            // weight (#128) — diagnostics-only full-weight materialization.
             let dq: Vec<f32> = q
-                .weight
-                .val()
-                .dequantize()
+                .dequantized_weight()
                 .into_data()
                 .convert::<f32>()
                 .into_vec::<f32>()

@@ -233,6 +233,43 @@ fn quant_int4_with_non_f32_precision_is_rejected() {
     );
 }
 
+/// #128: the chunk knob defaults to 512 MiB — through `Default` AND through a
+/// YAML that carries a `compute:` block without the field (the struct-level
+/// `#[serde(default)]` constructs missing fields from `Self::default()`, which
+/// is exactly why `ComputeConfig`'s `Default` is hand-written; a derived
+/// all-zeros default would silently disable chunking). `0` must parse as the
+/// explicit off switch.
+#[test]
+fn dequant_chunk_mib_defaults_to_512_and_zero_disables() {
+    use figment::Figment;
+    use figment::providers::{Format, Yaml};
+    use loractl_core::config::DEFAULT_DEQUANT_CHUNK_MIB;
+
+    assert_eq!(DEFAULT_DEQUANT_CHUNK_MIB, 512);
+    assert_eq!(ComputeConfig::default().dequant_chunk_mib, 512);
+
+    // A compute block WITHOUT the field → the default.
+    let cfg: ComputeConfig = Figment::new()
+        .merge(Yaml::string("backend: ndarray\nquant: int8\n"))
+        .extract()
+        .expect("compute block without dequant_chunk_mib must parse");
+    assert_eq!(cfg.dequant_chunk_mib, 512);
+
+    // The explicit off switch.
+    let cfg: ComputeConfig = Figment::new()
+        .merge(Yaml::string("dequant_chunk_mib: 0\n"))
+        .extract()
+        .expect("dequant_chunk_mib: 0 must parse");
+    assert_eq!(cfg.dequant_chunk_mib, 0);
+
+    // An explicit non-default value.
+    let cfg: ComputeConfig = Figment::new()
+        .merge(Yaml::string("dequant_chunk_mib: 16\n"))
+        .extract()
+        .expect("dequant_chunk_mib: 16 must parse");
+    assert_eq!(cfg.dequant_chunk_mib, 16);
+}
+
 #[test]
 fn burn_trainer_rejects_quant_knob() {
     // The synthetic/MNIST trainer has no frozen base worth quantizing.
