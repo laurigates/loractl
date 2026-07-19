@@ -41,24 +41,30 @@ offload/spill/unified-memory mechanism, by design:
 
 ## The levers (and the measured non-levers)
 
-Updated by the 2026-07-18 step-probe sweep (ADR-0005 **addendum**; table on
-#96):
+Updated by the 2026-07-19 **retention-ledger attribution** (#132, PR #133;
+ADR-0005 **Addendum 2** is the canonical record — read it before touching
+this problem):
 
-1. **Chunked dequant in `QuantMatmulT` (#128)** — the one live lever. The
-   backward's ~14–15 GB dequant-transient working set misses fitting by only
-   ~1–2 GB; chunk the largest weight transients first (`tproj.fc` ≈ 864 MiB
-   is the biggest — the sweep's recurring 1.58 GB alloc matches no single
-   weight and remains unattributed) at the packed-int/byte level — burn
-   0.21's `q_slice` is `unimplemented!()` on cuda, so never `Tensor::slice`
-   a QFloat.
-2. **Base-weight streaming** — the fallback if chunking alone is marginal.
-3. **Post-load pool reclaim** — measured safe on stock but insufficient
-   alone (PR #125, closed); composes with #1 once the step state shrinks.
+1. **Per-block gradient checkpointing (#134) — the one measured route.** The
+   step's true logical demand is **67.9 GiB pinned per forward** (seq 1536,
+   Balanced; 60.8 GiB under NoCheckpointing) — ~3× the card, dominated by
+   the attention-score trio (scores + mask-add + softmax max-subtract,
+   432 MiB × 28 × 3 = 35.4 GiB), SwiGLU outputs (10.5 GiB), and quant-site
+   outputs (~9.6 GiB), all eagerly pinned by burn-autodiff's compute-bound
+   checkpoint cloning + the untracked-parent fallback. A custom op storing
+   only block inputs and recomputing the interior in backward removes every
+   dominant class; post-fix estimate ≈ 16–18 GB.
+2. **Chunked weight dequant (#128, landed via #130)** — correct but
+   measured peak-neutral: the pins are activations, not weight dequants.
+3. **Post-load pool reclaim** — safe but insufficient (PR #125, closed).
 
-Non-levers, **measured**: **resolution** (byte-identical peak at 384px),
-**trained-site count** (1 site peaks and fails identically to 196 — the
-transients arise at every quantized site regardless of adapters; `lora.targets`
-is a scope/quality choice only), and **LoRA rank** (params are a small
+Non-levers, **measured**: **resolution** (demand scales with seq — note the
+trunk pads to a multiple of 256, so "384px" trains at seq 1280, "512px" at
+1536 — but even 384px demand is 51.7 GiB, >2× the card), **trained-site
+count** (one adapter early in the graph makes the whole downstream trunk
+tracked — retention is topology-driven; `lora.targets`
+is a scope/quality choice only), **`grad_checkpointing: false`** (60.8 GiB,
+ALL retained into backward), and **LoRA rank** (params are a small
 fraction).
 
 Separately open: int4's ~7% worst-case dequant error and what it does to
