@@ -515,8 +515,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "burn"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39474be398d30e08681f1f6a8ff446b1e4f1403b5cf7749649a8871fd5945f3a"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-autodiff",
  "burn-candle",
@@ -540,8 +539,7 @@ dependencies = [
 [[package]]
 name = "burn-autodiff"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b93a80e43bfab909399444b29ce3894ff51f7e879720bfc75b6007ae6a01c3d"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -557,8 +555,7 @@ dependencies = [
 [[package]]
 name = "burn-backend"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64491519ac0867f550fa9c726cd443e5db94608c629050986cf2614c8c5ad39f"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-std",
  "bytemuck",
@@ -578,8 +575,7 @@ dependencies = [
 [[package]]
 name = "burn-candle"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "917fbbe1238d80ec1483c2c360ed9fa0146fdf57b2e66015c0824ccf5155276c"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -590,8 +586,7 @@ dependencies = [
 [[package]]
 name = "burn-core"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bde1e3b8e7e39b0aa71cd5905207ceea5c3478bec47bdb64acf72dcd0d6f978"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "ahash",
  "bincode",
@@ -620,8 +615,7 @@ dependencies = [
 [[package]]
 name = "burn-cpu"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "681478c5438ab6c753a55b85f5b42e5bd4c1f69a8564f2afa2f698ac396ba556"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -631,8 +625,7 @@ dependencies = [
 [[package]]
 name = "burn-cubecl"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26efbec96ca3f691593c966fa90f98ef8a72867f62627904920b619ba3a9e6b6"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-cubecl-fusion",
@@ -651,8 +644,7 @@ dependencies = [
 [[package]]
 name = "burn-cubecl-fusion"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6993d15b8ed588f55626e835ca768c1c3c7aa7a79d59beff4c987c40fc82d1f4"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-fusion",
@@ -669,8 +661,7 @@ dependencies = [
 [[package]]
 name = "burn-cuda"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6c66b49136fc11f59773054358f401fbec7fa0d69615f55ef22c29cf241c9b7"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -680,8 +671,7 @@ dependencies = [
 [[package]]
 name = "burn-dataset"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba469fba38357c8bb65458873ddfd82aa97534aec0b3bae93d4c44604fc63839"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-std",
  "csv",
@@ -703,8 +693,7 @@ dependencies = [
 [[package]]
 name = "burn-derive"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce7be43cdfc9903c43dbaf3f4821543e0497d79047d8fc9ee9084e448844446"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "derive-new",
  "proc-macro2",
@@ -715,8 +704,7 @@ dependencies = [
 [[package]]
 name = "burn-dispatch"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2087b9e12323e0d25cc0ebdccfee40427dfdec4a23fa6d3f49ba2aa1f94ac17"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-autodiff",
  "burn-backend",
@@ -733,8 +721,7 @@ dependencies = [
 [[package]]
 name = "burn-flex"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0098bf6555c151517b4c98ca0e8ed1ab6a976e40f5f4e967c117b00eee21e192"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -749,8 +736,7 @@ dependencies = [
 [[package]]
 name = "burn-fusion"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95e58fcfd52a60cdf2f7da34fbebf0ed38f960fbd8675d384bacd5795cf2bdf2"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -767,8 +753,7 @@ dependencies = [
 [[package]]
 name = "burn-ir"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a81a55c32f35c2265d9e15ba2e796013d9780d5a49f9e21ea0ac4d29609dbf13"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "hashbrown 0.16.1",
@@ -778,8 +763,7 @@ dependencies = [
 [[package]]
 name = "burn-ndarray"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dceb9692e292782bab7ad0259e8e8f5ee80ba2b0329a78f0ba589a26a9633dd6"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "atomic_float",
  "burn-autodiff",
@@ -801,8 +785,7 @@ dependencies = [
 [[package]]
 name = "burn-nn"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93e4acd90806fa8663610f1071f3a8992eb98637d2d0816ee3062b334f61af00"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-core",
  "num-traits",
@@ -811,8 +794,7 @@ dependencies = [
 [[package]]
 name = "burn-optim"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c5ea466ae0b85bf18f7656cdc152050dc8c581057fbbe33bbed267e22600228"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-core",
  "derive-new",
@@ -825,8 +807,7 @@ dependencies = [
 [[package]]
 name = "burn-rocm"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66af82fdaaf2ad0fa4b0dae90119aa94f333105d76d520e0eb48917717c06fde"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -836,8 +817,7 @@ dependencies = [
 [[package]]
 name = "burn-router"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7960a5d43918c3158629da2bd7956e38dda16ef54de95cca83b4b7b1477e6185"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -850,8 +830,7 @@ dependencies = [
 [[package]]
 name = "burn-std"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81c7eb60eb2c316854af5b214fd55f59fc7b0e25dfde7db671f09cc49f269048"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -871,8 +850,7 @@ dependencies = [
 [[package]]
 name = "burn-store"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f64a4fe2a0616d18f07d1d0d19c79e655e70e1828cbcb5e9df7b52211091023"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-core",
  "burn-tensor",
@@ -889,8 +867,7 @@ dependencies = [
 [[package]]
 name = "burn-tch"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfa36b630bd7a790395b4561f7d0e315c0d5e1c557db7dd4cf1b48d5c0d4aff2"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "cc",
@@ -903,8 +880,7 @@ dependencies = [
 [[package]]
 name = "burn-tensor"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "223ed3804bb9436e401fc57b87e44c86267070b870813520ed9f706c80c81442"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -917,8 +893,7 @@ dependencies = [
 [[package]]
 name = "burn-vision"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b5a3e9096977462cd22bf713087f9777e427f7693508871f86f5b1e8347a70"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "aligned-vec",
  "bon",
@@ -941,8 +916,7 @@ dependencies = [
 [[package]]
 name = "burn-wgpu"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eb009254af15922cb37814f3b3b61043046193ba2fde97c3879a25fbd51a92e"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -3693,7 +3667,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-api"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3712,11 +3686,11 @@ dependencies = [
 
 [[package]]
 name = "loractl-bench"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "loractl-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3732,7 +3706,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "burn",

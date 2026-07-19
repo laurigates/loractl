@@ -1,0 +1,41 @@
+# #132 retention-ledger validation arm A: BalancedCheckpointing over the
+# checked-in tiny-krea2 fixture, offline on ndarray. Run via `just
+# ledger-probe` (it stages the dataset copy so the fixture dir stays clean
+# and sets LORACTL_RETENTION_LEDGER). Differs from tiny-ledger-nockpt.yaml
+# in `compute.grad_checkpointing` only.
+
+task: flow-matching
+
+model:
+  base: crates/loractl-core/tests/fixtures/tiny-krea2
+  variant: tiny-krea2
+
+dataset:
+  path: tmp/ledger-probe/dataset
+  resolution: 32
+  batch_size: 2
+
+lora:
+  rank: 4
+  alpha: 8.0
+  targets:
+    - pattern: 'blocks\.'
+
+optim:
+  lr: 1.0e-2
+
+steps: 2
+seed: 42
+
+output:
+  dir: tmp/ledger-probe/out-balanced
+  name: tiny-ledger
+
+compute:
+  backend: ndarray
+  precision: f32
+  # int8, not int4: burn 0.21's ndarray quant path is the plain-Q8S one (see
+  # quant.rs); the arm still exercises QuantMatmulT at every frozen site,
+  # which is what the retention topology depends on.
+  quant: int8
+  grad_checkpointing: true
