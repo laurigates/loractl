@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0](https://github.com/laurigates/loractl/compare/v0.12.0...v0.13.0) (2026-07-19)
+
+
+### Features
+
+* **core:** block-level gradient checkpointing for the MMDiT trunk ([#134](https://github.com/laurigates/loractl/issues/134)) ([#135](https://github.com/laurigates/loractl/issues/135)) ([a1964af](https://github.com/laurigates/loractl/commit/a1964af5f102d7da070cf9e35c4ead7d2c4d54f4))
+* **core:** retention-ledger attribution wiring ([#132](https://github.com/laurigates/loractl/issues/132)) ([b7be0b8](https://github.com/laurigates/loractl/commit/b7be0b898c7ca4c0a1a1e8cf9baf601e9a0cb5fd))
+* **quant:** chunk large frozen-base dequants into row chunks ([#128](https://github.com/laurigates/loractl/issues/128)) ([#130](https://github.com/laurigates/loractl/issues/130)) ([5bc9902](https://github.com/laurigates/loractl/commit/5bc9902eec12456f139c89c00be8069c6bd849ae))
+
+
+### Bug Fixes
+
+* **core:** retention-ledger review fixes — deny allowlist, per-step report ([d112876](https://github.com/laurigates/loractl/commit/d11287604aa3df672c1c6bf73ed08f8429db43ec))
+
 ## [0.12.0](https://github.com/laurigates/loractl/compare/v0.11.0...v0.12.0) (2026-07-18)
 
 
