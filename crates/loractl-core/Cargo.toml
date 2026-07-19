@@ -40,12 +40,12 @@ serde_json.workspace = true
 # via burn-store at these exact versions, so depending on them directly adds no
 # new external surface.
 regex = "1"
-safetensors = "0.7"
+safetensors = "0.8"
 # Qwen3-VL caption conditioning (M10, #21): loads the HF `tokenizer.json`
 # shipped with Krea-2-Raw so `Qwen3VlConditioner` can tokenize captions
 # through the krea-2 chat template. Pure offline — file-based loading only,
 # no hub/HTTP features.
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # Scaled-fp8 checkpoint loading (M15, #82): `fp8.rs` mmaps the safetensors
 # file once and shares it across its lazy dequant closures — the same crate
 # (and pattern) burn-store's own lazy file path uses, so this already rides
@@ -64,7 +64,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # The fetch is lazy — a run with a local tokenizer never touches the network,
 # so offline CI is unaffected.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 [features]
 # GPU compute backends (M7, #18). None are in `default`, so `cargo build`/
