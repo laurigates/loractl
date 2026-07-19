@@ -86,35 +86,31 @@ the roadmap in `README.md`.
 **Next direction (M14's remaining checkbox, #25):** the real run — train a
 LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer` and prove
 the exported adapter loads and visibly conditions generation in ComfyUI /
-Krea-2-Turbo. The cuda route is **VRAM-bound**, per on-hardware measurement
-([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)): the int4 training
-step's working set is ≈ 25.5 GB vs the 24 GB RTX 4090, dominated by
-dequant/gradient transients arising at **every** quantized site —
-**resolution-independent** (384px peaked byte-identically) and, per the
-2026-07-18 sweep (ADR-0005 addendum), **trained-site-count-independent**
-(1 site fails like 196), so neither lowering resolution nor narrowing
-`lora.targets` helps. The quant knobs themselves landed and
-are correct: `compute.quant: int8` (#96) and `int4` (Q4S, #119) load the
-frozen ~12.8B MMDiT base per-block quantized (`src/quant.rs`,
-`BaseLinear::Quant`) while the LoRA adapters train in f32 (QLoRA), streamed
-one layer at a time so the ~49 GB f32 model is never materialized;
-restricted to `(ndarray|cuda, f32)` by the trainer guard (wgpu untested,
-non-f32 rejected — burn#5162). Per ADR-0005 and the #96 measurements,
-**int4 (~10.1 GB reclaimed resident base) is the 24 GB training route;
-int8 (~17.1 GB) fits load/inference only — its training step OOMs.** The
-unblock is **#128 — chunked dequant in `QuantMatmulT`** (the backward's
-~14–15 GB transient working set misses fitting by only ~1–2 GB; largest
-transient is the 1.58 GB txt-fusion/tproj-class buffer; `q_slice` is
-unimplemented on cuda in burn 0.21, so chunk at the packed-byte level),
-with base-weight streaming as fallback. Post-load pool reclaim was measured
-safe-but-insufficient (PR #125, closed; branch composes with #128). Verify
-any fix with `just step-probe` (#126) — the fit gate is a **zero-panic**
-run, never a survived OOM storm (a ceiling-riding run can silently corrupt
-the forward). The
-wgpu f16 + grad-checkpointing route (`config/examples/krea2-lora.yaml`,
-fits the 48 GiB Metal host) stays blocked by burn's GPU autodiff bug
-(burn#5162, unchanged). Strategy and gap analysis:
-[ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+Krea-2-Turbo. The cuda route was **VRAM-bound**: the #132 retention-ledger
+attribution ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)
+Addendum 2, PR #133) measured the monolithic step's true logical demand at
+**67.9 GiB pinned per forward** (~3× the RTX 4090) — burn-autodiff eagerly
+pins the whole tracked trunk interior (attention-score trio 35.4 GiB,
+SwiGLU outputs, quant-site outputs), topology-driven and independent of
+resolution/site-count/reclaim/chunking (all measured dead). The measured
+fix is **#134 — block-level gradient checkpointing**
+(`src/block_ckpt.rs::checkpointed_step`): `compute.grad_checkpointing:
+true` on the diffusion path now runs the trunk forward graph-free storing
+only block inputs, then replays each block on its own standalone graph in
+backward (grads bit-identical to the monolithic path on the tiny fixture;
+incompatible with `lora.dropout > 0`; a nested-backward custom op is
+impossible on burn 0.21 — verified deadlock). The quant knobs are
+unchanged and correct: `compute.quant: int8` (#96) / `int4` (Q4S, #119)
+load the frozen ~12.8B base per-block quantized while adapters train in
+f32 (QLoRA); restricted to `(ndarray|cuda, f32)` by the trainer guard.
+**int4 (~10.1 GB reclaimed resident base) + block checkpointing is the
+24 GB training route** (estimate ≈ 16–18 GB). Verify fit with
+`just step-probe` (#126) — the gate is a **zero-panic** run, never a
+survived OOM storm (a ceiling-riding run silently corrupts the forward —
+a negative MSE was observed). The wgpu f16 route
+(`config/examples/krea2-lora.yaml`, the 48 GiB Metal host) stays blocked
+by burn's GPU autodiff bug (burn#5162, unchanged). Strategy and gap
+analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
 
 ## Commands
 

@@ -30,12 +30,9 @@ dataset:
 lora:
   rank: 16
   alpha: 16.0
-  # Target choice is a SCOPE/QUALITY decision, not a memory lever: the
-  # 2026-07-18 step-probe sweep (ADR-0005 addendum, #96) measured 1 trained
-  # site peaking identically to all 196 — the step's dequant/gradient
-  # transients arise at every quantized site regardless of adapters. On a
-  # 24 GB card NO target set fits until the backward transient working set
-  # shrinks (#128, chunked dequant). Alternatives:
+  # Target choice is a SCOPE/QUALITY decision, not a memory lever (ADR-0005
+  # Addendum 2: retention is topology-driven — one adapter anywhere tracks
+  # the whole downstream trunk). Alternatives:
   #   - pattern: 'blocks\.'               # every trunk projection
   #   - pattern: 'attn\.(wq|wv)$'         # minimal q/v-only set
   targets:
@@ -52,13 +49,15 @@ output:
   name: krea2-lora
 
 # The numerically-clean GPU route on a 24 GB NVIDIA card: cuda f32 + int4
-# frozen-base quantization. Measured on the RTX 4090 (ADR-0005 + addendum,
-# #96): int8's reclaimed resident base is ~17.1 GB (its step OOMed); int4
-# reclaims to ~10.1 GB — but the step's ~14-15 GB of backward dequant
-# transients still overflow 24 GB at ANY target set (sweep 2026-07-18).
-# A real 24 GB training run waits on #128 (chunked dequant); verify a fix
-# with `just step-probe` — the gate is a zero-panic run, not a survived
-# OOM storm.
+# frozen-base quantization (int4 reclaims to ~10.1 GB resident; int8's
+# ~17.1 GB step OOMed) + block-level gradient checkpointing (#134):
+# `grad_checkpointing: true` stores only block inputs and replays block
+# interiors in backward, collapsing the monolithic step's measured
+# 67.9 GiB of pinned demand (ADR-0005 Addendum 2) to ~1 residual-stream
+# tensor per block plus one transient block graph. Requires
+# `lora.dropout: 0` (a replay would redraw masks). Verify fit with
+# `just step-probe` — the gate is a zero-panic run, not a survived OOM
+# storm.
 compute:
   backend: cuda
   precision: f32

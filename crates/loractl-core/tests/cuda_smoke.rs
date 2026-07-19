@@ -11,8 +11,9 @@
 //!
 //! Same contract as the wgpu smoke: a PORTABILITY check, never a
 //! numerics-golden target. `grad_checkpointing: true` rides along
-//! deliberately — it exercises burn's `BalancedCheckpointing` on cuda in the
-//! same run, and the plain (non-checkpointed) cuda backward is covered
+//! deliberately — on the diffusion path it exercises the #134 block-level
+//! checkpointed step (`block_ckpt::checkpointed_step`) on cuda in the same
+//! run, and the plain (non-checkpointed) cuda backward is covered
 //! independently by the `grad_compare` example's cuda arms, so a failure here
 //! with a clean `grad_compare` points at checkpointing, not the backend.
 #![cfg(feature = "cuda")]
