@@ -55,9 +55,27 @@ routes by) — `block_ckpt.rs::track_adapters`:
 not just value comparison — missing grads are the failure mode this family
 produces.
 
-## Status
+## Status (verified at burn `main@e5467f0` + `v0.21.0`, 2026-07-19)
 
-Both are upstream-report candidates (tracked in taskwarrior, project:loractl
-+upstream) — verify against burn `main` first; 0.22 reworked this
-neighborhood. Both workarounds live in `src/block_ckpt.rs` and are deletable
-with the 0.22 migration (#79).
+- **Nested-backward deadlock: still present at `main`** (the hold-lock-across-
+  step + lock-every-graph-in-cleanup structure in `runtime/graph.rs` is
+  unchanged; v0.21.0 is the latest release) and novel on the tracker — filed
+  as [tracel-ai/burn#5193] with a standalone stock-0.21 repro (kept locally
+  as `crates/loractl-core/examples/nested_backward_probe.rs` — re-run it on
+  burn version bumps); the two-line `try_lock` fix in
+  `cleanup_orphaned_entries`, verified to unblock the repro against a patched
+  v0.21.0 checkout, is up as [tracel-ai/burn#5194].
+- **`Param::clone` require_grad drop: already fixed on `main`** — collaterally,
+  by burn PR #5045 (merged 2026-06-10; rewrote `Param` around
+  `Arc<LazyInitState>`, making Clone a field-by-field struct clone that copies
+  `require_grad` verbatim, `burn-core/src/module/param/base.rs` ~L605). Not in
+  any release (v0.21.0 still has it), so NOT filed (would be closed as "fixed
+  in next release"). The `track_adapters` workaround stays until the 0.22
+  migration.
+
+Both workarounds live in `src/block_ckpt.rs`; the clone workaround is
+deletable with the 0.22 migration (#79), the two-phase step remains the right
+structure regardless (see ADR-0005 / #134).
+
+[tracel-ai/burn#5193]: https://github.com/tracel-ai/burn/issues/5193
+[tracel-ai/burn#5194]: https://github.com/tracel-ai/burn/pull/5194
