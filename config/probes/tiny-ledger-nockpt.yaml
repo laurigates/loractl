@@ -1,0 +1,37 @@
+# #132 retention-ledger validation arm B: NoCheckpointing (the
+# grad_checkpointing A/B the three-model consult split on). Identical to
+# tiny-ledger-balanced.yaml except `compute.grad_checkpointing: false`.
+# Run via `just ledger-probe`.
+
+task: flow-matching
+
+model:
+  base: crates/loractl-core/tests/fixtures/tiny-krea2
+  variant: tiny-krea2
+
+dataset:
+  path: tmp/ledger-probe/dataset
+  resolution: 32
+  batch_size: 2
+
+lora:
+  rank: 4
+  alpha: 8.0
+  targets:
+    - pattern: 'blocks\.'
+
+optim:
+  lr: 1.0e-2
+
+steps: 2
+seed: 42
+
+output:
+  dir: tmp/ledger-probe/out-nockpt
+  name: tiny-ledger
+
+compute:
+  backend: ndarray
+  precision: f32
+  quant: int8
+  grad_checkpointing: false

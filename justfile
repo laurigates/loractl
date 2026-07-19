@@ -249,6 +249,20 @@ quant-probe denoiser quant="int8":
 step-probe *args:
     cargo run --release -p loractl-core --features cuda --example step_probe -- "$@"
 
+# #132 retention-ledger validation (offline, ndarray): run both checkpointing
+# arms over the tiny-krea2 fixture with the ledger enabled, then report each.
+# Stages a dataset copy under tmp/ so the checked-in fixture never grows a
+# .loractl-cache. The burn-autodiff fork pin (workspace [patch.crates-io])
+# writes the event lines; scripts/ledger-report.py aggregates them.
+ledger-probe:
+    rm -rf tmp/ledger-probe
+    mkdir -p tmp/ledger-probe/dataset
+    cp crates/loractl-core/tests/fixtures/dataset-tiny/* tmp/ledger-probe/dataset/
+    LORACTL_RETENTION_LEDGER=tmp/ledger-probe/balanced.ledger cargo run --release -p loractl-core --example step_probe -- config/probes/tiny-ledger-balanced.yaml
+    LORACTL_RETENTION_LEDGER=tmp/ledger-probe/nockpt.ledger cargo run --release -p loractl-core --example step_probe -- config/probes/tiny-ledger-nockpt.yaml
+    python3 scripts/ledger-report.py tmp/ledger-probe/balanced.ledger
+    python3 scripts/ledger-report.py tmp/ledger-probe/nockpt.ledger
+
 # End-to-end acceptance #1: train on the GPU through the real CLI, backend
 # selected purely from config (`compute.backend: wgpu`). Metal on this Mac.
 run-wgpu config="config/examples/lora-wgpu.yaml":

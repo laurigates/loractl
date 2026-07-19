@@ -1196,12 +1196,16 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
             1,
         );
 
+        crate::probe::phase("FORWARD_START", step);
         let pred =
             mmdit.forward_with_adapters(img_tokens, batch.conditioning.clone(), t, pos, mask, &set);
 
         let diff = pred - target;
         let loss = diff.clone().mul(diff).mean();
         let loss_value: f32 = loss.clone().into_scalar().elem();
+        // The into_scalar above synced the device, so the forward is truly
+        // complete here — a meaningful ledger boundary.
+        crate::probe::phase("FORWARD_END", step);
         // Fail fast on numeric divergence: a non-finite loss poisons the
         // adapters within one optimizer step, and silently "training" NaNs
         // for the remaining steps only wastes hours and exports garbage
@@ -1228,7 +1232,10 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
         // so scaling needs no un-scaling step and is a numeric no-op on f32
         // backends — it purely keeps f16 gradients representable.
         let scaled = loss * loss_scale;
-        let grads = GradientsParams::from_grads(scaled.backward(), &set);
+        crate::probe::phase("BACKWARD_START", step);
+        let raw_grads = scaled.backward();
+        crate::probe::phase("BACKWARD_END", step);
+        let grads = GradientsParams::from_grads(raw_grads, &set);
 
         // Dynamic-scale guard: one reduced scalar over every adapter
         // gradient (Inf/NaN propagate through the abs-sum). Non-finite ⇒
@@ -1271,6 +1278,8 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
                 ),
             });
         }
+
+        crate::probe::phase("STEP_END", step);
 
         if step % checkpoint_every == 0 && step != total {
             let path = config

@@ -39,3 +39,40 @@ tokio = { version = "1", features = [
     "time",
 ] }
 async-stream = "0.3"
+
+# ADR-0005 attribution instrumentation (#132): burn-autodiff with the opt-in
+# retention ledger (env-gated by LORACTL_RETENTION_LEDGER; identical to the
+# published 0.21.0 when unset). The fork branch is the v0.21.0 tag + the
+# ledger commit only — but the WHOLE burn workspace must be patched to it,
+# not just burn-autodiff, or cargo builds two copies of burn-backend (the
+# git one via burn-autodiff's path deps, the crates.io one via everything
+# else) and the Backend traits stop unifying. Same lesson as the 15-crate
+# cubecl pin. Remove the block once the attribution round is done — this
+# pin exists for measurement, not as a durable dependency.
+[patch.crates-io]
+burn = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-autodiff = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-backend = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-candle = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-core = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-cpu = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-cubecl = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-cubecl-fusion = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-cuda = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-dataset = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-derive = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-dispatch = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-flex = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-fusion = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-ir = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-ndarray = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-nn = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-optim = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-rocm = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-router = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-std = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-store = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-tch = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-tensor = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-vision = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
+burn-wgpu = { git = "https://github.com/laurigates/burn.git", branch = "feat/retention-ledger-v0.21" }
