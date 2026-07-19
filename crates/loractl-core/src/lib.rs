@@ -65,6 +65,7 @@
 
 pub mod adapter;
 pub mod adapters;
+pub mod block_ckpt;
 pub mod burn_trainer;
 pub mod config;
 pub mod dataset;

@@ -838,7 +838,7 @@ impl<B: Backend> SingleStreamBlock<B> {
 }
 
 impl<B: QuantBackend> SingleStreamBlock<B> {
-    fn forward(
+    pub(crate) fn forward(
         &self,
         x: Tensor<B, 3>,
         tvec: Tensor<B, 3>,
@@ -875,7 +875,7 @@ pub struct LastLayer<B: Backend> {
 }
 
 impl<B: Backend> LastLayer<B> {
-    fn forward(&self, x: Tensor<B, 3>, t: Tensor<B, 3>) -> Tensor<B, 3> {
+    pub(crate) fn forward(&self, x: Tensor<B, 3>, t: Tensor<B, 3>) -> Tensor<B, 3> {
         let (scale, shift) = self.modulation.forward(t);
         let x = (scale + 1.0) * self.norm.forward(x) + shift;
         self.linear.forward(x)
@@ -908,6 +908,53 @@ pub struct TextMlp<B: Backend> {
     pub fc1: BaseLinear<B>,
     /// `txtmlp.3` — `features → features`.
     pub fc2: BaseLinear<B>,
+}
+
+/// The pre-trunk state `prepare_trunk` hands the trunk loop and head — one
+/// computation shared byte-identically by `forward_inner` and
+/// [`Mmdit::forward_capture`].
+struct PreTrunk<B: Backend> {
+    /// Text + image tokens, concatenated and padded to a multiple of 256.
+    combined: Tensor<B, 3>,
+    /// The 6-way modulation vector, `[b, 1, 6·features]`.
+    tvec: Tensor<B, 3>,
+    /// The timestep embedding after `tmlp`, `[b, 1, features]` — the head's
+    /// modulation input.
+    t_embed: Tensor<B, 3>,
+    /// RoPE cos/sin tables over the padded sequence.
+    rope: RopeTables<B>,
+    /// The additive attention mask, `[b, 1, l, l]`.
+    mask4: Tensor<B, 4>,
+    txt_len: usize,
+    img_len: usize,
+    // Trace intermediates (forward_inner's MmditTrace).
+    after_first: Tensor<B, 3>,
+    after_txtfusion: Tensor<B, 3>,
+    after_txtmlp: Tensor<B, 3>,
+}
+
+/// Everything [`Mmdit::forward_capture`] records for the #134
+/// block-checkpointed backward: each trunk block's input plus the shared
+/// per-step constants a block replay needs. All tensors live on the plain
+/// inner backend — the memory cost is `blocks.len()` residual-stream tensors
+/// (`[b, l, features]`), nothing block-internal.
+pub struct TrunkCapture<B: Backend> {
+    /// The input to trunk block `i` (`block_inputs[i]`), in forward order.
+    pub block_inputs: Vec<Tensor<B, 3>>,
+    /// The trunk output — the head's input.
+    pub x_final: Tensor<B, 3>,
+    /// The 6-way modulation vector, shared by every block.
+    pub tvec: Tensor<B, 3>,
+    /// The timestep embedding after `tmlp` — the head's modulation input.
+    pub t_embed: Tensor<B, 3>,
+    /// RoPE tables over the padded sequence, shared by every block.
+    pub rope: RopeTables<B>,
+    /// The additive attention mask, shared by every block.
+    pub mask4: Tensor<B, 4>,
+    /// Text-token count (the head slices image tokens back out with these).
+    pub txt_len: usize,
+    /// Image-token count.
+    pub img_len: usize,
 }
 
 /// Intermediate activations captured by [`Mmdit::forward_trace`], for parity
@@ -1292,15 +1339,17 @@ impl<B: QuantBackend> Mmdit<B> {
         self.forward_inner(img, context, t, pos, mask, None)
     }
 
-    fn forward_inner(
+    /// Everything the trunk and head consume, computed once before the block
+    /// loop (a pure extraction of `forward_inner`'s pre-trunk stages so the
+    /// #134 capture path can share them byte-identically).
+    fn prepare_trunk(
         &self,
         img: Tensor<B, 3>,
         context: Tensor<B, 4>,
         t: Tensor<B, 1>,
         pos: Tensor<B, 3>,
         mask: Tensor<B, 2>,
-        adapters: Option<&LoraAdapters<B>>,
-    ) -> MmditTrace<B> {
+    ) -> PreTrunk<B> {
         let device = img.device();
         let [b, imglen, _] = img.dims();
         let txtlen = context.dims()[1];
@@ -1353,14 +1402,40 @@ impl<B: QuantBackend> Mmdit<B> {
         let mask4 = additive_mask(mask, &device);
         let rope = rope_tables(pos, self.config.head_dim(), self.config.theta, &device);
 
+        PreTrunk {
+            combined,
+            tvec,
+            t_embed: t,
+            rope,
+            mask4,
+            txt_len: txtlen,
+            img_len: imglen,
+            after_first,
+            after_txtfusion,
+            after_txtmlp,
+        }
+    }
+
+    fn forward_inner(
+        &self,
+        img: Tensor<B, 3>,
+        context: Tensor<B, 4>,
+        t: Tensor<B, 1>,
+        pos: Tensor<B, 3>,
+        mask: Tensor<B, 2>,
+        adapters: Option<&LoraAdapters<B>>,
+    ) -> MmditTrace<B> {
+        let pre = self.prepare_trunk(img, context, t, pos, mask);
+        let mut combined = pre.combined;
+
         // 5. The trunk.
         let mut after_block0 = combined.clone();
         for (i, block) in self.blocks.iter().enumerate() {
             combined = block.forward(
                 combined,
-                tvec.clone(),
-                &rope,
-                mask4.clone(),
+                pre.tvec.clone(),
+                &pre.rope,
+                pre.mask4.clone(),
                 adapters,
                 &format!("blocks.{i}"),
             );
@@ -1370,16 +1445,57 @@ impl<B: QuantBackend> Mmdit<B> {
         }
 
         // 6. Head, then slice the image tokens back out.
-        let final_ = self.last.forward(combined, t);
-        let output = final_.narrow(1, txtlen, imglen);
+        let final_ = self.last.forward(combined, pre.t_embed);
+        let output = final_.narrow(1, pre.txt_len, pre.img_len);
 
         MmditTrace {
-            after_first,
-            tvec,
-            after_txtfusion,
-            after_txtmlp,
+            after_first: pre.after_first,
+            tvec: pre.tvec,
+            after_txtfusion: pre.after_txtfusion,
+            after_txtmlp: pre.after_txtmlp,
             after_block0,
             output,
+        }
+    }
+
+    /// The #134 capture forward: run the pre-trunk stages and the trunk
+    /// exactly as [`forward_with_adapters`] would, but **record each block's
+    /// input** and stop before the head. The block-checkpointed trainer path
+    /// (`block_ckpt::checkpointed_step`) runs this on the plain inner backend
+    /// — no autodiff graph exists during the trunk, so nothing is pinned —
+    /// then replays single blocks on small standalone graphs in backward.
+    pub fn forward_capture(
+        &self,
+        img: Tensor<B, 3>,
+        context: Tensor<B, 4>,
+        t: Tensor<B, 1>,
+        pos: Tensor<B, 3>,
+        mask: Tensor<B, 2>,
+        adapters: Option<&LoraAdapters<B>>,
+    ) -> TrunkCapture<B> {
+        let pre = self.prepare_trunk(img, context, t, pos, mask);
+        let mut x = pre.combined;
+        let mut block_inputs = Vec::with_capacity(self.blocks.len());
+        for (i, block) in self.blocks.iter().enumerate() {
+            block_inputs.push(x.clone());
+            x = block.forward(
+                x,
+                pre.tvec.clone(),
+                &pre.rope,
+                pre.mask4.clone(),
+                adapters,
+                &format!("blocks.{i}"),
+            );
+        }
+        TrunkCapture {
+            block_inputs,
+            x_final: x,
+            tvec: pre.tvec,
+            t_embed: pre.t_embed,
+            rope: pre.rope,
+            mask4: pre.mask4,
+            txt_len: pre.txt_len,
+            img_len: pre.img_len,
         }
     }
 }

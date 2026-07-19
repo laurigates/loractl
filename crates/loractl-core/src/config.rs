@@ -475,9 +475,15 @@ pub struct ComputeConfig {
     /// Float precision (M13). `f16` halves weight memory; wgpu only.
     pub precision: Precision,
     /// Recompute activations during the backward pass instead of storing
-    /// them (M13) — burn's `BalancedCheckpointing`. Slower per step,
-    /// substantially less activation memory; numerically identical
-    /// (recomputation replays the same ops).
+    /// them. Slower per step, substantially less activation memory;
+    /// numerically identical (recomputation replays the same ops). On the
+    /// diffusion trainer this is **block-level** checkpointing (#134): the
+    /// trunk forward runs graph-free storing only block inputs, and each
+    /// block replays on its own small graph in backward — the measured route
+    /// to fitting the int4 real-model step in 24 GB (ADR-0005 Addendum 2).
+    /// Incompatible with `lora.dropout > 0` (a replay would redraw masks).
+    /// On the synthetic `BurnTrainer` it remains burn's
+    /// `BalancedCheckpointing` (M13).
     pub grad_checkpointing: bool,
     /// Frozen-base quantization (#96). `int8` loads the diffusion trainer's
     /// MMDiT base as per-block symmetric int8 (~1/4 the f32 weight memory);

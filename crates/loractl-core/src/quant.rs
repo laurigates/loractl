@@ -196,10 +196,16 @@ impl QuantBackend for burn::backend::Cuda {}
 
 // candle has no quantized ops in burn 0.21; the config guard matrix keeps
 // this arm unreachable (quant is ndarray/cuda-only), and the default body's
-// missing q-ops fail loudly if it is ever reached anyway.
+// missing q-ops fail loudly if it is ever reached anyway. The bf16 variant
+// is a distinct concrete backend (like `Wgpu<f16>` above) and needs its own
+// impl for the #134 block-checkpointed path's `InnerBackend: QuantBackend`
+// bound.
 #[cfg(feature = "candle")]
 #[allow(deprecated)]
 impl QuantBackend for burn::backend::Candle {}
+#[cfg(feature = "candle")]
+#[allow(deprecated)]
+impl QuantBackend for burn::backend::Candle<burn::tensor::bf16> {}
 
 impl<B: Backend, C: CheckpointStrategy> QuantBackend for Autodiff<B, C> {
     fn quant_matmul_t(x: Tensor<Self, 2>, wq: &Tensor<Self, 2>) -> Tensor<Self, 2> {

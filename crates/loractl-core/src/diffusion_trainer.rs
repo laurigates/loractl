@@ -302,6 +302,17 @@ impl Trainer for DiffusionTrainer {
                  every MMDiT trunk projection"
             );
         }
+        // #134: block checkpointing replays block interiors in backward, and
+        // its capture forward runs on a non-autodiff backend where Dropout is
+        // identity — a replay would draw dropout masks the stored forward
+        // never saw, silently corrupting the adapter gradients.
+        if config.compute.grad_checkpointing && config.lora.dropout > 0.0 {
+            bail!(
+                "compute.grad_checkpointing recomputes block interiors during \
+                 backward and cannot reproduce LoRA dropout masks — set \
+                 lora.dropout: 0.0 or disable compute.grad_checkpointing"
+            );
+        }
 
         // Started frames the whole run, encode phase included, so SSE/bar
         // consumers see the run begin before the (potentially long) one-time
@@ -544,23 +555,28 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     Ok(())
 }
 
-/// The M13 checkpointing split, mirroring `BurnTrainer`'s.
-fn dispatch_checkpointing<B: burn::tensor::backend::Backend>(
+/// The checkpointing split. Since #134 the diffusion path's
+/// `grad_checkpointing` means **block-level** checkpointing
+/// (`block_ckpt::checkpointed_step` — block inputs stored, block interiors
+/// recomputed in backward), not burn's `BalancedCheckpointing`: the #132
+/// attribution measured Balanced pinning the whole trunk interior anyway
+/// (67.9 GiB logical demand — ADR-0005 Addendum 2), so both arms now run
+/// plain `Autodiff<B>` and the knob selects the step implementation inside
+/// `run_diffusion`. (`BurnTrainer` keeps its Balanced split — synthetic
+/// models fit either way.)
+fn dispatch_checkpointing<B: burn::tensor::backend::Backend + QuantBackend>(
     config: &TrainConfig,
     device: B::Device,
     sink: &mut dyn FnMut(TrainEvent),
 ) -> Result<PathBuf> {
-    use burn::backend::autodiff::checkpoint::strategy::BalancedCheckpointing;
     if config.compute.grad_checkpointing {
         sink(TrainEvent::Warning {
-            message: "activation checkpointing enabled (BalancedCheckpointing): \
-                      lower memory, slower steps, identical numerics"
+            message: "block-level gradient checkpointing enabled: block inputs stored, \
+                      block interiors recomputed in backward — lower memory, slower steps"
                 .into(),
         });
-        run_diffusion::<Autodiff<B, BalancedCheckpointing>>(config, device, sink)
-    } else {
-        run_diffusion::<Autodiff<B>>(config, device, sink)
     }
+    run_diffusion::<Autodiff<B>>(config, device, sink)
 }
 
 /// A burn-store adapter that casts every float snapshot to `target` before
@@ -1030,7 +1046,10 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
     config: &TrainConfig,
     device: AB::Device,
     sink: &mut dyn FnMut(TrainEvent),
-) -> Result<PathBuf> {
+) -> Result<PathBuf>
+where
+    AB::InnerBackend: QuantBackend,
+{
     AB::seed(&device, config.seed);
 
     let total = config.steps.max(1);
@@ -1161,6 +1180,11 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
     let mut clean_streak = 0u32;
     let checkpoint_every = config.output.checkpoint_every.max(1);
 
+    // #134: the block-checkpointed step runs the frozen denoiser on the
+    // plain inner backend. `valid()` is an Arc rewrap (no copy) and the base
+    // never changes, so hoist it once. `None` when the knob is off.
+    let mmdit_inner = config.compute.grad_checkpointing.then(|| mmdit.valid());
+
     for step in 1..=total {
         let batch = &batches[((step - 1) as usize) % batches.len()];
         let [b, z, h, w] = batch.latents.dims();
@@ -1196,46 +1220,88 @@ fn run_diffusion<AB: AutodiffBackend + QuantBackend>(
             1,
         );
 
-        crate::probe::phase("FORWARD_START", step);
-        let pred =
-            mmdit.forward_with_adapters(img_tokens, batch.conditioning.clone(), t, pos, mask, &set);
-
-        let diff = pred - target;
-        let loss = diff.clone().mul(diff).mean();
-        let loss_value: f32 = loss.clone().into_scalar().elem();
-        // The into_scalar above synced the device, so the forward is truly
-        // complete here — a meaningful ledger boundary.
-        crate::probe::phase("FORWARD_END", step);
-        // Fail fast on numeric divergence: a non-finite loss poisons the
-        // adapters within one optimizer step, and silently "training" NaNs
-        // for the remaining steps only wastes hours and exports garbage
-        // (observed with f16 on the real 12B before the f32 encode split).
-        if !loss_value.is_finite() {
-            bail!(
-                "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
-                 With compute.precision: f16 this means an activation exceeded \
-                 f16's range; try f32, or report the model/config combination"
+        let grads = if let Some(mmdit_inner) = &mmdit_inner {
+            // #134 block-checkpointed step: capture the trunk on the plain
+            // inner backend (no autodiff graph — nothing pinned), then head
+            // loss + a reverse per-block sweep on standalone graphs. The
+            // loss scale folds into the head seed (same S·loss semantics as
+            // the monolithic arm below); the returned GradientsParams
+            // carries every adapter grad by ParamId, exactly what
+            // from_grads produces.
+            crate::probe::phase("FORWARD_START", step);
+            let (loss_value, grads) = crate::block_ckpt::checkpointed_step::<AB>(
+                mmdit_inner,
+                &set,
+                img_tokens.inner(),
+                batch.conditioning.clone().inner(),
+                t.inner(),
+                pos.inner(),
+                mask.inner(),
+                target.inner(),
+                loss_scale,
             );
-        }
-        sink(TrainEvent::Step {
-            step,
-            loss: loss_value,
-            lr: config.optim.lr,
-        });
+            crate::probe::phase("BACKWARD_END", step);
+            if !loss_value.is_finite() {
+                bail!(
+                    "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
+                     With compute.precision: f16 this means an activation exceeded \
+                     f16's range; try f32, or report the model/config combination"
+                );
+            }
+            sink(TrainEvent::Step {
+                step,
+                loss: loss_value,
+                lr: config.optim.lr,
+            });
+            grads
+        } else {
+            crate::probe::phase("FORWARD_START", step);
+            let pred = mmdit.forward_with_adapters(
+                img_tokens,
+                batch.conditioning.clone(),
+                t,
+                pos,
+                mask,
+                &set,
+            );
 
-        // Loss scaling: backprop S·loss instead of loss. In f16 the
-        // per-element loss gradient starts at 2·diff/N (~1e-4 at 256²) and
-        // shrinks through 28 blocks, underflowing f16's normal range (6e-5)
-        // to EXACTLY zero — observed on the real model as `lora_up` never
-        // moving off its zero init while the loss stayed healthy. AdamW's
-        // update is scale-invariant (m̂ and √v̂ both carry S, which cancels),
-        // so scaling needs no un-scaling step and is a numeric no-op on f32
-        // backends — it purely keeps f16 gradients representable.
-        let scaled = loss * loss_scale;
-        crate::probe::phase("BACKWARD_START", step);
-        let raw_grads = scaled.backward();
-        crate::probe::phase("BACKWARD_END", step);
-        let grads = GradientsParams::from_grads(raw_grads, &set);
+            let diff = pred - target;
+            let loss = diff.clone().mul(diff).mean();
+            let loss_value: f32 = loss.clone().into_scalar().elem();
+            // The into_scalar above synced the device, so the forward is truly
+            // complete here — a meaningful ledger boundary.
+            crate::probe::phase("FORWARD_END", step);
+            // Fail fast on numeric divergence: a non-finite loss poisons the
+            // adapters within one optimizer step, and silently "training" NaNs
+            // for the remaining steps only wastes hours and exports garbage
+            // (observed with f16 on the real 12B before the f32 encode split).
+            if !loss_value.is_finite() {
+                bail!(
+                    "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
+                     With compute.precision: f16 this means an activation exceeded \
+                     f16's range; try f32, or report the model/config combination"
+                );
+            }
+            sink(TrainEvent::Step {
+                step,
+                loss: loss_value,
+                lr: config.optim.lr,
+            });
+
+            // Loss scaling: backprop S·loss instead of loss. In f16 the
+            // per-element loss gradient starts at 2·diff/N (~1e-4 at 256²) and
+            // shrinks through 28 blocks, underflowing f16's normal range (6e-5)
+            // to EXACTLY zero — observed on the real model as `lora_up` never
+            // moving off its zero init while the loss stayed healthy. AdamW's
+            // update is scale-invariant (m̂ and √v̂ both carry S, which cancels),
+            // so scaling needs no un-scaling step and is a numeric no-op on f32
+            // backends — it purely keeps f16 gradients representable.
+            let scaled = loss * loss_scale;
+            crate::probe::phase("BACKWARD_START", step);
+            let raw_grads = scaled.backward();
+            crate::probe::phase("BACKWARD_END", step);
+            GradientsParams::from_grads(raw_grads, &set)
+        };
 
         // Dynamic-scale guard: one reduced scalar over every adapter
         // gradient (Inf/NaN propagate through the abs-sum). Non-finite ⇒

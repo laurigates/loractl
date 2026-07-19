@@ -580,3 +580,70 @@ fn tiny_krea2_cuda_f32_trains_e2e() {
         "kohya naming must match the offline e2e's layout, got: {keys:?}"
     );
 }
+
+/// #134: block checkpointing must reject LoRA dropout loudly — the replayed
+/// backward would redraw masks the stored (plain-backend, dropout-identity)
+/// forward never saw, silently corrupting the adapter gradients.
+#[test]
+fn block_checkpointing_rejects_dropout() {
+    let out = TempDir::new("blockckpt-guard");
+    let mut config = config(&out, PathBuf::from("unused-dataset"));
+    config.compute.grad_checkpointing = true;
+    config.lora.dropout = 0.1;
+    let err = DiffusionTrainer
+        .train(&config, &mut |_| {})
+        .expect_err("dropout + block checkpointing must be rejected before any work");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("dropout"),
+        "the error must name the conflicting knob: {msg}"
+    );
+}
+
+/// #134 e2e: the block-checkpointed step trains the tiny fixture end to end,
+/// emits its warning, and — because the per-step gradients are bit-identical
+/// to the monolithic path's (tests/block_ckpt.rs) and both runs share the
+/// seed and RNG stream — reproduces the monolithic loss trajectory.
+#[test]
+fn tiny_krea2_trains_with_block_checkpointing() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Two runs in separate dirs (a shared output dir would make run 2 resume
+    // from run 1's exported adapter).
+    let run = |ckpt: bool, tag: &str| {
+        let out = TempDir::new(tag);
+        let dataset = staged_dataset(&out);
+        let mut config = config(&out, dataset);
+        config.compute.grad_checkpointing = ckpt;
+        let mut losses = Vec::new();
+        let mut warnings = Vec::new();
+        DiffusionTrainer
+            .train(&config, &mut |event| match event {
+                TrainEvent::Step { loss, .. } => losses.push(loss),
+                TrainEvent::Warning { message } => warnings.push(message),
+                _ => {}
+            })
+            .expect("the block-checkpointed tiny run completes");
+        (losses, warnings)
+    };
+    let (losses_off, _) = run(false, "blockckpt-off");
+    let (losses_on, warnings) = run(true, "blockckpt-on");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("block-level gradient checkpointing")),
+        "the knob must announce the block-checkpointed path: {warnings:?}"
+    );
+    assert_eq!(losses_on.len(), losses_off.len(), "one Step per step");
+    for (i, (on, off)) in losses_on.iter().zip(&losses_off).enumerate() {
+        assert!(on.is_finite() && off.is_finite(), "non-finite loss at {i}");
+        let rel = (on - off).abs() / off.abs().max(1e-12);
+        assert!(
+            rel < 1e-5,
+            "step {i}: checkpointed loss {on} vs monolithic {off} (rel {rel})"
+        );
+    }
+}
