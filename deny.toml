@@ -33,3 +33,7 @@ multiple-versions = "warn"
 # crates.io only — reject any crate from an unknown registry or a git source.
 unknown-registry = "deny"
 unknown-git = "deny"
+# TEMPORARY (#132): the retention-ledger measurement pins the burn 0.21.0
+# workspace to the laurigates/burn fork via [patch.crates-io] (see the
+# workspace Cargo.toml). Remove this allowlist together with that block.
+allow-git = ["https://github.com/laurigates/burn"]

@@ -515,7 +515,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "burn"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-autodiff",
  "burn-candle",
@@ -539,7 +539,7 @@ dependencies = [
 [[package]]
 name = "burn-autodiff"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -555,7 +555,7 @@ dependencies = [
 [[package]]
 name = "burn-backend"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-std",
  "bytemuck",
@@ -575,7 +575,7 @@ dependencies = [
 [[package]]
 name = "burn-candle"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -586,7 +586,7 @@ dependencies = [
 [[package]]
 name = "burn-core"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "ahash",
  "bincode",
@@ -615,7 +615,7 @@ dependencies = [
 [[package]]
 name = "burn-cpu"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -625,7 +625,7 @@ dependencies = [
 [[package]]
 name = "burn-cubecl"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-cubecl-fusion",
@@ -644,7 +644,7 @@ dependencies = [
 [[package]]
 name = "burn-cubecl-fusion"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-fusion",
@@ -661,7 +661,7 @@ dependencies = [
 [[package]]
 name = "burn-cuda"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -671,7 +671,7 @@ dependencies = [
 [[package]]
 name = "burn-dataset"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-std",
  "csv",
@@ -693,7 +693,7 @@ dependencies = [
 [[package]]
 name = "burn-derive"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "derive-new",
  "proc-macro2",
@@ -704,7 +704,7 @@ dependencies = [
 [[package]]
 name = "burn-dispatch"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-autodiff",
  "burn-backend",
@@ -721,7 +721,7 @@ dependencies = [
 [[package]]
 name = "burn-flex"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -736,7 +736,7 @@ dependencies = [
 [[package]]
 name = "burn-fusion"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -753,7 +753,7 @@ dependencies = [
 [[package]]
 name = "burn-ir"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "hashbrown 0.16.1",
@@ -763,7 +763,7 @@ dependencies = [
 [[package]]
 name = "burn-ndarray"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "atomic_float",
  "burn-autodiff",
@@ -785,7 +785,7 @@ dependencies = [
 [[package]]
 name = "burn-nn"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-core",
  "num-traits",
@@ -794,7 +794,7 @@ dependencies = [
 [[package]]
 name = "burn-optim"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-core",
  "derive-new",
@@ -807,7 +807,7 @@ dependencies = [
 [[package]]
 name = "burn-rocm"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -817,7 +817,7 @@ dependencies = [
 [[package]]
 name = "burn-router"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -830,7 +830,7 @@ dependencies = [
 [[package]]
 name = "burn-std"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -850,7 +850,7 @@ dependencies = [
 [[package]]
 name = "burn-store"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-core",
  "burn-tensor",
@@ -867,7 +867,7 @@ dependencies = [
 [[package]]
 name = "burn-tch"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "cc",
@@ -880,7 +880,7 @@ dependencies = [
 [[package]]
 name = "burn-tensor"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -893,7 +893,7 @@ dependencies = [
 [[package]]
 name = "burn-vision"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "aligned-vec",
  "bon",
@@ -916,7 +916,7 @@ dependencies = [
 [[package]]
 name = "burn-wgpu"
 version = "0.21.0"
-source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#12b0ba1e015656e44f2769e0dc70c11b682af265"
+source = "git+https://github.com/laurigates/burn.git?branch=feat%2Fretention-ledger-v0.21#07c099e8daebed0eccd2b914f74a5a437a34c0c3"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
