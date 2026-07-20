@@ -24,7 +24,13 @@ injecting a name-keyed set of adapters (`LoraAdapters`) across a module tree
 (config `targets` patterns → `build_adapters` over a model's `injectable_sites`;
 GPT-2's attach re-expressed through it) and added a kohya-ss `.safetensors`
 export (`export_adapters`, transposed `lora_down`/`lora_up` + `.alpha` scalar)
-so a LoRA loads in ComfyUI/Krea — proven offline against a golden. M7 (#18)
+so a LoRA loads in ComfyUI/Krea — proven offline against a golden, and (for the
+Krea 2 format) against ComfyUI's own LoRA key map, generated from pinned
+upstream source (`tests/krea2_lora_keys.rs`, `just krea2-lora-keys-reference`).
+That consumer-side pin is the #137 fix: a golden pins *our* convention, so it
+cannot tell you whether the real loader accepts it. ComfyUI accepts both the
+bare diffusers key we emit and the native `diffusion_model.blocks.N.*` form
+community LoRAs use. M7 (#18)
 made the training loop generic over `B: AutodiffBackend` with a runtime,
 config-selected compute backend (`compute.backend`): ndarray (CPU, always
 compiled, the offline/CI default), wgpu (Metal on Apple Silicon), and

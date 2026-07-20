@@ -301,6 +301,13 @@ burn-trainer-reference:
 export-reference:
     uv run reference/lora_export_reference.py > crates/loractl-core/tests/golden/lora_export.json
 
+# Regenerate the ComfyUI Krea 2 LoRA-key contract golden (#137). Downloads
+# comfy/utils.py + comfy/lora.py at a pinned commit; no torch. Fails loudly if
+# upstream drops an alias the export depends on — bump COMFY_COMMIT in the
+# script deliberately, and re-read the Krea2 branch when you do.
+krea2-lora-keys-reference:
+    uv run reference/krea2_lora_keys_reference.py --out crates/loractl-core/tests/golden
+
 # Regenerate the flow-matching golden fixture for the M8 numerics test (needs torch via uv).
 flow-reference:
     uv run reference/flow_reference.py > crates/loractl-core/tests/golden/flow_toy.json
