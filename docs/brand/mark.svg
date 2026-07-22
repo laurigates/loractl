@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="loractl">
+  <title>loractl mark — the low-rank bottleneck</title>
+  <!-- down-projection A (wide in, narrow out) -->
+  <polygon points="6,9 29.5,24 29.5,40 6,55" fill="#E4572E"/>
+  <!-- up-projection B (narrow in, wide out) -->
+  <polygon points="58,9 34.5,24 34.5,40 58,55" fill="#0EA5A4"/>
+  <!-- the rank-r spine is the negative space between them -->
+</svg>
