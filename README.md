@@ -24,9 +24,9 @@ thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
   dataloading, bucketing, the LoRA module, and the training loop.
 - **CLI-first UX.** `clap`-generated shell completions, YAML configs with
   env/flag overrides, structured progress output.
-- **GUI-optional by construction.** Core emits events; it never draws. A CLI
-  renders them as a progress bar today; an HTTP API streams the same events as
-  JSON tomorrow.
+- **GUI-optional by construction.** Core emits events; it never draws. The CLI
+  renders them as a progress bar, and the HTTP API streams the same events as
+  JSON — a GUI is just one more renderer.
 
 ## Architecture
 
