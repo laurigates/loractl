@@ -2,8 +2,8 @@
 
 The detailed, per-milestone record for `loractl`. The [README](../README.md)
 carries a compact checklist; this document is the long-form history and the
-current-direction detail. Milestones are tracked as GitHub issues #1–#4 and
-#17–#25; keep the two in sync when a milestone lands.
+current-direction detail. Milestones are tracked as GitHub issues #1–#4,
+#17–#25, plus #82; keep the two in sync when a milestone lands.
 
 ## Where the project is
 
