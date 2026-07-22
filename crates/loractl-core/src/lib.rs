@@ -63,6 +63,7 @@
 // hard gate against undocumented additions.
 #![warn(missing_docs)]
 
+pub mod accuracy;
 pub mod adapter;
 pub mod adapters;
 pub mod block_ckpt;
