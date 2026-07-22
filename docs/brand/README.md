@@ -17,7 +17,7 @@ glyph, fitting a `*ctl` tool.
 | `social-card.png` | 1280×640 repo social preview / link unfurl card. |
 | `avatar-512.png` | Square org/repo avatar (mark on a dark tile). |
 | `favicon-16/32/48.png` | Transparent favicons. |
-| `apple-touch-icon-180.png`, `icon-192.png`, `icon-512.png` | Filled app / web-manifest icons. |
+| `apple-touch-icon-180.png`, `icon-192.png`, `icon-512.png` | Filled app icons, ready for an `apple-touch-icon` link or a web manifest. Nothing references them yet — wiring a manifest is a follow-up. |
 
 ## Palette
 
@@ -30,6 +30,10 @@ glyph, fitting a `*ctl` tool.
 | teal-lift | `#34C7C0` | `ctl` on dark grounds |
 | ink (dark) | `#17140F` | warm near-black ground |
 | ink (light) | `#F1EEE9` | warm off-white on dark grounds |
+
+Only `ember` and `teal` appear in the `.svg` sources; the `-deep` / `-lift`
+variants are used solely by the raster lockup and social-card layouts (gradients
+and light/dark `ctl` tinting), which is why they aren't in the vector files.
 
 **Type:** the wordmark is set in a monospace (system stack: SF Mono / Cascadia
 Code / JetBrains Mono / Menlo) at weight 600, `-0.02em` tracking, with `ctl`
