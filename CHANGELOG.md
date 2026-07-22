@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/laurigates/loractl/compare/v0.13.0...v0.14.0) (2026-07-22)
+
+
+### Features
+
+* **brand:** add loractl logo and GitHub asset set ([7110bce](https://github.com/laurigates/loractl/commit/7110bce8c017347395a9552943256dbafbd5fecd))
+
 ## [0.13.0](https://github.com/laurigates/loractl/compare/v0.12.0...v0.13.0) (2026-07-19)
 
 
