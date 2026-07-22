@@ -250,9 +250,17 @@ delta with the burn `[d_in, d_out]` → loader `[out, in]` transpose
 (`export.rs:242-247`). Generalize to dispatch on the `AdapterDelta` variant:
 LoRA writes its existing triple; LoKr writes its present factors with the
 transpose/layout LyCORIS/ComfyUI expects, plus the `.alpha = scaling · r`
-scalar. `import_adapters` (`export.rs:272`, the resume path) gains the inverse
-for LoKr. The self-golden export test (`tests/adapter_export.rs`) pins our
-convention; the consumer-contract test (below) pins ComfyUI's.
+scalar. Note the **`Vec::with_capacity(set.deltas.len() * 3)`**
+pre-size at `export.rs:239` bakes in the same LoRA three-key count right beside
+the trait — it must become variant-aware (LoKr writes a variable 3–7 tensors per
+site), or the capacity hint silently under-sizes. `import_adapters`
+(`export.rs:272`, the resume path) gains the inverse for LoKr, including the
+`.alpha = scaling · r` recovery (`export.rs:245-247`) where **`r` is the rank of
+the decomposed factor, not the full Kronecker block** — LoRA reads it back from
+`lora_a`'s cols, so the LoKr analogue must read it from the `w2_a`/`w2_b` (or
+`w1_a`/`w1_b`) decomposition, not from `d_in`/`d_out`. The self-golden export
+test (`tests/adapter_export.rs`) pins our convention; the consumer-contract test
+(below) pins ComfyUI's.
 
 ### 6. Block checkpointing — `crates/loractl-core/src/block_ckpt.rs`
 
@@ -326,7 +334,18 @@ RED → GREEN, per `.claude/rules/testing.md` and `development.md`:
    dumps the factors + input + reference `ΔW·x`, and the Rust test loads them,
    runs the reshape-trick forward, and asserts bit-parity (to the established
    golden tolerance). This proves the Kronecker/reshape math *and* the
-   scaling = α/r convention. Add a `just lokr-reference` recipe.
+   scaling = α/r convention. Add a `just lokr-reference` recipe. Two things the
+   reference generator must pin, because they are the silent-divergence seams:
+   - **Kronecker argument order**, not just key names. Since `A ⊗ B ≠ B ⊗ A`,
+     the reference must use LyCORIS's exact `make_kron(w1, w2)` argument order
+     so our factor↔`lokr_w1`/`lokr_w2` mapping matches the consumer; pinning key
+     names alone would let a transposed-order forward pass a name-only check.
+   - **Orientation:** the golden `ΔW·x` must be computed in the *loader's*
+     `[d_out, d_in]` orientation (torch/ComfyUI convention), while burn's
+     `Linear` weights are `[d_in, d_out]` and the export transpose bridges the
+     two. Assert against the loader-oriented product, not the reference's
+     internal layout — this transpose/layout seam is exactly where a
+     "loads-without-error, trains-wrong-scale" bug hides.
    - **Kill-test:** the golden must be sensitive — swapping `w1`/`w2` order,
      dropping `t2`, or using materialize-ΔW-with-a-transpose-bug must make the
      test **fail**. A parity test that passes under a broken forward is worthless.
