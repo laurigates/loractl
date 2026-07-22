@@ -52,7 +52,8 @@ const INT4_GATE: RelGate = RelGate {
     floor: 1e-3,
     ceil: 2.0e-1,
 };
-// fp8 (e4m3fn, scale 1): observed 1.52e-2 → band ≈ 3.1e-2, ceil above it.
+// fp8 (e4m3fn, scale 1): observed 1.52e-2, d_bar rounded up to 1.55e-2 (as
+// int8 rounds 5.79e-3 → 5.8e-3) → band ≈ 3.1e-2, ceil above it.
 const FP8_GATE: RelGate = RelGate {
     d_bar: 1.55e-2,
     floor: 1e-3,
@@ -171,6 +172,14 @@ fn nearest_fp8_byte(lut: &[f32; 256], v: f32) -> u8 {
 /// fp8 representation error propagated through the matmul: round an f32 weight
 /// to e4m3fn (loractl dequantizes exactly as `LUT[byte] · scale`), then compare
 /// `x · dequant(w_fp8)ᵀ` against the f32 oracle `x · w_f32ᵀ`.
+///
+/// Scope note: unlike the int8/int4 cases — which drive loractl's real path
+/// (`quantize_linear_weight` → `quant_matmul_t`) — this measures the accuracy
+/// of the e4m3fn **LUT decode** (`fp8.rs`'s `e4m3fn_lut`, the value table the
+/// load path dequantizes through), not the fp8 *load* plumbing itself (mmap
+/// snapshot → `LUT[byte]·scale` lazy source). That plumbing is exercised by the
+/// fixed-truth tier in `tests/fp8.rs`; here the LUT is the accuracy-relevant
+/// part, and there is no f32→fp8 encoder in the crate to drive the full path.
 #[test]
 fn fp8_forward_stays_within_the_calibrated_band() {
     let device = Default::default();
