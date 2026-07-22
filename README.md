@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/brand/header-dark.png">
-  <img alt="loractl" src="docs/brand/header-light.png" width="440">
+  <img alt="loractl — a terminal-native LoRA trainer" src="docs/brand/header-light.png" width="440">
 </picture>
 
 **A terminal-native LoRA trainer, in Rust.**
