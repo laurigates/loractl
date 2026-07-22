@@ -1,10 +1,17 @@
-# loractl
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/header-dark.png">
+  <img alt="loractl" src="docs/brand/header-light.png" width="440">
+</picture>
+
+**A terminal-native LoRA trainer, in Rust.**
 
 [![CI](https://github.com/laurigates/loractl/actions/workflows/ci.yml/badge.svg)](https://github.com/laurigates/loractl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](Cargo.toml)
 
-A terminal-native LoRA trainer, in Rust.
+</div>
 
 Most LoRA trainers bolt a half-baked web GUI onto a Python training core.
 `loractl` inverts that: the **CLI is the primary surface** — config-driven,
