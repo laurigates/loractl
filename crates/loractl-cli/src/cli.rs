@@ -540,6 +540,26 @@ mod tests {
     }
 
     #[test]
+    fn model_training_adapter_env_layer() {
+        // #83: the optional `model.training_adapter` path is env-overridable via
+        // figment's `__` nesting (no CLI flag), like `model.checkpoint`.
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            jail.set_env(
+                "LORACTL_MODEL__TRAINING_ADAPTER",
+                "/loras/assistant.safetensors",
+            );
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(
+                config.model.training_adapter,
+                Some(std::path::PathBuf::from("/loras/assistant.safetensors")),
+                "LORACTL_MODEL__TRAINING_ADAPTER must populate model.training_adapter"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn cli_flags_beat_env_and_file() {
         Jail::expect_with(|jail| {
             jail.create_file("config.yaml", YAML)?;

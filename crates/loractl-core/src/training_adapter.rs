@@ -49,6 +49,7 @@ use anyhow::{Context, Result, bail};
 use burn::module::Param;
 use burn::tensor::backend::Backend;
 use burn::tensor::{DType, Tensor};
+use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -75,6 +76,13 @@ struct MergeSite<B: Backend> {
 /// fold into a frozen base with [`merge_training_adapter`].
 pub struct TrainingAdapter<B: Backend> {
     sites: Vec<MergeSite<B>>,
+    /// Whether the scaling for **every** site was determined from the file
+    /// (a per-site `.alpha` scalar, or the `__metadata__` `ss_network_alpha`/
+    /// `ss_network_dim` a kohya/ai-toolkit adapter carries). `false` means at
+    /// least one site fell back to unit scaling (`alpha = rank`) — surfaced as
+    /// a warning at merge time, since a silent `alpha != rank` would merge at
+    /// the wrong strength.
+    scaling_known: bool,
 }
 
 /// The frozen-base weight delta for one site, in burn `Linear` `[d_in, d_out]`
@@ -99,6 +107,12 @@ impl<B: Backend> TrainingAdapter<B> {
     /// `scaling = 1.0` (the ai-toolkit assistant-merge default: the factors are
     /// merged at unit strength, i.e. `alpha = rank`).
     pub fn from_file(path: &Path, device: &B::Device) -> Result<Self> {
+        // Global fallback scaling from the safetensors `__metadata__`
+        // (`ss_network_alpha`/`ss_network_dim`, the kohya/ai-toolkit convention
+        // the real Krea-2-Turbo assistant adapter uses) — applied to any site
+        // that lacks a per-site `.alpha` scalar.
+        let meta_scaling = metadata_scaling(path)?;
+
         // fp8-aware, though a LoRA adapter is virtually always bf16/f16/f32;
         // `to_data().convert_dtype(F32)` normalizes whatever it is.
         let snapshots = if crate::fp8::is_fp8_checkpoint(path)? {
@@ -115,6 +129,17 @@ impl<B: Backend> TrainingAdapter<B> {
         let mut alphas: BTreeMap<String, f32> = BTreeMap::new();
         for snap in snapshots {
             let name = snap.full_path();
+            // DoRA (weight-decomposed LoRA) carries per-site magnitude vectors
+            // alongside `lora_A`/`lora_B`; folding only the low-rank part is a
+            // silent *partial* merge. Refuse rather than drop it (this design is
+            // fail-loud everywhere else).
+            if name.contains("dora") || name.contains("magnitude") {
+                bail!(
+                    "training adapter {}: key {name} looks like DoRA (weight-decomposed LoRA); \
+                     only plain LoRA merge is supported — a partial merge would be silently wrong",
+                    path.display()
+                );
+            }
             let data = snap
                 .to_data()
                 .map_err(|e| {
@@ -130,8 +155,8 @@ impl<B: Backend> TrainingAdapter<B> {
                 continue;
             }
             if data.shape.len() != 2 {
-                // Non-matrix, non-alpha tensors (e.g. bias, dora scales) are not
-                // part of the merge — ignore them.
+                // Non-matrix, non-alpha tensors (e.g. a bias) are not part of the
+                // merge — ignore them.
                 continue;
             }
             tensors.insert(name, Tensor::from_data(data, device));
@@ -139,6 +164,7 @@ impl<B: Backend> TrainingAdapter<B> {
 
         // Collect the down/up pairs keyed by site prefix.
         let mut sites: Vec<MergeSite<B>> = Vec::new();
+        let mut scaling_known = true;
         // Deterministic order: BTreeMap iteration is sorted, and we key sites by
         // the down factor.
         for (name, down) in tensors
@@ -171,13 +197,24 @@ impl<B: Backend> TrainingAdapter<B> {
             let a = down.clone().transpose();
             let b = up.clone().transpose();
 
+            // Per-site `.alpha` wins; else the file's global metadata alpha/dim;
+            // else unit scaling (and flag it so merge warns).
             let scaling = match alphas.get(&format!("{prefix}.alpha")) {
                 Some(alpha) => *alpha as f64 / rank as f64,
-                None => 1.0,
+                None => match meta_scaling {
+                    Some(s) => s,
+                    None => {
+                        scaling_known = false;
+                        1.0
+                    }
+                },
             };
 
+            // Strip `diffusion_model.`, then apply the MMDiT's own checkpoint
+            // remap (the `nn.Sequential` index renames, `.mod.lin`) so the site
+            // matches the module paths `all_base_linears_mut` advertises.
             sites.push(MergeSite {
-                path: strip_prefix(&prefix).to_string(),
+                path: remap_site_path::<B>(strip_prefix(&prefix)),
                 a,
                 b,
                 scaling,
@@ -192,7 +229,10 @@ impl<B: Backend> TrainingAdapter<B> {
             );
         }
 
-        Ok(Self { sites })
+        Ok(Self {
+            sites,
+            scaling_known,
+        })
     }
 
     /// Number of parsed sites (targets present in the file).
@@ -210,12 +250,17 @@ impl<B: Backend> TrainingAdapter<B> {
 /// Merge an external training adapter at `path` into `mmdit`'s frozen base,
 /// folding `(alpha/rank)·B·A` into each targeted full-precision site.
 ///
-/// Every site the adapter names must resolve to one of the MMDiT's injectable
-/// base linears with matching shapes; a stray or misshaped key is a hard error
-/// (never a silent no-op — an unmatched LoRA key is the worst failure shape, see
-/// `.claude/rules/testing.md`). A quantized (`BaseLinear::Quant`) target is also
-/// a hard error: the merge needs full precision. Returns the number of sites
-/// merged and emits a summary [`TrainEvent::Warning`].
+/// Matches over **every** base linear in the trunk, the text-fusion blocks, and
+/// the time/text projections ([`Mmdit::all_base_linears_mut`]) — not only the
+/// LoRA-injectable subset — so a broad assistant adapter (which may target
+/// `attn.gate`, the fusion blocks, or the `t*`/`txt*` projections) folds in
+/// fully rather than blocking the run. Every site the adapter names must still
+/// resolve to one of those base linears with matching shapes; a stray or
+/// misshaped key is a hard error (never a silent no-op — an unmatched LoRA key
+/// is the worst failure shape, see `.claude/rules/testing.md`). A quantized
+/// (`BaseLinear::Quant`) target is also a hard error: the merge needs full
+/// precision. Returns the number of sites merged and emits a summary
+/// [`TrainEvent::Warning`].
 pub fn merge_training_adapter<B: Backend>(
     mmdit: &mut Mmdit<B>,
     path: &Path,
@@ -223,9 +268,25 @@ pub fn merge_training_adapter<B: Backend>(
     sink: &mut dyn FnMut(TrainEvent),
 ) -> Result<usize> {
     let adapter = TrainingAdapter::<B>::from_file(path, device)?;
+    let site_count = adapter.sites.len();
+
+    // No scaling info at all (no per-site `.alpha`, no `__metadata__`
+    // alpha/dim) → at least one site defaulted to unit scaling. Surface it: an
+    // adapter trained with `alpha != rank` would then merge at the wrong
+    // strength — a quiet quality regression, the hardest kind to notice.
+    if !adapter.scaling_known {
+        sink(TrainEvent::Warning {
+            message: format!(
+                "training adapter {}: no `.alpha` scalar and no `ss_network_alpha`/`ss_network_dim` \
+                 metadata — some site(s) merged at unit scaling (alpha = rank). If this adapter was \
+                 trained with alpha != rank, its strength is wrong.",
+                path.display()
+            ),
+        });
+    }
 
     // Index the parsed sites by path; drain as we consume so leftovers = keys
-    // that matched no injectable site.
+    // that matched no base linear.
     let mut by_path: BTreeMap<String, MergeSite<B>> = adapter
         .sites
         .into_iter()
@@ -233,7 +294,7 @@ pub fn merge_training_adapter<B: Backend>(
         .collect();
 
     let mut merged = 0usize;
-    for (site_path, base) in mmdit.base_linears_mut() {
+    for (site_path, base) in mmdit.all_base_linears_mut() {
         let Some(site) = by_path.remove(&site_path) else {
             continue;
         };
@@ -251,10 +312,13 @@ pub fn merge_training_adapter<B: Backend>(
                     );
                 }
                 let delta = merge_delta(site.a, site.b, site.scaling);
-                // The base stays frozen: a fresh untracked Param (`.no_grad()`
-                // is already applied upstream, and a computed tensor carries no
-                // grad tracking).
-                lin.weight = Param::from_tensor(weight + delta);
+                // Keep the base frozen. `Param::from_tensor` unconditionally
+                // rebuilds the param with `require_grad = true` (burn 0.21
+                // `param/tensor.rs`) — it ignores the tensor's own flag — so an
+                // explicit `set_require_grad(false)` at the Param level is
+                // required to preserve the upstream `.no_grad()` and not turn
+                // the merged base weight into a tracked leaf.
+                lin.weight = Param::from_tensor(weight + delta).set_require_grad(false);
                 merged += 1;
             }
             BaseLinear::Quant(_) => bail!(
@@ -269,9 +333,9 @@ pub fn merge_training_adapter<B: Backend>(
     if !by_path.is_empty() {
         let unmatched: Vec<&String> = by_path.keys().collect();
         bail!(
-            "training adapter {} names sites the MMDiT has no injectable base linear for: {:?} — \
-             the trunk advertises blocks.<i>.{{attn.wq,attn.wk,attn.wv,attn.wo,mlp.gate,mlp.up,\
-             mlp.down}}",
+            "training adapter {} names sites the MMDiT has no base linear for: {:?} — the model's \
+             base linears are blocks.<i>.{{attn.<wq|wk|wv|gate|wo>,mlp.<gate|up|down>}}, \
+             txtfusion.<layerwise|refiner>_blocks.<i>.*, and tmlp/tproj/txtmlp",
             path.display(),
             unmatched
         );
@@ -279,7 +343,8 @@ pub fn merge_training_adapter<B: Backend>(
 
     sink(TrainEvent::Warning {
         message: format!(
-            "training adapter: merged {merged} assistant-LoRA site(s) into the frozen base from {}",
+            "training adapter: merged {merged}/{site_count} assistant-LoRA site(s) into the \
+             frozen base from {}",
             path.display()
         ),
     });
@@ -302,6 +367,53 @@ fn up_for_prefix<B: Backend>(
     UP_SUFFIXES
         .iter()
         .find_map(|s| tensors.get(&format!("{prefix}{s}")).cloned())
+}
+
+/// The global merge scaling from a kohya/ai-toolkit `.safetensors`'s
+/// `__metadata__` — `ss_network_alpha / ss_network_dim` (or the bare
+/// `network_alpha`/`network_dim`) → `alpha / dim`. `None` when the header
+/// carries no metadata, the keys are absent, or a value is not a plain scalar
+/// (kohya can store a per-block alpha list; those aren't a single global
+/// scaling and fall through to the per-site/unit path). Header-only read.
+fn metadata_scaling(path: &Path) -> Result<Option<f64>> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading training adapter {}", path.display()))?;
+    let (_, meta) = safetensors::SafeTensors::read_metadata(&bytes)
+        .with_context(|| format!("reading training adapter header {}", path.display()))?;
+    let Some(kv) = meta.metadata() else {
+        return Ok(None);
+    };
+    let get = |a: &str, b: &str| {
+        kv.get(a)
+            .or_else(|| kv.get(b))
+            .and_then(|v| v.parse::<f64>().ok())
+    };
+    match (
+        get("ss_network_alpha", "network_alpha"),
+        get("ss_network_dim", "network_dim"),
+    ) {
+        (Some(alpha), Some(dim)) if dim > 0.0 => Ok(Some(alpha / dim)),
+        _ => Ok(None),
+    }
+}
+
+/// Map a checkpoint-form site path (e.g. `tmlp.0`, `blocks.0.attn.wq`) to the
+/// burn module path [`Mmdit::all_base_linears_mut`] advertises, by applying the
+/// MMDiT's own [`key_remap`](Mmdit::key_remap) rules. The rules are anchored on
+/// the trailing `.weight`/`.bias`/`.scale` segment, so a bare site path is
+/// keyed with `.weight`, remapped, then un-keyed. Trunk/fusion sites pass
+/// through unchanged; only the `nn.Sequential`-indexed projections (`tmlp.0` →
+/// `tmlp.fc1`, `tproj.1` → `tproj.fc`, `txtmlp.1`/`.3` → `txtmlp.fc1`/`fc2`) are
+/// rewritten.
+fn remap_site_path<B: Backend>(site: &str) -> String {
+    let mut keyed = format!("{site}.weight");
+    for (pat, rep) in Mmdit::<B>::key_remap() {
+        // key_remap patterns are fixed literals — a compile failure here is a
+        // bug in key_remap, not user input.
+        let re = Regex::new(pat).expect("Mmdit::key_remap has valid patterns");
+        keyed = re.replace(&keyed, rep).into_owned();
+    }
+    keyed.strip_suffix(".weight").unwrap_or(&keyed).to_string()
 }
 
 /// Strip a leading `diffusion_model.` (the ComfyUI/ostris convention) so the
