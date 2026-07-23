@@ -230,8 +230,10 @@ The optional Turbo training adapter (assistant-LoRA merge-at-load,
 `model.training_adapter`: a path to a LoRA `.safetensors`
 (`ostris/krea2_turbo_training_adapter`, diffusers/PEFT `lora_A`/`lora_B` or
 kohya `lora_down`/`lora_up`, `diffusion_model.*`-prefixed) merged into the
-frozen base before LoRA injection (`W += (alpha/rank)·B·A` per injectable
-trunk site, `src/training_adapter.rs`), rank auto-detected — ai-toolkit's
+frozen base before LoRA injection (`W += (alpha/rank)·B·A` over every matched
+base linear — trunk, text-fusion, and projections, `src/training_adapter.rs`),
+rank auto-detected (per-site `.alpha` or the file's `ss_network_alpha`/`_dim`
+metadata) — ai-toolkit's
 distillation-aware turbo recipe, minus the live/preview inversion loractl
 doesn't need (it never samples during training). The trained LoRA still
 deploys on **plain** turbo, exactly as ai-toolkit inverts the merge before

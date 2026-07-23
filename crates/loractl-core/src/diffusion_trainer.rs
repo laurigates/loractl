@@ -1520,6 +1520,29 @@ mod tests {
         );
     }
 
+    /// `training_adapter` (#83) resolves like the other component overrides:
+    /// `None` → no path, absolute verbatim, relative onto `base`.
+    #[test]
+    fn training_adapter_path_resolution() {
+        let base = Path::new("/comfy/models");
+        let mut m = model("/comfy/models", None, None, None, None);
+        assert_eq!(training_adapter_path(&m, base), None, "unset → None");
+
+        m.training_adapter = Some(PathBuf::from("/abs/assistant.safetensors"));
+        assert_eq!(
+            training_adapter_path(&m, base),
+            Some(PathBuf::from("/abs/assistant.safetensors")),
+            "absolute is verbatim"
+        );
+
+        m.training_adapter = Some(PathBuf::from("loras/assistant.safetensors"));
+        assert_eq!(
+            training_adapter_path(&m, base),
+            Some(base.join("loras/assistant.safetensors")),
+            "relative joins onto base"
+        );
+    }
+
     /// The VAE key-scheme auto-detect: the diffusers-keyed tiny fixture reads as
     /// diffusers, the re-keyed ComfyUI-native fixture reads as native — so
     /// `encode_phase` picks `native_key_remap` vs `key_remap` without a flag.

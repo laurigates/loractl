@@ -234,6 +234,29 @@ fn quant_int4_with_non_f32_precision_is_rejected() {
     );
 }
 
+/// #83: `model.training_adapter` needs a full-precision base — combining it with
+/// `compute.quant` must bail up front (a quantized base stores no weight the
+/// `W += (alpha/rank)·B·A` merge can fold into; silently loading an unmerged
+/// base is exactly the failure this guard prevents). Reaches the guard on the
+/// otherwise-legal ndarray/f32/int8 path, so no dataset is needed.
+#[test]
+fn quant_with_training_adapter_is_rejected() {
+    let out = TempDir::new("quant-ta-guard");
+    let mut cfg = config(&out, PathBuf::from("unused-dataset"), 4);
+    cfg.compute.backend = BackendKind::Ndarray;
+    cfg.compute.precision = Precision::F32;
+    cfg.compute.quant = Quant::Int8;
+    cfg.model.training_adapter = Some(PathBuf::from("some/assistant.safetensors"));
+    let err = DiffusionTrainer
+        .train(&cfg, &mut |_event| {})
+        .expect_err("training_adapter + quant must refuse");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("training_adapter") && message.contains("int8"),
+        "must name training_adapter and the quant scheme, got: {message}"
+    );
+}
+
 /// #128: the chunk knob defaults to 512 MiB — through `Default` AND through a
 /// YAML that carries a `compute:` block without the field (the struct-level
 /// `#[serde(default)]` constructs missing fields from `Self::default()`, which
