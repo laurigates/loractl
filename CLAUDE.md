@@ -82,8 +82,19 @@ M15 (#82) opened direct Krea-2-Turbo training (amending ADR-0004's
 `model.checkpoint` filename override, and auto-detected loading of
 ComfyUI-style scaled-fp8 checkpoints (`float8_e4m3fn` + `weight_scale`) via
 a lazy `LUT[byte] · scale` dequant source (`src/fp8.rs`; burn-store 0.21 has
-no fp8 dtype) — legacy/malformed fp8 files fail loudly; follow-up: training
-adapter (#83). Timestep-shift parity (#84) landed as `flow.shift_mode:
+no fp8 dtype) — legacy/malformed fp8 files fail loudly. The Turbo training
+adapter (#83) landed as optional `model.training_adapter`: a LoRA
+`.safetensors` (`ostris/krea2_turbo_training_adapter`; diffusers/PEFT
+`lora_A`/`lora_B` or kohya `lora_down`/`lora_up`, `diffusion_model.*`-prefixed)
+merged into the frozen base before LoRA injection — `W += (alpha/rank)·B·A`
+per injectable trunk site, rank auto-detected (`src/training_adapter.rs`) —
+ai-toolkit's distillation-aware turbo recipe, minus the preview inversion
+(loractl never samples during training); the trained LoRA still deploys on
+plain turbo. Golden-pinned merge math + a producer-contract read test (real
+`diffusion_model.*` keys → real sites, loud on any unmatched key); needs a
+full-precision base, so it is rejected with `compute.quant` (quant-path merge
+into `load_quant_module`'s f32 transient is the tracked #83 follow-up).
+Timestep-shift parity (#84) landed as `flow.shift_mode:
 resolution` — per-batch `exp(μ(gh·gw))` with Krea 2's ai-toolkit-documented
 anchors (0.5@256 → 1.15@6400 image tokens) as the `FlowConfig` defaults,
 golden-pinned; the krea2 example configs use it. See

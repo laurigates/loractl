@@ -66,6 +66,7 @@ fn config(out_dir: &Path) -> TrainConfig {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: RANK,

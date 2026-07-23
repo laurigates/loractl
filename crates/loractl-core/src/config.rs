@@ -114,6 +114,19 @@ pub struct ModelConfig {
     /// error, never a silent fetch.
     #[serde(default)]
     pub tokenizer: Option<PathBuf>,
+    /// Optional path to a LoRA **training adapter** (`.safetensors`) merged into
+    /// the frozen base at load, before LoRA injection — the Krea-2-Turbo
+    /// assistant-LoRA seam (#83). For each targeted site the base weight is
+    /// updated `W += (alpha/rank)·B·A`, nudging the distilled turbo weights back
+    /// toward a raw-like state for training (ai-toolkit's distillation-aware
+    /// turbo recipe). Absolute paths are used verbatim; relative paths join onto
+    /// `base`. Env: `LORACTL_MODEL__TRAINING_ADAPTER`. Rejected together with
+    /// `compute.quant` (the merge needs a full-precision base). The trained
+    /// adapter still deploys on **plain** turbo — same interop contract as
+    /// ai-toolkit, which inverts this merge before export. See
+    /// [`crate::training_adapter`].
+    #[serde(default)]
+    pub training_adapter: Option<PathBuf>,
 }
 
 /// The known Krea 2 architecture variants (M14).

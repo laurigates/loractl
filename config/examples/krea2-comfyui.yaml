@@ -21,6 +21,12 @@ model:
   #            cached under HF_HOME) automatically. Set this only to use a
   #            tokenizer.json you already have:
   # tokenizer:  /path/to/qwen3vl/tokenizer.json
+  # training_adapter: for Krea-2-Turbo (variant: krea2-turbo) only — an optional
+  #   assistant LoRA (ostris/krea2_turbo_training_adapter) merged into the frozen
+  #   base at load (`W += (alpha/rank)·B·A`), ai-toolkit's distillation-aware
+  #   turbo recipe. The trained adapter still deploys on plain turbo. Needs a
+  #   full-precision base — incompatible with compute.quant. See issue #83.
+  # training_adapter: diffusion_models/krea2/krea2_turbo_training_adapter.safetensors
 
 dataset:
   path: /path/to/dataset            # images + same-named .txt captions

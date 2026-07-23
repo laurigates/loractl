@@ -308,6 +308,11 @@ export-reference:
 krea2-lora-keys-reference:
     uv run reference/krea2_lora_keys_reference.py --out crates/loractl-core/tests/golden
 
+# Regenerate the training-adapter merge-at-load golden (#83; numpy only, no
+# torch/network). Pins the `W += (alpha/rank)·B·A` merge math + layout convention.
+training-adapter-merge-reference:
+    uv run reference/training_adapter_merge_reference.py > crates/loractl-core/tests/golden/training_adapter_merge.json
+
 # Regenerate the flow-matching golden fixture for the M8 numerics test (needs torch via uv).
 flow-reference:
     uv run reference/flow_reference.py > crates/loractl-core/tests/golden/flow_toy.json

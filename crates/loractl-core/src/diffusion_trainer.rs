@@ -165,6 +165,18 @@ fn denoiser_path(model: &ModelConfig, base: &Path) -> PathBuf {
     }
 }
 
+/// The training-adapter path (#83), if configured: absolute verbatim, relative
+/// joins onto `base`. `None` when no `model.training_adapter` is set.
+fn training_adapter_path(model: &ModelConfig, base: &Path) -> Option<PathBuf> {
+    model.training_adapter.as_deref().map(|p| {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            base.join(p)
+        }
+    })
+}
+
 /// The text-encoder path — override or `base/text_encoder/model.safetensors`.
 fn text_encoder_path(model: &ModelConfig, base: &Path) -> PathBuf {
     resolve_component(
@@ -356,6 +368,18 @@ impl Trainer for DiffusionTrainer {
                     "quantization dequantizes to f32; set compute.precision to f32 \
                      (got compute.precision = {:?} with compute.quant = {quant_label})",
                     config.compute.precision
+                );
+            }
+            // The assistant-LoRA merge-at-load (#83) folds `(alpha/rank)·B·A`
+            // into full-precision base weights; a quantized base stores no such
+            // tensor. Reject the combination loudly rather than silently loading
+            // an unmerged base. (Quant-path merge — into the f32 transient in
+            // `load_quant_module` — is the tracked #83 follow-up.)
+            if config.model.training_adapter.is_some() {
+                bail!(
+                    "model.training_adapter is not supported with compute.quant = {quant_label}: \
+                     the merge needs a full-precision base — drop compute.quant, or drop the \
+                     training adapter"
                 );
             }
         }
@@ -1082,7 +1106,7 @@ where
 
     // ---- Phase 2: the denoiser + adapters. ----
     let denoiser = denoiser_path(&config.model, &base);
-    let mmdit = if let Some(value) = quant_value(config.compute.quant) {
+    let mut mmdit = if let Some(value) = quant_value(config.compute.quant) {
         // Quantized frozen base (int8/int4, #96). Build + load + quantize on the
         // NON-autodiff INNER backend, at the TARGET device directly — NOT
         // default+to_device: a lifted QFloat module cannot `.to_device()`
@@ -1141,6 +1165,14 @@ where
         .to_device(&device)
         .no_grad()
     };
+
+    // Optional assistant-LoRA merge-at-load (#83): fold the training adapter
+    // into the frozen base *before* LoRA injection. Guarded above to be
+    // incompatible with quant, so every site here is full-precision (`Plain`).
+    if let Some(ta_path) = training_adapter_path(&config.model, &base) {
+        crate::training_adapter::merge_training_adapter(&mut mmdit, &ta_path, &device, sink)
+            .with_context(|| format!("merging training adapter {}", ta_path.display()))?;
+    }
 
     let sites = mmdit.injectable_sites();
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);
@@ -1387,6 +1419,7 @@ mod tests {
             text_encoder: text_encoder.map(PathBuf::from),
             vae: vae.map(PathBuf::from),
             tokenizer: tokenizer.map(PathBuf::from),
+            training_adapter: None,
         }
     }
 

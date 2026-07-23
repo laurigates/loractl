@@ -98,6 +98,7 @@ fn config(out: &TempDir, dataset: PathBuf, steps: u64) -> TrainConfig {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: 4,

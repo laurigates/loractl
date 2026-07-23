@@ -86,6 +86,7 @@ pub mod qwen3vl;
 pub mod qwen_vae;
 pub mod sample;
 pub mod train;
+pub mod training_adapter;
 
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;

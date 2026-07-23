@@ -80,6 +80,7 @@ fn mnist_lora_converges() {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: RANK as u32,

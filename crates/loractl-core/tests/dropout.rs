@@ -57,6 +57,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: 8,

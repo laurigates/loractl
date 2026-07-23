@@ -57,6 +57,7 @@ fn periodic_validation_samples_are_emitted_and_written() {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: 4,
