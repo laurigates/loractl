@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.0](https://github.com/laurigates/loractl/compare/v0.14.0...v0.15.0) (2026-07-23)
+
+
+### Features
+
+* **trainer:** optional Krea-2-Turbo training-adapter merge-at-load ([#83](https://github.com/laurigates/loractl/issues/83)) ([1600ba3](https://github.com/laurigates/loractl/commit/1600ba340cd8350d8706a6504523b9db871a7bd4))
+
+
+### Bug Fixes
+
+* **trainer:** address [#83](https://github.com/laurigates/loractl/issues/83) review — widen merge scope, real-adapter alpha, frozen base ([958f762](https://github.com/laurigates/loractl/commit/958f7622dd4ff78fcc96a9086be3df7ab38de91b))
+
+
+### Performance Improvements
+
+* **trainer:** read training-adapter alpha metadata header-only ([#83](https://github.com/laurigates/loractl/issues/83) review) ([66f27b7](https://github.com/laurigates/loractl/commit/66f27b759288acf20167fb334615807e9535ff5b))
+
 ## [0.14.0](https://github.com/laurigates/loractl/compare/v0.13.0...v0.14.0) (2026-07-22)
 
 
