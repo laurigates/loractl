@@ -1,0 +1,57 @@
+# The exact config behind the M14 / #25 interop proof: a "sks dog" DreamBooth
+# subject LoRA trained on Krea-2-Raw through DiffusionTrainer, whose kohya
+# export visibly conditions Krea-2-Turbo generation in ComfyUI (LoRA off → a
+# generic dog; on → the trained corgi + studio backdrop).
+#
+# This is a concrete instance of config/examples/krea2-comfyui.yaml — the
+# scattered ComfyUI component paths plus the cuda f32 / int4 / block-checkpointing
+# 24 GB-card route. See that file for the full commentary on the model.* path
+# overrides and the memory route; only the deltas are noted here:
+#   - lora.targets covers every MMDiT trunk projection (blocks\.), not just attn
+#   - 300 steps
+
+task: flow-matching
+
+model:
+  base: /path/to/ComfyUI/models       # your ComfyUI models/ root
+  variant: krea2
+  denoiser:     diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
+  text_encoder: text_encoders/qwen/qwen3vl_4b_fp8_scaled.safetensors
+  vae:          vae/qwen/qwen_image_vae.safetensors
+
+dataset:
+  path: /path/to/dreambooth-dog        # the 5-image DreamBooth "dog" set
+                                       # (google/dreambooth), each with a
+                                       # "a photo of sks dog" .txt caption
+  resolution: 512
+  batch_size: 1
+
+lora:
+  rank: 16
+  alpha: 16.0
+  targets:
+    - pattern: 'blocks\.'              # every MMDiT trunk projection
+
+optim:
+  lr: 1.0e-4
+
+steps: 300
+seed: 42
+
+output:
+  dir: output/krea2-dog
+  name: krea2-dog
+  checkpoint_every: 100
+
+# cuda f32 + int4 frozen-base quant + block-level gradient checkpointing — the
+# 24 GB-card route (full rationale in krea2-comfyui.yaml and ADR-0005). Verify
+# fit with `just step-probe`; the gate is a zero-panic run, not a survived OOM
+# storm.
+compute:
+  backend: cuda
+  precision: f32
+  quant: int4
+  grad_checkpointing: true
+
+flow:
+  shift_mode: resolution              # ai-toolkit Krea 2 parity (#84)
