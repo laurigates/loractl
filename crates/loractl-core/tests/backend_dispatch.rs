@@ -29,6 +29,7 @@ fn cfg(backend: BackendKind) -> TrainConfig {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: 2,

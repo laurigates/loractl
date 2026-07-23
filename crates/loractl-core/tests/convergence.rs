@@ -60,6 +60,7 @@ fn synthetic_training_converges() {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: 8,

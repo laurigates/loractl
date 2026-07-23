@@ -58,6 +58,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         },
         lora: LoraConfig {
             rank: 8,

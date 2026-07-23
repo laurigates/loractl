@@ -106,6 +106,7 @@ fn denoiser_filename_precedence() {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            training_adapter: None,
         };
         assert_eq!(
             denoiser_filename(&model),
