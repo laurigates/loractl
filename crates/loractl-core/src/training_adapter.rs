@@ -376,17 +376,43 @@ fn up_for_prefix<B: Backend>(
 /// (kohya can store a per-block alpha list; those aren't a single global
 /// scaling and fall through to the per-site/unit path). Header-only read.
 fn metadata_scaling(path: &Path) -> Result<Option<f64>> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading training adapter {}", path.display()))?;
-    let (_, meta) = safetensors::SafeTensors::read_metadata(&bytes)
-        .with_context(|| format!("reading training adapter header {}", path.display()))?;
-    let Some(kv) = meta.metadata() else {
+    use std::io::Read;
+    // Bounded read: the 8-byte little-endian header length, then only the
+    // header JSON span — never the (potentially hundreds of MB) tensor payload
+    // that `from_file`'s snapshot loader reads separately. Best-effort: any read
+    // hiccup just means "no metadata" (the snapshot loader raises the clear
+    // error if the file is genuinely malformed).
+    let Ok(mut file) = std::fs::File::open(path) else {
         return Ok(None);
     };
-    let get = |a: &str, b: &str| {
-        kv.get(a)
-            .or_else(|| kv.get(b))
-            .and_then(|v| v.parse::<f64>().ok())
+    let mut len_buf = [0u8; 8];
+    if file.read_exact(&mut len_buf).is_err() {
+        return Ok(None);
+    }
+    let header_len = u64::from_le_bytes(len_buf);
+    // Sanity cap: safetensors headers are small even for thousands of tensors;
+    // a corrupt length must not trigger a huge allocation.
+    if header_len == 0 || header_len > 100 * 1024 * 1024 {
+        return Ok(None);
+    }
+    // Parse the header JSON directly rather than `SafeTensors::read_metadata`,
+    // which validates every tensor offset against the buffer and so requires
+    // the whole file — the header alone carries `__metadata__` (string→string).
+    let mut hdr = vec![0u8; header_len as usize];
+    if file.read_exact(&mut hdr).is_err() {
+        return Ok(None);
+    }
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&hdr) else {
+        return Ok(None);
+    };
+    let Some(meta) = json.get("__metadata__") else {
+        return Ok(None);
+    };
+    let get = |a: &str, b: &str| -> Option<f64> {
+        meta.get(a)
+            .or_else(|| meta.get(b))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
     };
     match (
         get("ss_network_alpha", "network_alpha"),
