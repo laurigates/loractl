@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/laurigates/loractl/compare/v0.15.0...v0.16.0) (2026-07-24)
+
+
+### Features
+
+* **api:** expose GPU backend feature passthrough (wgpu/candle/cuda/tch) ([#151](https://github.com/laurigates/loractl/issues/151)) ([0b1ccae](https://github.com/laurigates/loractl/commit/0b1ccae404f593d60a6789bc33b3f030d0dbb705))
+
 ## [0.15.0](https://github.com/laurigates/loractl/compare/v0.14.0...v0.15.0) (2026-07-23)
 
 
