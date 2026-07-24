@@ -12,6 +12,15 @@ rust-version.workspace = true
 name = "loractl-api"
 path = "src/main.rs"
 
+[features]
+# Passthrough to loractl-core's GPU backends, mirroring loractl-cli. None
+# default, so the stock api build stays offline/ndarray — a
+# `compute.backend: cuda|wgpu` config then reaches core's dispatch arm.
+wgpu = ["loractl-core/wgpu"]
+candle = ["loractl-core/candle"]
+cuda = ["loractl-core/cuda"]
+tch = ["loractl-core/tch"]
+
 [dependencies]
 loractl-core = { path = "../loractl-core" }
 anyhow.workspace = true
