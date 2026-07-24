@@ -32,3 +32,33 @@ jobs:
         id: release
         with:
           token: ${{ steps.app-token.outputs.token }}
+
+      # release-please bumps `[workspace.package] version` in Cargo.toml but never
+      # Cargo.lock, so the workspace members' `[[package]]` entries in the lock go
+      # stale and the next `cargo` run rewrites them into an unrelated PR. Sync the
+      # lock into the release PR so its merge lands a consistent lockfile.
+      # `prs_created` is true on create AND update, so this re-runs on every
+      # release-please force-push; the workflow triggers only on push to `main`
+      # (not the release branch), so pushing the lock here does not self-trigger.
+      - name: Check out the release PR branch
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Install Rust
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: dtolnay/rust-toolchain@stable
+      - name: Sync Cargo.lock to the bumped workspace version
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        run: |
+          cargo update --workspace
+          if git diff --quiet Cargo.lock; then
+            echo "Cargo.lock already in sync."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.lock
+            git commit -m "chore: sync Cargo.lock"
+            git push
+          fi

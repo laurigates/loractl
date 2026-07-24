@@ -70,7 +70,14 @@ that.
 ## Post-release Cargo.lock sync
 
 `release-please` bumps the version in `Cargo.toml` **only** — it does not touch
-`Cargo.lock`. After merging a release PR the committed lockfile is a version
-behind the manifest, so the next `cargo` invocation rewrites it. Run
+`Cargo.lock`, so the four workspace members' `[[package]]` entries in the lock
+go a version behind the manifest and the next `cargo` invocation rewrites them.
+
+This is now handled **automatically**: `release-please.yml` checks out the
+release PR branch and runs `cargo update --workspace`, committing the synced
+lock into the PR (gated on `prs_created`, so it re-syncs on every force-push).
+A merged release therefore lands a consistent lockfile — no manual step needed.
+
+Only sync by hand if that workflow step is ever skipped or fails: run
 `cargo update --workspace` and commit the result as `chore: sync Cargo.lock`
 before starting other work, so the drift doesn't ride into an unrelated PR.
