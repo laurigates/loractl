@@ -61,9 +61,10 @@ output:
 # interiors in backward, collapsing the monolithic step's measured
 # 67.9 GiB of pinned demand (ADR-0005 Addendum 2) to ~1 residual-stream
 # tensor per block plus one transient block graph. Requires
-# `lora.dropout: 0` (a replay would redraw masks). Verify fit with
-# `just step-probe` — the gate is a zero-panic run, not a survived OOM
-# storm.
+# `lora.dropout: 0` (a replay would redraw masks). Measured at 512px:
+# 19.4 GB peak, zero panics (ADR-0005 Addendum 3). Re-verify fit with
+# `just step-probe` after changing resolution or targets — the gate is a
+# zero-panic run, not a survived OOM storm.
 compute:
   backend: cuda
   precision: f32

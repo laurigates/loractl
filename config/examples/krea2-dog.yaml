@@ -44,9 +44,10 @@ output:
   checkpoint_every: 100
 
 # cuda f32 + int4 frozen-base quant + block-level gradient checkpointing — the
-# 24 GB-card route (full rationale in krea2-comfyui.yaml and ADR-0005). Verify
-# fit with `just step-probe`; the gate is a zero-panic run, not a survived OOM
-# storm.
+# 24 GB-card route (full rationale in krea2-comfyui.yaml and ADR-0005). This
+# exact combination measured 19.4 GB peak at 512px (ADR-0005 Addendum 3);
+# re-verify with `just step-probe` after changing resolution or targets — the
+# gate is a zero-panic run, not a survived OOM storm.
 compute:
   backend: cuda
   precision: f32
