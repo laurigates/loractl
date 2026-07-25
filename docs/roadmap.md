@@ -130,7 +130,7 @@ VAE, and text encoder were all greenfield in burn.
   adapter-only, tens of MB) and — at the time — base quantization; int8/int4
   became the #24 follow-up for ≤16 GB GPUs (landed via #96/#119, below).
 - **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25)).
-  *Code landed; the real-run interop proof is the remaining checkbox.*
+  *Landed in full, real-run interop proof included (see below).*
   `DiffusionTrainer` (`src/diffusion_trainer.rs`) composes the whole stack as
   one `impl Trainer` behind core's two-armed `select_trainer` factory on
   `model.base`: the M12 pipeline caches M9 latents + M10 conditioning **then
@@ -173,28 +173,37 @@ the knob. Loading is streamed from an mmap'd file (bf16/f32 or auto-detected
 scaled-fp8), so peak load memory is the quantized skeleton plus one transient
 f32 tensor.
 
-## Current direction — the real run (M14's remaining checkbox, #25)
+## M14 landed in full — the real run (#25, closed 2026-07-23)
 
-Train a LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer` and
-prove the exported adapter loads and visibly conditions generation in ComfyUI /
-Krea-2-Turbo.
+A LoRA trained on `krea/Krea-2-Raw` through `DiffusionTrainer` now demonstrably
+conditions Krea-2-Turbo generation in ComfyUI: a 300-step "sks dog" DreamBooth
+run at 512px (`config/examples/krea2-dog.yaml`), whose kohya export applies
+**with no key conversion** (the A/B is `docs/evidence/m14-krea2-dog-interop.jpg`).
 
-The cuda route was **VRAM-bound**. The #132 retention-ledger attribution
+Getting there meant solving a VRAM wall. The #132 retention-ledger attribution
 ([ADR-0005](adrs/0005-int4-training-vram-bound.md) Addendum 2, PR #133)
 measured the monolithic step's true logical demand at **67.9 GiB pinned per
 forward** (~3× the RTX 4090) — burn-autodiff eagerly pins the whole tracked
 trunk interior, topology-driven and independent of resolution/site-count. The
-measured fix is **#134 — block-level gradient checkpointing**
+fix was **#134 — block-level gradient checkpointing**
 (`src/block_ckpt.rs::checkpointed_step`): `compute.grad_checkpointing: true` on
 the diffusion path runs the trunk forward graph-free storing only block inputs,
 then replays each block on its own standalone graph in backward (grads
-bit-identical to the monolithic path; incompatible with `lora.dropout > 0`).
+bit-identical to the monolithic path; incompatible with `lora.dropout > 0`; a
+nested-backward custom op is impossible on burn 0.21 — verified deadlock, now
+fixed upstream for 0.22 by burn#5194).
 
 **int4 (~10.1 GB reclaimed resident base) + block checkpointing is the 24 GB
-training route** (estimate ≈ 16–18 GB). Verify fit with `just step-probe`
-(#126) — the gate is a **zero-panic** run, never a survived OOM storm. The wgpu
-f16 route (`config/examples/krea2-lora.yaml`, the 48 GiB Metal host) stays
-blocked by burn's GPU autodiff bug (burn#5162, unchanged).
+training route**, measured: a zero-panic `just step-probe` (#126) at 512px int4
+peaks at **19.4 GB** — 3/3 steps, 196/196 sites, ~4 GB headroom (ADR-0005
+Addendum 3). The gate is always a **zero-panic** run, never a survived OOM
+storm. The wgpu f16 route (`config/examples/krea2-lora.yaml`, the 48 GiB Metal
+host) stays blocked by burn's GPU autodiff bug (burn#5162, unchanged).
+
+Open from here: step **throughput** is unmeasured (the extra per-block forward
+costs something; needs #110's harness), int4's dequant error vs adapter quality
+is a separate question from fit, and the dataset-pipeline ergonomics issues
+(#147–#149) are the next user-facing gap.
 
 ## A note on the text side
 

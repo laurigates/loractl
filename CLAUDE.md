@@ -9,9 +9,8 @@ a GUI, if ever built, is just another renderer over the same core (the name is
 a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
 project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
 
-**Current status:** milestones M1–M13 (#1–#4, #17–#24) have landed, plus
-M14's (#25) `DiffusionTrainer` code (the real-run ComfyUI interop proof is
-the milestone's remaining checkbox).
+**Current status:** milestones M1–M15 (#1–#4, #17–#25, #82) have landed,
+M14 (#25) included — its real-run ComfyUI interop proof closed 2026-07-23.
 The default trainer is a real, burn-backed `BurnTrainer` that trains a
 **synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
 golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
@@ -100,10 +99,12 @@ anchors (0.5@256 → 1.15@6400 image tokens) as the `FlowConfig` defaults,
 golden-pinned; the krea2 example configs use it. See
 the roadmap in `README.md`.
 
-**Next direction (M14's remaining checkbox, #25):** the real run — train a
-LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer` and prove
-the exported adapter loads and visibly conditions generation in ComfyUI /
-Krea-2-Turbo. The cuda route was **VRAM-bound**: the #132 retention-ledger
+**M14 is complete (#25, closed 2026-07-23):** a LoRA trained on
+`krea/Krea-2-Raw` through `DiffusionTrainer` visibly conditions
+Krea-2-Turbo generation in ComfyUI — a 300-step "sks dog" DreamBooth run
+at 512px (`config/examples/krea2-dog.yaml`, evidence in
+`docs/evidence/`), whose kohya export applies with no key conversion.
+Getting there meant solving a VRAM wall: the #132 retention-ledger
 attribution ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)
 Addendum 2, PR #133) measured the monolithic step's true logical demand at
 **67.9 GiB pinned per forward** (~3× the RTX 4090) — burn-autodiff eagerly
@@ -121,10 +122,14 @@ unchanged and correct: `compute.quant: int8` (#96) / `int4` (Q4S, #119)
 load the frozen ~12.8B base per-block quantized while adapters train in
 f32 (QLoRA); restricted to `(ndarray|cuda, f32)` by the trainer guard.
 **int4 (~10.1 GB reclaimed resident base) + block checkpointing is the
-24 GB training route** (estimate ≈ 16–18 GB). Verify fit with
-`just step-probe` (#126) — the gate is a **zero-panic** run, never a
-survived OOM storm (a ceiling-riding run silently corrupts the forward —
-a negative MSE was observed). The wgpu f16 route
+24 GB training route**, and it is **measured, not estimated**: a
+zero-panic `just step-probe` (#126) at 512px int4 peaks at **19.4 GB** —
+3/3 steps, 196/196 sites, ~4 GB headroom ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)
+Addendum 3). The gate is always a **zero-panic** run, never a survived
+OOM storm (a ceiling-riding run silently corrupts the forward — a
+negative MSE was observed). Still open on this route: step
+**throughput** is unmeasured (#110's harness), and int4's dequant error
+vs adapter quality is a separate question from fit. The wgpu f16 route
 (`config/examples/krea2-lora.yaml`, the 48 GiB Metal host) stays blocked
 by burn's GPU autodiff bug (burn#5162, unchanged). Strategy and gap
 analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).

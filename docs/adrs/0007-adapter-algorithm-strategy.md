@@ -34,10 +34,11 @@ downstream graph tracked, so retention is independent of resolution, trained-sit
 count, and LoRA rank (all measured dead in Addendum 2 and its predecessor
 sweep). The measured fix is block-level gradient checkpointing (#134,
 `src/block_ckpt.rs::checkpointed_step`) layered on an int4/int8 QLoRA base
-(#119/#96); the ADR-0005 estimate for that combination is **≈ 16–18 GB**.
+(#119/#96); that combination measures **19.4 GB** peak on a 24 GB card
+(ADR-0005 Addendum 3, against a 16–18 GB projection).
 
 The consequence for adapter algorithms is the load-bearing fact of this ADR:
-**parameter count is a rounding error against a ~16–18 GB working set whose
+**parameter count is a rounding error against a ~19 GB working set whose
 dominant classes are base-trunk activations, not adapter params.** Every method
 that only changes *how the trainable delta is expressed* — LoKr's Kronecker
 factors, LoHa's Hadamard product, VeRA's shared bases, DoRA's magnitude
@@ -50,11 +51,14 @@ separate track with only three real lever classes (activation retention,
 resident base weights, optimizer/gradient — the last irrelevant for LoRA, whose
 optimizer state is adapter-only).
 
-The fit itself is still an **estimate, not a confirmed run**: the M14 real-run
-checkbox is open, and the ~16–18 GB number is an ADR-0005 projection until a
-zero-panic `just step-probe` is reported (the gate is zero panics, never a
-survived OOM storm — a ceiling-riding run silently corrupts the forward, and a
-negative MSE was observed). Two backend facts bound what is buildable today:
+The fit is now **measured, not an estimate** (ADR-0005 Addendum 3): a
+zero-panic `just step-probe` at 512px int4 peaked at **19.4 GB** on the 24 GB
+card — 3/3 steps, 196/196 sites, ~4 GB headroom — and the M14 real run closed
+on that route (#25, 300 steps, ComfyUI A/B). The 16–18 GB projection held to
+within ~1.4 GB. This does not change the ADR's load-bearing conclusion; it
+raises the confidence behind it, and it means the *next* adapter-algorithm
+decision is a quality decision made against a working fit rather than a
+hypothetical one. Two backend facts bound what is buildable today:
 burn 0.21's GPU autodiff is numerically broken except on the cuda-f32 path
 ([burn#5162](https://github.com/tracel-ai/burn/issues/5162), unchanged), and a
 custom autodiff op cannot run a nested `backward()` on 0.21
@@ -99,11 +103,11 @@ new *format* it emits inherits the interop rule below.
 
 3. **Name the VRAM levers for the #25 real run explicitly, and which burn
    version gates each:**
-   - **burn 0.21, landed:** block-level gradient checkpointing (#134) on an
-     int4/int8 QLoRA base (#119/#96) — the core fit mechanism. **The first
-     action is to confirm it with a zero-panic `just step-probe` run**, since
-     16–18 GB is an estimate, not a measured fit.
-     [cite ADR-0005 Verdict.]
+   - **burn 0.21, landed and measured:** block-level gradient checkpointing
+     (#134) on an int4/int8 QLoRA base (#119/#96) — the core fit mechanism,
+     confirmed by a zero-panic `just step-probe` at **19.4 GB** peak on the
+     24 GB card and by the #25 real run.
+     [cite ADR-0005 Addendum 3.]
    - **burn 0.21, unlanded, near-term:** CPU activation offload paging the #134
      per-block boundary tensors to pinned host RAM — the top *new* activation
      lever, stacking on #134; and encoder unload after latent/conditioning
@@ -112,10 +116,12 @@ new *format* it emits inherits the interop rule below.
    - **burn 0.22-gated ([#79](https://github.com/laurigates/loractl/issues/79)):**
      COAT-style fp8 activation training (blocked today — no fp8 store dtype),
      the mechanistically correct attack on the attention trio; and burn's native
-     LoRA/QLoRA + fusion-fused dequant, which could re-express #134 as a native
-     custom op *if* the nested-backward fix
-     ([burn#5194](https://github.com/tracel-ai/burn/pull/5194)) lands. Re-run
-     the burn#5162 numerics ladder and the retention ledger on migration.
+     LoRA/QLoRA + fusion-fused dequant, which can re-express #134 as a native
+     custom op now that the nested-backward fix
+     ([burn#5194](https://github.com/tracel-ai/burn/pull/5194)) is **merged
+     upstream** (2026-07-24, unreleased — 0.21.0 is still the latest tag).
+     Re-run the burn#5162 numerics ladder and the retention ledger on
+     migration.
    - **Declined as fit levers** (correct existing instinct): 8/4-bit Adam, fused
      backward, GaLore, gradient accumulation, and every param-reducer (VeRA,
      LoRA-XS, NOLA, IA³). Optimizer state is adapter-only; GaLore trains full
@@ -161,10 +167,13 @@ new *format* it emits inherits the interop rule below.
   partial-at-best and must be pitched as optimizer/hygiene, not the fit —
   measure whether burn 0.21's eager autodiff prunes the frozen-A input at all
   before claiming any saving.
-- **Open follow-up (fit, gates #25):** report a zero-panic `just step-probe` for
-  int4 + #134 to convert the 16–18 GB estimate into a measured fit; then, if it
-  rides close, CPU activation offload on the #134 block boundary and encoder
-  unload after caching. Tracked under #25 / #96.
+- **Resolved (fit):** the zero-panic `just step-probe` for int4 + #134 was
+  reported — **19.4 GB** peak, ~4 GB headroom, and #25 closed on that route
+  (ADR-0005 Addendum 3). CPU activation offload on the #134 block boundary and
+  encoder unload after caching are therefore *unneeded at 512px* and become
+  relevant only at longer sequences or smaller cards; they stay reserved under
+  #96. What is genuinely unmeasured is the **throughput** cost of the extra
+  per-block forward (needs #110's harness).
 - **Open follow-up (quality/interop):** land LoKr behind the generalized seam
   (Decision 2) with its ComfyUI consumer-contract test (Decision 4); optionally
   OFT (Cayley-Neumann, burn has no differentiable matrix inverse) emitting

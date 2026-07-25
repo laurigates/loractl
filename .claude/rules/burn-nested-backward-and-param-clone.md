@@ -55,16 +55,19 @@ routes by) — `block_ckpt.rs::track_adapters`:
 not just value comparison — missing grads are the failure mode this family
 produces.
 
-## Status (verified at burn `main@e5467f0` + `v0.21.0`, 2026-07-19)
+## Status (updated 2026-07-25)
 
-- **Nested-backward deadlock: still present at `main`** (the hold-lock-across-
-  step + lock-every-graph-in-cleanup structure in `runtime/graph.rs` is
-  unchanged; v0.21.0 is the latest release) and novel on the tracker — filed
-  as [tracel-ai/burn#5193] with a standalone stock-0.21 repro (kept locally
-  as `crates/loractl-core/examples/nested_backward_probe.rs` — re-run it on
-  burn version bumps); the two-line `try_lock` fix in
-  `cleanup_orphaned_entries`, verified to unblock the repro against a patched
-  v0.21.0 checkout, is up as [tracel-ai/burn#5194].
+- **Nested-backward deadlock: FIXED UPSTREAM, unreleased.** Filed as
+  [tracel-ai/burn#5193] with a standalone stock-0.21 repro (kept locally as
+  `crates/loractl-core/examples/nested_backward_probe.rs` — re-run it on burn
+  version bumps); our two-line `try_lock` fix in `cleanup_orphaned_entries`
+  ([tracel-ai/burn#5194]) was reviewed by @laggui and **merged to `main` on
+  2026-07-24**, closing the issue. It is **not in any release** — v0.21.0,
+  which loractl pins, still deadlocks — so the workaround stands until the
+  0.22 migration (#79). What changes at 0.22: an op-shaped `BlockCheckpoint`
+  (a `Backward::backward` that recomputes on an inner graph) becomes
+  *possible*, so the two-phase step could be re-expressed natively. It is not
+  obligatory — see below.
 - **`Param::clone` require_grad drop: already fixed on `main`** — collaterally,
   by burn PR #5045 (merged 2026-06-10; rewrote `Param` around
   `Arc<LazyInitState>`, making Clone a field-by-field struct clone that copies
@@ -74,8 +77,11 @@ produces.
   migration.
 
 Both workarounds live in `src/block_ckpt.rs`; the clone workaround is
-deletable with the 0.22 migration (#79), the two-phase step remains the right
-structure regardless (see ADR-0005 / #134).
+deletable with the 0.22 migration (#79). The two-phase step **works and is
+proven** — 19.4 GB peak, bit-identical grads, and the #25 real run rode it
+(ADR-0005 Addendum 3) — so re-expressing it as a custom op at 0.22 is an
+optional simplification to weigh against re-validating numerics, never a
+correction.
 
 [tracel-ai/burn#5193]: https://github.com/tracel-ai/burn/issues/5193
 [tracel-ai/burn#5194]: https://github.com/tracel-ai/burn/pull/5194

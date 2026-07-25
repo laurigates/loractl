@@ -20,10 +20,10 @@ another renderer layered on the same core over an API. The name says the
 thesis: a `*ctl` tool, like `kubectl` or `systemctl`.
 
 > **Status.** An early-stage learning project. The text-domain harness
-> (M1–M5) and the Krea 2 image-diffusion stack (M6–M15) have landed; the last
-> open box is the real-run interop proof — training a LoRA on `krea/Krea-2-Raw`
-> and confirming it conditions generation in ComfyUI. Full milestone history:
-> **[docs/roadmap.md](docs/roadmap.md)**.
+> (M1–M5) and the Krea 2 image-diffusion stack (M6–M15) have landed, including
+> the real-run interop proof — a LoRA trained on `krea/Krea-2-Raw` visibly
+> conditions Krea-2-Turbo generation in ComfyUI, on a 24 GB card. Full
+> milestone history: **[docs/roadmap.md](docs/roadmap.md)**.
 
 ## Why
 
@@ -240,12 +240,13 @@ Milestones are tracked as GitHub issues; the detailed history lives in
       objective (M8, [#19](https://github.com/laurigates/loractl/issues/19)); Qwen-Image VAE (M9, [#20](https://github.com/laurigates/loractl/issues/20)); Qwen3-VL text encoder
       (M10, [#21](https://github.com/laurigates/loractl/issues/21)); MMDiT denoiser (M11, [#22](https://github.com/laurigates/loractl/issues/22)); image dataset pipeline (M12,
       [#23](https://github.com/laurigates/loractl/issues/23)); single-GPU 12B memory knobs (M13, [#24](https://github.com/laurigates/loractl/issues/24)).
-- [ ] **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25)). *Code landed; the real-run
-      interop proof is the remaining checkbox.* `DiffusionTrainer` composes the
-      whole stack and trains end to end offline on a tiny Krea 2. Remaining:
-      train on `krea/Krea-2-Raw` and prove the export conditions generation in
-      ComfyUI. The 24 GB training route (cuda + int4 + block checkpointing) is
-      VRAM-bound per [ADR-0005](docs/adrs/0005-int4-training-vram-bound.md).
+- [x] **M14 — End-to-end + interop** ([#25](https://github.com/laurigates/loractl/issues/25)). `DiffusionTrainer` composes
+      the whole stack; a 300-step LoRA trained on `krea/Krea-2-Raw` visibly
+      conditions Krea-2-Turbo generation in ComfyUI
+      (`config/examples/krea2-dog.yaml`). The 24 GB training route — cuda +
+      int4 + block-level gradient checkpointing ([#134](https://github.com/laurigates/loractl/issues/134)) —
+      measures 19.4 GB peak; the VRAM investigation is
+      [ADR-0005](docs/adrs/0005-int4-training-vram-bound.md).
 - [x] **M15 — Train on Krea-2-Turbo** ([#82](https://github.com/laurigates/loractl/issues/82)). `variant: krea2-turbo` +
       scaled-fp8 checkpoint loading; resolution-based timestep shift
       ([#84](https://github.com/laurigates/loractl/issues/84)).

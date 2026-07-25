@@ -232,3 +232,97 @@ transient. Post-fix demand estimate: ~10.3 GB quantized base + ~1 GiB block
 pins + ~2-3 GiB single-block recompute transient + optimizer state ≈
 **16-18 GB — fits the 24 GB card with real margin**. Chunked attention inside
 the recomputed block is the follow-on if the transient needs shrinking.
+
+**Executed — see Addendum 3.** The estimate held (measured **19.4 GB**), but
+the prescribed *mechanism* did not survive contact: a custom autodiff op
+cannot recompute a block on burn 0.21.
+
+## Addendum 3 (2026-07-23 — the fix landed and the fit is MEASURED; #134, PR #135)
+
+Addendum 2's verdict is executed. Its arithmetic held; its prescribed
+mechanism did not.
+
+### The custom-op design is impossible on burn 0.21
+
+"Wrap `SingleStreamBlock::forward` in a custom autodiff op that ... recomputes
+the block interior during backward" cannot be built here: a `Tensor::backward()`
+call *inside* a `Backward::backward` impl **deadlocks unconditionally**. The
+outer backward holds its graph's `state` mutex across the entire step execution
+(`burn-autodiff/src/runtime/graph.rs`), and every `backward()` ends with
+`cleanup_orphaned_entries()`, which blocking-locks **every** registered graph's
+mutex — including the outer one the same thread already holds; `parking_lot`
+mutexes are non-reentrant. Established by source read **and an executed
+watchdog probe** (kept as `crates/loractl-core/examples/nested_backward_probe.rs`),
+then filed upstream as [burn#5193]; the two-line `try_lock` fix
+[burn#5194] was merged upstream **2026-07-24**, so the op-shaped design
+becomes available at burn 0.22 ([#79](https://github.com/laurigates/loractl/issues/79)) —
+not before.
+
+### What shipped instead: a two-phase step
+
+`src/block_ckpt.rs::checkpointed_step` restructures the step so no backward
+ever runs inside another:
+
+1. **Capture** — pre-trunk stages and the trunk run on the **plain inner
+   backend** (`Mmdit::forward_capture`): no autodiff graph exists, nothing is
+   pinned, and only each block's input residual stream is recorded
+   (`blocks.len()` × `[b, l, features]`).
+2. **Head graph** — head + flow-matching loss on a small standalone
+   `Autodiff` graph, yielding the trunk cotangent (the loss scale folds in
+   here, once).
+3. **Reverse sweep** — blocks replay last→first, each on its **own fresh**
+   `Autodiff` graph, seeded by the incoming cotangent via the exact VJP
+   identity `(out ⊙ g).sum().backward()` (0.21 has no seeded-backward API;
+   `1.0 · g == g` is bit-exact). Each graph drops before the next lift, so the
+   peak is ONE block interior instead of 28.
+
+Every dominant class in Addendum 2's table (scores trio, SwiGLU, quant-site
+outputs) becomes a within-block recompute transient, exactly as predicted —
+the restructuring just happens at the step level rather than the op level.
+
+### The measured fit (RTX 4090, 24 GB)
+
+| | monolithic (Addendum 2) | block-checkpointed |
+|---|---|---|
+| logical demand / peak | **67.9 GiB** pinned per forward | **19.4 GB** peak |
+| outcome at 512px int4 | OOM storm, garbage loss | **zero-panic**, 3/3 steps, 196/196 sites |
+
+~4 GB of headroom on the card. Addendum 2's 16–18 GB projection was right to
+within ~1.4 GB, slightly under the measured peak. The gate was the one this
+ADR insists on — **zero panics**, not a survived storm.
+
+Numerics: `tests/block_ckpt.rs` pins the checkpointed loss and **every**
+per-`ParamId` adapter gradient bit-identical to the monolithic path on the
+tiny-krea2 fixture, plain and Q8S arms, with completeness teeth (2× per delta,
+all non-zero) plus a cuda `#[ignore]` twin — green on-box.
+
+**The real run followed and closed M14** ([#25], PR #150, 2026-07-23): a
+300-step "sks dog" DreamBooth LoRA on Krea-2-Raw at 512px through
+`DiffusionTrainer` — `config/examples/krea2-dog.yaml`, cuda f32 + `quant:
+int4` + `grad_checkpointing: true`, i.e. this exact route — whose kohya export
+visibly conditions Krea-2-Turbo generation in ComfyUI.
+
+### What this leaves open
+
+- **`lora.dropout > 0` is refused** by a loud `bail!`: the graph-free capture
+  forward never draws masks (burn's `Dropout` is identity off-autodiff), so a
+  replay would draw *different* ones. Supporting it means recording masks
+  during capture.
+- **Throughput is unmeasured.** The fit is measured; the cost of one extra
+  trunk forward per step is not — loractl has no benchmark harness
+  ([#110](https://github.com/laurigates/loractl/issues/110)).
+- **Chunked attention inside the recomputed block** stays the reserved
+  follow-on, now unneeded at 19.4 GB but relevant if sequence length grows
+  (demand scales with seq; the trunk pads to multiples of 256).
+- **Two workarounds are deletable at burn 0.22** (#79): the two-phase
+  structure could become a native custom op now that [burn#5194] is merged,
+  and `track_adapters` — which re-marks `require_grad` that 0.21's
+  `Param::clone` silently drops on initialized params — is unnecessary once
+  burn#5045's `Param` rewrite is released. Both are recorded in
+  `.claude/rules/burn-nested-backward-and-param-clone.md`.
+- int4's ~7% worst-case dequant error vs adapter quality remains a separate
+  question from fit, unchanged by this addendum.
+
+[burn#5193]: https://github.com/tracel-ai/burn/issues/5193
+[burn#5194]: https://github.com/tracel-ai/burn/pull/5194
+[#25]: https://github.com/laurigates/loractl/issues/25

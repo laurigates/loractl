@@ -41,19 +41,23 @@ offload/spill/unified-memory mechanism, by design:
 
 ## The levers (and the measured non-levers)
 
-Updated by the 2026-07-19 **retention-ledger attribution** (#132, PR #133;
-ADR-0005 **Addendum 2** is the canonical record — read it before touching
-this problem):
+Updated by the 2026-07-19 **retention-ledger attribution** (#132, PR #133)
+and the 2026-07-23 landed fix (#134, PR #135); ADR-0005 **Addenda 2 and 3**
+are the canonical record — read them before touching this problem:
 
-1. **Per-block gradient checkpointing (#134) — the one measured route.** The
-   step's true logical demand is **67.9 GiB pinned per forward** (seq 1536,
-   Balanced; 60.8 GiB under NoCheckpointing) — ~3× the card, dominated by
-   the attention-score trio (scores + mask-add + softmax max-subtract,
-   432 MiB × 28 × 3 = 35.4 GiB), SwiGLU outputs (10.5 GiB), and quant-site
-   outputs (~9.6 GiB), all eagerly pinned by burn-autodiff's compute-bound
-   checkpoint cloning + the untracked-parent fallback. A custom op storing
-   only block inputs and recomputing the interior in backward removes every
-   dominant class; post-fix estimate ≈ 16–18 GB.
+1. **Per-block gradient checkpointing (#134) — the route, now LANDED and
+   MEASURED.** The monolithic step's true logical demand was **67.9 GiB
+   pinned per forward** (seq 1536, Balanced; 60.8 GiB under NoCheckpointing)
+   — ~3× the card, dominated by the attention-score trio (scores + mask-add
+   + softmax max-subtract, 432 MiB × 28 × 3 = 35.4 GiB), SwiGLU outputs
+   (10.5 GiB), and quant-site outputs (~9.6 GiB), all eagerly pinned by
+   burn-autodiff's compute-bound checkpoint cloning + the untracked-parent
+   fallback. `src/block_ckpt.rs::checkpointed_step` removes every dominant
+   class — **not** as a custom op (a nested `backward()` deadlocks on burn
+   0.21) but as a two-phase step: graph-free capture forward storing only
+   block inputs, then a reverse per-block sweep of standalone graphs.
+   Measured result: **19.4 GB** peak, zero panics, 3/3 steps, 196/196 sites
+   at 512px int4 — the #25 real run rode it.
 2. **Chunked weight dequant (#128, landed via #130)** — correct but
    measured peak-neutral: the pins are activations, not weight dequants.
 3. **Post-load pool reclaim** — safe but insufficient (PR #125, closed).
@@ -68,8 +72,11 @@ ALL retained into backward), and **LoRA rank** (params are a small
 fraction).
 
 Separately open: int4's ~7% worst-case dequant error and what it does to
-adapter quality (the #25 ComfyUI A/B) — memory fit and output quality are
-different questions.
+adapter *quality*. The #25 ComfyUI A/B proved the trained adapter visibly
+conditions generation, which is a conditioning proof, not a quality
+benchmark — memory fit and output quality remain different questions. Also
+unmeasured: step **throughput** under block checkpointing (one extra trunk
+forward per step; needs #110's harness).
 
 Measure with `just step-probe` (the recipe landed in #126) —
 don't re-derive peaks from `nvidia-smi` eyeballing.
