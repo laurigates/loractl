@@ -87,8 +87,11 @@ attribution:
    weight/gradient/dequant footprint** (lowering resolution is measured NOT to
    help — see Investigation #6). *(Largely withdrawn: Addendum 1 item 1 retires
    the "fewer trained sites" lever, and Addendum 2 §Corrections item 1 retires
-   the resolution-independence and the weight/dequant framing — the footprint
-   is **activations**. The unblock was block-level gradient checkpointing;
+   the weight/dequant framing — the footprint is **activations** — and the
+   resolution-independence **as a literal claim** (demand does scale with
+   sequence length), while sustaining the practical conclusion that lowering
+   resolution was still no rescue in this monolithic regime, since even 384px
+   demanded >2× the card. The unblock was block-level gradient checkpointing;
    see Addendum 3.)* Effective levers, weight-side: **fewer trained
    sites** (fewer LoRA targets → less optimizer state and fewer simultaneous
    dequant/gradient buffers), **base-weight streaming**, and **reducing
@@ -112,16 +115,23 @@ attribution:
   a stream sync before the OOM reclaim) is closed and its fork branch deleted.
   This ADR is its record: it had zero measured effect because the memory is
   genuinely live above cubecl, not GPU-work-in-flight.
-- **Open follow-up (loractl):** reduce the resolution-independent weight/gradient
-  footprint so int4/real fits 24 GB — start with fewer LoRA targets (measure the
-  co-resident dequant/gradient buffers per site), then base-weight streaming or
-  reducing simultaneous dequant retention in backward. A 384px probe confirmed
-  resolution is not a lever. Tracked under #119 / #96.
+- ~~**Open follow-up (loractl):**~~ **CLOSED by Addendum 3 — not pending work.**
+  Every direction below was retired before the fit was found: "fewer LoRA
+  targets" by Addendum 1 item 1, the weight/gradient framing by Addendum 2
+  (the footprint is **activations**), and "reducing simultaneous dequant
+  retention" by #128/#130, which landed measured peak-neutral. The actual
+  unblock was block-level gradient checkpointing (#134, PR #135) — not the
+  trackers named here. Original text: *reduce the resolution-independent
+  weight/gradient footprint so int4/real fits 24 GB — start with fewer LoRA
+  targets (measure the co-resident dequant/gradient buffers per site), then
+  base-weight streaming or reducing simultaneous dequant retention in
+  backward. A 384px probe confirmed resolution is not a lever. Tracked under
+  #119 / #96.*
 - **Upstream note:** tracel-ai/cubecl#1401's "reclaim race" framing does not
   explain this particular failure; PR #3's graceful-abort is the only
   upstreamable slice.
 
-## Addendum (2026-07-18, same day — the prescribed measurement ran)
+## Addendum 1 (2026-07-18, same day — the prescribed measurement ran)
 
 The `step_probe` sweep this ADR's follow-up called for (landed in #126) ran on
 the RTX 4090 the same day: 5 LoRA target sets (1 / 56 / 84 / 112 / 196 of 196
@@ -145,7 +155,12 @@ directions are **falsified by the measurement**, one is narrowed:
    ~10.3 GB + step state ≈ 24.7 GB vs ~23.6 GB usable. PR #125 closed on
    this data (branch kept — it composes with the retention fix below).
 3. **The binding constraint is the backward dequant-transient working set,
-   and the gap is only ~1–2 GB.** The recurring failed allocations are
+   and the gap is only ~1–2 GB.** *(Withdrawn by Addendum 2 §Corrections:
+   item 3 retires the "~1–2 GB gap" framing — it was derived from watching a
+   saturated card — and item 2 explains why the chunked dequant this
+   prescribes could not help: the recurring alloc sizes are pool page-ladder
+   artifacts with no tensor behind them. #128/#130 landed measured
+   peak-neutral.)* The recurring failed allocations are
    1,576,693,760 B (identity unresolved — it matches no single weight's
    dequant size; the largest weight dequant is `tproj.fc` at ≈ 864 MiB) and
    37,748,736 B (trunk tiles).
