@@ -13,8 +13,8 @@
 //! loud error (the M7 no-silent-fallback rule), never a quiet f32 run.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    Precision, TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, Precision, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -78,6 +78,7 @@ fn config(compute: ComputeConfig, out: &TempDir) -> TrainConfig {
         },
         compute,
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     }
 }
 

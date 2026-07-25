@@ -5,8 +5,8 @@
 //! default/offline build.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -59,6 +59,7 @@ pub fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConf
         compute,
         // Unused by the classification task.
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     };
     (config, out_dir)
 }

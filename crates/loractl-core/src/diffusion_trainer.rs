@@ -1205,6 +1205,38 @@ where
         });
     }
 
+    // The interop metadata (#154) every export below carries: trigger words,
+    // the training record, and the dataset's bucket/tag frequencies. Built
+    // once from the scan `prepare_dataset` already did — `steps_done` and the
+    // finish timestamp are the only per-write fields, so each checkpoint
+    // records its own progress. `started_at` is captured here, after the
+    // (slow) model load, so it times the training loop rather than the setup.
+    let started_at = crate::metadata::unix_now();
+    let dataset_facts = crate::metadata::DatasetFacts {
+        name: config
+            .dataset
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "dataset".to_string()),
+        entries: &prepared.entries,
+        buckets: &prepared.buckets,
+        batches_per_epoch: batches.len(),
+    };
+    let base_model_file = denoiser
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let metadata_for = |steps_done: u64| {
+        crate::metadata::build_metadata(&crate::metadata::RunFacts {
+            config,
+            steps_done,
+            dataset: Some(dataset_facts.clone()),
+            base_model_file: base_model_file.clone(),
+            started_at,
+            finished_at: crate::metadata::unix_now(),
+        })
+    };
+
     let mut optim = AdamWConfig::new()
         .with_weight_decay(config.optim.weight_decay as f32)
         .init::<AB, LoraAdapters<AB>>();
@@ -1384,15 +1416,27 @@ where
                 .output
                 .dir
                 .join(format!("checkpoint-{step}.safetensors"));
-            export_adapters(&set, ExportFormat::Krea2Diffusers, &path)
-                .with_context(|| format!("writing checkpoint at step {step}"))?;
+            export_adapters(
+                &set,
+                ExportFormat::Krea2Diffusers,
+                Some(&metadata_for(step)),
+                &path,
+            )
+            .with_context(|| format!("writing checkpoint at step {step}"))?;
             sink(TrainEvent::Checkpoint { step, path });
         }
     }
 
-    // The final artifact IS the interop artifact: a kohya-ss export.
-    export_adapters(&set, ExportFormat::Krea2Diffusers, &adapter_path)
-        .context("writing the final adapter export")?;
+    // The final artifact IS the interop artifact: a kohya-ss export, carrying
+    // the `__metadata__` header a ComfyUI/Civitai-style consumer reads its
+    // trigger words and training record from.
+    export_adapters(
+        &set,
+        ExportFormat::Krea2Diffusers,
+        Some(&metadata_for(total)),
+        &adapter_path,
+    )
+    .context("writing the final adapter export")?;
     sink(TrainEvent::Finished {
         adapter_path: adapter_path.clone(),
     });

@@ -22,8 +22,8 @@ use burn::tensor::{Tensor, TensorData};
 use loractl_core::adapter::{AdapterMeta, load_adapter};
 use loractl_core::burn_trainer::flow_batches;
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::sample::sample_adapter;
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
@@ -126,6 +126,7 @@ fn flow_training_converges() {
         compute: ComputeConfig::default(),
         // SD3/kohya sampler defaults (logit-normal N(0,1), shift 3.0).
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     };
 
     let mut losses = Vec::new();

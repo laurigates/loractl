@@ -55,3 +55,14 @@ compute:
 
 flow:
   shift_mode: resolution              # ai-toolkit Krea 2 parity (#84)
+
+# Embedded in the exported .safetensors' `__metadata__` header, alongside the
+# training record loractl derives (rank/alpha, lr, optimizer, steps, buckets,
+# `ss_tag_frequency` from the captions). `trigger_words` is what a UI shows as
+# the phrase to type — for this DreamBooth set, the caption token itself.
+# Inspect any LoRA's header with `loractl inspect <file>`.
+metadata:
+  trigger_words: ["sks dog"]
+  title: SKS dog (Krea 2)
+  description: A DreamBooth subject LoRA for the google/dreambooth "dog" set.
+  license: apache-2.0

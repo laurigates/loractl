@@ -110,6 +110,11 @@ qwen3vl-real = []
 mmdit-real = []
 
 [dev-dependencies]
+# `tests/adapter_metadata.rs` recomputes the exported LoRA's
+# `sshs_model_hash` from the finished file — an INDEPENDENT check of the
+# consumer's algorithm, so it must hash for itself rather than trust the
+# exporter. Same version the library already pins.
+sha2 = "0.10"
 # int4 (Q4S) frozen-base quantization goldens (#96). burn-ndarray gates its Q4
 # `quantize` behind the empty `export_tests` feature (Q8/int8 is always on; Q4 is
 # not) — so the offline int4 quant tests need it enabled. As a dev-dependency it

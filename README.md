@@ -111,7 +111,9 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   `DiffusionTrainer`.
 - **Checkpoints** and the final adapter are written as real, interoperable
   **`.safetensors`** files — only the trainable LoRA tensors, never the frozen
-  base — with a JSON sidecar carrying the seed/shape to reconstruct the base.
+  base — with a JSON sidecar carrying the seed/shape to reconstruct the base,
+  and (on the diffusion path) an embedded `__metadata__` header carrying the
+  trigger words and training record (see [below](#adapter-metadata--trigger-words-and-the-training-record)).
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box
@@ -129,6 +131,39 @@ during training. Design and trade-offs:
 
 ```sh
 cargo run -p loractl-cli -- sample output/my-lora.safetensors --prompt "a test prompt"
+```
+
+### Adapter metadata — trigger words and the training record
+
+Every interop export (checkpoints and the final adapter) carries a
+safetensors `__metadata__` header, the JSON block ahead of the tensor data
+that ComfyUI, Forge, A1111, and Civitai read a LoRA's provenance from. loractl
+writes both ecosystem vocabularies: kohya-ss/sd-scripts' `ss_*` training record
+(`ss_network_dim`/`ss_network_alpha`, `ss_learning_rate`, `ss_optimizer`,
+`ss_bucket_info`, `ss_tag_frequency` derived from your captions, …), Stability
+AI's `modelspec.*` fields, and the two `sshs_*` file hashes
+sd-webui-additional-networks indexes by.
+
+Everything a run already knows is **derived** — you only configure what it
+cannot infer:
+
+```yaml
+metadata:
+  trigger_words: ["sks dog"]   # -> ss_trained_words + modelspec.trigger_phrase
+  title: SKS dog
+  author: you
+  license: apache-2.0
+  tags: [dog, pet]
+```
+
+`--trigger-word` overrides the list per run; `metadata.embed: false` (or
+`--no-metadata`) writes no header at all, for a byte-reproducible export.
+Read any `.safetensors` file's header back — tensors are never touched, so it
+is instant even on a multi-gigabyte checkpoint:
+
+```sh
+loractl inspect output/my-lora.safetensors        # grouped listing
+loractl inspect output/my-lora.safetensors --json # the raw map
 ```
 
 ### HTTP API

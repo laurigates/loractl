@@ -72,3 +72,17 @@ flow:
                                # base/max_image_seq_len + base/max_shift).
                                # `constant` + `shift: 3.0` is the kohya/SD3
                                # fallback.
+
+# Provenance embedded in the exported .safetensors' `__metadata__` header —
+# what ComfyUI/Forge/Civitai read back off the file. Everything a run already
+# knows (rank, alpha, lr, optimizer, steps, epochs, buckets, tag frequency) is
+# derived automatically; only these author-supplied fields are configured.
+# `loractl inspect <file>` prints the result; `metadata: {embed: false}` (or
+# `--no-metadata`) writes no header at all.
+metadata:
+  trigger_words: ["my-style"]   # -> ss_trained_words + modelspec.trigger_phrase
+  # title: My Style
+  # description: What this LoRA does.
+  # author: you
+  # license: apache-2.0
+  # tags: [style, illustration]
