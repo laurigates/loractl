@@ -58,7 +58,10 @@ attribution:
    GPU consumer is an idle ComfyUI at a constant **386 MiB**. The working set
    is a slow activation ramp then a **~+7 GB spike** at the backward pass. Total
    working set ≈ 25.5 GB, ~1.5–2 GB over the 24 GB card.
-6. **The pressure is resolution-INDEPENDENT (measured, not assumed).** Re-running
+6. **The pressure is resolution-INDEPENDENT (measured, not assumed).**
+   *(Withdrawn as stated — see Addendum 2 §Corrections item 1: both arms rode
+   the 24 GB ceiling, so these identical peaks measured the card, not the
+   demand.)* Re-running
    at 384px (from 512px) produced a **byte-identical peak** (~23.67 GB in_use)
    and the same OOM. The dominant pool holds **~10.9 GB in 328 weight-tile-sized
    buffers (~33 MB each)** plus a second pool of ~3.5 GB in 161 buffers — these
@@ -82,7 +85,11 @@ attribution:
      streaming and resolution/batch/target choices live here.
 3. **The unblock is a loractl/burn memory-reduction on the resolution-INDEPENDENT
    weight/gradient/dequant footprint** (lowering resolution is measured NOT to
-   help — see Investigation #6). Effective levers, weight-side: **fewer trained
+   help — see Investigation #6). *(Largely withdrawn: Addendum 1 item 1 retires
+   the "fewer trained sites" lever, and Addendum 2 §Corrections item 1 retires
+   the resolution-independence and the weight/dequant framing — the footprint
+   is **activations**. The unblock was block-level gradient checkpointing;
+   see Addendum 3.)* Effective levers, weight-side: **fewer trained
    sites** (fewer LoRA targets → less optimizer state and fewer simultaneous
    dequant/gradient buffers), **base-weight streaming**, and **reducing
    simultaneous dequantized-weight retention in the backward pass** (a
