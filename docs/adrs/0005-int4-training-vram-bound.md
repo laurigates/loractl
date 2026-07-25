@@ -356,3 +356,4 @@ visibly conditions Krea-2-Turbo generation in ComfyUI.
 [burn#5193]: https://github.com/tracel-ai/burn/issues/5193
 [burn#5194]: https://github.com/tracel-ai/burn/pull/5194
 [#25]: https://github.com/laurigates/loractl/issues/25
+[#134]: https://github.com/laurigates/loractl/issues/134
