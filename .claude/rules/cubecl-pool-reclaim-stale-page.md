@@ -21,12 +21,18 @@ route).
 - **The "queued transients pile up" mechanism is structurally impossible**:
   cubecl's device command channel is bounded (`CHANNEL_MAX_TASK = 32`,
   double-buffered ≤ 64) with client backpressure.
-- **The pressure is resolution-INDEPENDENT.** A 384px re-run (from 512px)
-  produced a **byte-identical peak** and the same OOM. The dominant pool holds
-  **~10.9 GB in 328 weight-tile-sized buffers (~33 MB each)** plus **~3.5 GB
-  in 161 buffers** — dequantized-weight/gradient allocations that scale with
-  the number of **trained sites**, not image size. Working set ≈ **25.5 GB vs
-  the 24 GB card**.
+- ~~**The pressure is resolution-INDEPENDENT.**~~ **WITHDRAWN by ADR-0005
+  Addendum 2 (§Corrections item 1) — do not act on this bullet.** The
+  observation stands (a 384px re-run produced a **byte-identical peak** and
+  the same OOM; the dominant pool held **~10.9 GB in 328 weight-tile-sized
+  buffers** plus **~3.5 GB in 161 buffers**; working set ≈ **25.5 GB vs the
+  24 GB card**) but its *interpretation* was wrong twice: both arms rode the
+  24 GB ceiling, so the identical peaks measured **the card, not the
+  demand** — ledger-measured demand does scale with sequence length
+  (67.9 GiB @ seq 1536 vs 51.7 GiB @ 1280) — and the pinned bytes are
+  **activations, not dequantized weights**, retained by graph topology rather
+  than by trained-site count. See lever 2 and the non-lever list below, which
+  this bullet used to contradict.
 
 ## The layering decision (where offload work belongs)
 
@@ -62,10 +68,15 @@ are the canonical record — read them before touching this problem:
    measured peak-neutral: the pins are activations, not weight dequants.
 3. **Post-load pool reclaim** — safe but insufficient (PR #125, closed).
 
-Non-levers, **measured**: **resolution** (demand scales with seq — note the
-trunk pads to a multiple of 256, so "384px" trains at seq 1280, "512px" at
-1536 — but even 384px demand is 51.7 GiB, >2× the card), **trained-site
-count** (one adapter early in the graph makes the whole downstream trunk
+Non-levers, **measured** — all of these are verdicts about the **monolithic
+step**, i.e. reasons it could not be rescued without restructuring; they do
+**not** carry over to the block-checkpointed regime the configs now ship:
+**resolution** (demand scales with seq — note the trunk pads to a multiple of
+256, so "384px" trains at seq 1280, "512px" at 1536 — but even 384px demand
+was 51.7 GiB, >2× the card, so lowering it could not close the gap. Under
+block checkpointing the peak is one block interior, which *does* scale with
+seq — so resolution is a live variable again: re-probe after changing it),
+**trained-site count** (one adapter early in the graph makes the whole downstream trunk
 tracked — retention is topology-driven; `lora.targets`
 is a scope/quality choice only), **`grad_checkpointing: false`** (60.8 GiB,
 ALL retained into backward), and **LoRA rank** (params are a small
