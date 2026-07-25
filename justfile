@@ -236,10 +236,13 @@ quant-probe denoiser quant="int8":
     cargo run --release -p loractl-core --features cuda --example quant_probe -- {{denoiser}} --quant {{quant}}
 
 # ADR-0005 step-VRAM probe (#96, #25): run a few REAL DiffusionTrainer steps
-# from a config and report peak resident VRAM per LoRA target set — the
-# co-resident dequant/gradient buffers scale with the number of TRAINED
-# sites (resolution is measured NOT to be a lever), so this is the sweep
-# that picks a target set fitting the 24 GB card. Linux+NVIDIA + the real
+# from a config and report peak resident VRAM per LoRA target set, so this is
+# the sweep that confirms a config fits the 24 GB card. Note what Addendum 2
+# corrected: retention is topology-driven, so trained-site count is NOT the
+# lever it was first thought to be, and demand DOES scale with sequence
+# length — i.e. with resolution (the earlier "resolution is not a lever"
+# reading came from two arms that both rode the ceiling). Re-probe after
+# changing resolution or targets. Linux+NVIDIA + the real
 # multi-GB checkpoints; a warm encode cache skips the slow CPU encode phase.
 # e.g. `just step-probe config/examples/krea2-comfyui.yaml --target 'attn\.(wq|wv)$' --steps 3`
 # Args forward through `"$@"` (set positional-arguments, top of file) so a

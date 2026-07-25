@@ -55,7 +55,7 @@ routes by) — `block_ckpt.rs::track_adapters`:
 not just value comparison — missing grads are the failure mode this family
 produces.
 
-## Status (updated 2026-07-25)
+## Status (updated 2026-07-25; source facts verified at burn `main@e5467f0` + `v0.21.0`, 2026-07-19)
 
 - **Nested-backward deadlock: FIXED UPSTREAM, unreleased.** Filed as
   [tracel-ai/burn#5193] with a standalone stock-0.21 repro (kept locally as
@@ -71,7 +71,8 @@ produces.
 - **`Param::clone` require_grad drop: already fixed on `main`** — collaterally,
   by burn PR #5045 (merged 2026-06-10; rewrote `Param` around
   `Arc<LazyInitState>`, making Clone a field-by-field struct clone that copies
-  `require_grad` verbatim, `burn-core/src/module/param/base.rs` ~L605). Not in
+  `require_grad` verbatim, `burn-core/src/module/param/base.rs` ~L605 **at
+  `main@e5467f0`** — `main` moves, so re-check the line against a fresh sha). Not in
   any release (v0.21.0 still has it), so NOT filed (would be closed as "fixed
   in next release"). The `track_adapters` workaround stays until the 0.22
   migration.
