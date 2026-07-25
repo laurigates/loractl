@@ -37,7 +37,7 @@ use loractl_core::config::{
 };
 use loractl_core::dataset::{Bucket, DatasetEntry};
 use loractl_core::export::{ExportFormat, export_adapters};
-use loractl_core::metadata::{DatasetFacts, RunFacts, build_metadata, read_metadata};
+use loractl_core::metadata::{DatasetFacts, LoraMetadata, RunFacts, build_metadata, read_metadata};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -182,6 +182,27 @@ const BUCKETS: [Bucket; 1] = [Bucket {
     height: 512,
 }];
 
+/// **The contract itself**, as one function: every key the consumer reads
+/// that `written` does not carry and that is not a recorded omission.
+///
+/// Both the contract test and its kill-test call this rather than each
+/// spelling the rule out — a duplicated rule is one the sabotage can drift
+/// away from, leaving a kill-test that proves only that its own copy still
+/// works. (Same shape as `krea2_lora_keys.rs`.)
+fn unwritten_keys<'a>(written: &LoraMetadata, golden: &'a Golden) -> Vec<&'a str> {
+    golden
+        .keys_read
+        .iter()
+        .map(String::as_str)
+        .filter(|key| written.get(key).is_none())
+        .filter(|key| {
+            !DELIBERATELY_OMITTED
+                .iter()
+                .any(|(omitted, _)| omitted == key)
+        })
+        .collect()
+}
+
 #[test]
 fn every_key_the_consumer_reads_is_written_or_deliberately_omitted() {
     let golden = golden();
@@ -224,16 +245,7 @@ fn every_key_the_consumer_reads_is_written_or_deliberately_omitted() {
         "the golden is empty — regenerate it; an empty contract passes vacuously"
     );
 
-    let mut unwritten = Vec::new();
-    for key in &golden.keys_read {
-        if written.get(key).is_some() {
-            continue;
-        }
-        match DELIBERATELY_OMITTED.iter().find(|(k, _)| k == key) {
-            Some((_, reason)) => assert!(!reason.is_empty()),
-            None => unwritten.push(key.clone()),
-        }
-    }
+    let unwritten = unwritten_keys(&written, &golden);
     assert!(
         unwritten.is_empty(),
         "{} reads these metadata keys, which loractl neither writes nor \
@@ -271,13 +283,9 @@ fn the_contract_detects_a_missing_key() {
     export_adapters(&adapters(), ExportFormat::Krea2Diffusers, None, &path).expect("export");
     let written = read_metadata(&path).expect("reads");
 
-    let unwritten: Vec<&str> = golden
-        .keys_read
-        .iter()
-        .map(String::as_str)
-        .filter(|k| written.get(k).is_none())
-        .filter(|k| !DELIBERATELY_OMITTED.iter().any(|(o, _)| o == k))
-        .collect();
+    // Deliberately the SAME function the contract test calls, so sabotage
+    // exercises the real rule rather than a copy of it.
+    let unwritten = unwritten_keys(&written, &golden);
     assert_eq!(
         unwritten.len(),
         golden.keys_read.len() - DELIBERATELY_OMITTED.len(),

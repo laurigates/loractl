@@ -80,9 +80,14 @@ def fetch(path: str) -> str:
 def metadata_keys(source: str, path: str) -> set[str]:
     """Every metadata-shaped string literal in `source`, via AST.
 
-    AST rather than a regex over the raw text so a key mentioned in a comment
-    or docstring cannot inflate the contract — only real string constants in
-    the code count.
+    Two filters, doing different jobs:
+
+    - **AST** drops comments (they are not nodes at all), so a key named in a
+      `# TODO: also read ss_foo` cannot inflate the contract.
+    - **`KEY_RE` is fully anchored** (`^...$`), which is what handles
+      docstrings — those ARE `ast.Constant` nodes and `ast.walk` visits them,
+      but a key mentioned inside a sentence is part of a longer string and
+      cannot match.
     """
     try:
         tree = ast.parse(source)
