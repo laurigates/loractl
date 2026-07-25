@@ -283,6 +283,13 @@ fn the_contract_detects_a_missing_key() {
     export_adapters(&adapters(), ExportFormat::Krea2Diffusers, None, &path).expect("export");
     let written = read_metadata(&path).expect("reads");
 
+    // Guards the subtraction below, which would otherwise underflow and
+    // panic on a trimmed golden instead of reporting why.
+    assert!(
+        golden.keys_read.len() > DELIBERATELY_OMITTED.len(),
+        "the golden has no non-omitted keys left — regenerate it; there is \
+         nothing for this test to detect"
+    );
     // Deliberately the SAME function the contract test calls, so sabotage
     // exercises the real rule rather than a copy of it.
     let unwritten = unwritten_keys(&written, &golden);
