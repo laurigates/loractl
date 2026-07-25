@@ -576,8 +576,12 @@ fn read_metadata_rejects_non_safetensors_and_tolerates_headerless_files() {
     let err = read_metadata(&lying)
         .expect_err("a header longer than the file must be rejected")
         .to_string();
+    // Match the PHRASE, not the two numbers: the message begins with the temp
+    // path, whose nanosecond timestamp contains "10" nearly always and "500"
+    // now and then — so a digits-only check could pass on the `read_exact`
+    // error that would replace this one if the bound were removed.
     assert!(
-        err.contains("500") && err.contains("10"),
-        "the error should name both the claimed and actual size: {err}"
+        err.contains("claims 500 bytes but the file is 10"),
+        "the error must come from the size bound, naming both sizes: {err}"
     );
 }

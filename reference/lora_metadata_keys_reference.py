@@ -67,8 +67,12 @@ SOURCES = [
 # think we are.
 REQUIRED_KEYS = ["ss_tag_frequency", "sshs_model_hash", "ss_output_name"]
 
-# A metadata key literal: the two kohya families plus ModelSpec.
-KEY_RE = re.compile(r"^(ss_[a-z0-9_]+|sshs_[a-z0-9_]+|modelspec\.[a-z0-9_]+)$")
+# A metadata key literal: the two kohya families plus ModelSpec. Applied with
+# `fullmatch`, not `match` — Python's `$` also matches BEFORE a trailing
+# newline, so `"ss_output_name\n"` would sneak into the golden under `^...$`
+# and then fail the Rust contract test as an unwritten key whose name looks
+# identical to one we write.
+KEY_RE = re.compile(r"ss_[a-z0-9_]+|sshs_[a-z0-9_]+|modelspec\.[a-z0-9_]+")
 
 
 def fetch(path: str) -> str:
@@ -84,10 +88,9 @@ def metadata_keys(source: str, path: str) -> set[str]:
 
     - **AST** drops comments (they are not nodes at all), so a key named in a
       `# TODO: also read ss_foo` cannot inflate the contract.
-    - **`KEY_RE` is fully anchored** (`^...$`), which is what handles
-      docstrings — those ARE `ast.Constant` nodes and `ast.walk` visits them,
-      but a key mentioned inside a sentence is part of a longer string and
-      cannot match.
+    - **`KEY_RE.fullmatch`** is what handles docstrings — those ARE
+      `ast.Constant` nodes and `ast.walk` visits them, but a key mentioned
+      inside a sentence is part of a longer string and cannot match.
     """
     try:
         tree = ast.parse(source)
@@ -98,7 +101,7 @@ def metadata_keys(source: str, path: str) -> set[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
-        and KEY_RE.match(node.value)
+        and KEY_RE.fullmatch(node.value)
     }
 
 
