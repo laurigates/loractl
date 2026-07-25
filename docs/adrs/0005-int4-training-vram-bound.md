@@ -155,9 +155,12 @@ directions are **falsified by the measurement**, one is narrowed:
    ~10.3 GB + step state ≈ 24.7 GB vs ~23.6 GB usable. PR #125 closed on
    this data (branch kept — it composes with the retention fix below).
    *(The "~14–15 GB transient" magnitude is withdrawn by Addendum 2
-   §Corrections item 3 — it was read off a saturated card; true demand was
-   67.9 GiB. The conclusion is **sustained**: reclaim is safe but
-   insufficient.)*
+   §Corrections item 3 — it was read off a saturated card, so it measured
+   what fit, not what was needed. The ledger's 67.9 GiB is not this quantity
+   restated: it is total pinned demand per forward, where this was a step
+   transient above the ~10.3 GB resident base. Both point the same way — the
+   real figure is larger — so the conclusion is **sustained**: reclaim is
+   safe but insufficient.)*
 3. **The binding constraint is the backward dequant-transient working set,
    and the gap is only ~1–2 GB.** *(Withdrawn by Addendum 2 §Corrections:
    item 3 retires the "~1–2 GB gap" framing — it was derived from watching a
