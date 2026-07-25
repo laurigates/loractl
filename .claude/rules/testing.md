@@ -63,6 +63,25 @@ Same instinct as `diagnose-at-the-failure-point` and
 `verify-upstream-before-patching`: the authoritative source is the consumer's
 actual code, not your own inference about what it wants.
 
+**The rule applies to the metadata header too, not just tensor names.** The
+LoRA `__metadata__` block (#154, `src/metadata.rs`) has the identical failure
+shape one layer up: a header full of keys nobody reads loads without error and
+shows nothing. `tests/lora_metadata_keys.rs` +
+`reference/lora_metadata_keys_reference.py` are the second exemplar — the key
+list is extracted from AUTOMATIC1111's Lora extension at a pinned **tag**, and
+every key it reads must be either written or listed in `DELIBERATELY_OMITTED`
+with a reason that is true (`ss_clip_skip`: Krea 2 has no CLIP; `ss_v2`: not
+SD2). Two notes on picking the consumer and keeping the teeth:
+
+- **Pin the consumer that actually reads the thing.** ComfyUI is the consumer
+  for tensor keys but ignores `__metadata__`, and Civitai is closed source —
+  so A1111 is the only one that can pin this contract. Say which, and why, in
+  the test's docs.
+- **An omission list needs its own test.** `every_omission_is_still_a_key_the_consumer_reads`
+  fails when an entry stops being something the consumer reads, so the list
+  can't quietly become a dumping ground for keys that were merely
+  inconvenient.
+
 ## Coverage expectations
 
 The first tests landed in M2 (#1): the always-run numerics proof

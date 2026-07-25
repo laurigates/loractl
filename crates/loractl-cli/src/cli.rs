@@ -391,6 +391,19 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     Ok(config)
 }
 
+/// The metadata vocabularies `inspect` groups by, in reading order: what the
+/// file is, how it was trained, then its identity hashes.
+///
+/// The prefixes are mutually exclusive (`sshs_model_hash` does not start with
+/// `ss_` — the third byte is `h`, not `_`), so a key lands in at most one
+/// group. The "other" bucket is `!any(starts_with)` over this same list, so a
+/// fourth vocabulary is one edit here rather than two.
+const GROUPS: [(&str, &str); 3] = [
+    ("modelspec", "modelspec."),
+    ("training (kohya ss_*)", "ss_"),
+    ("hashes", "sshs_"),
+];
+
 /// Render a `.safetensors` file's `__metadata__` header.
 ///
 /// Core reads it ([`loractl_core::read_metadata`] — header bytes only, no
@@ -420,11 +433,7 @@ fn inspect(cmd: InspectCmd) -> Result<()> {
     // Grouped by vocabulary, in the order a reader cares about: what it is,
     // then how it was trained, then the file's identity hashes. Anything with
     // an unknown prefix still prints, under "other" — never silently dropped.
-    for (label, prefix) in [
-        ("modelspec", "modelspec."),
-        ("training (kohya ss_*)", "ss_"),
-        ("hashes", "sshs_"),
-    ] {
+    for (label, prefix) in GROUPS {
         let group = meta.with_prefix(prefix);
         if group.is_empty() {
             continue;
@@ -436,9 +445,7 @@ fn inspect(cmd: InspectCmd) -> Result<()> {
     }
     let others: Vec<(&str, &str)> = meta
         .iter()
-        .filter(|(k, _)| {
-            !k.starts_with("modelspec.") && !k.starts_with("ss_") && !k.starts_with("sshs_")
-        })
+        .filter(|(k, _)| !GROUPS.iter().any(|(_, prefix)| k.starts_with(prefix)))
         .collect();
     if !others.is_empty() {
         println!("\nother:");
@@ -728,6 +735,90 @@ mod tests {
             );
             Ok(())
         });
+    }
+
+    /// The #154 metadata flags. Both encode a deliberate asymmetry that is
+    /// easy to "fix" into something else, so both are pinned:
+    ///
+    /// - `--trigger-word` **replaces** the config's list rather than
+    ///   appending — a repeatable flag whose values merged with the file's
+    ///   would make the file's entries unremovable from the command line.
+    /// - `--no-metadata` is a bare `bool`, so it can only force `embed` OFF.
+    ///   There is no `--metadata` to turn it back on, because `true` is
+    ///   already the default; an `Option<bool>` here would be API surface
+    ///   with no reachable second state.
+    #[test]
+    fn metadata_flags_override_the_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!("{YAML}metadata:\n  trigger_words: [from-file]\n  embed: true\n"),
+            )?;
+
+            // No flags: the file's list and `embed` stand.
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.metadata.trigger_words, vec!["from-file".to_string()]);
+            assert!(config.metadata.embed);
+
+            // Flags win, and the repeated values REPLACE rather than append.
+            let mut cmd = cmd_for("config.yaml");
+            cmd.trigger_words = vec!["sks dog".into(), "in the style of sks".into()];
+            cmd.no_metadata = true;
+            let config = resolve_config(&cmd).expect("resolve");
+            assert_eq!(
+                config.metadata.trigger_words,
+                vec!["sks dog".to_string(), "in the style of sks".to_string()],
+                "--trigger-word replaces the file's list"
+            );
+            assert!(!config.metadata.embed, "--no-metadata forces embed off");
+            Ok(())
+        });
+    }
+
+    /// `inspect`'s one piece of formatting logic: kohya's structured values
+    /// are JSON *inside* a string, and must render as JSON rather than as an
+    /// escape-laden blob — while a plain scalar is passed through untouched
+    /// (a bare `16` parses as JSON but must not be "re-rendered").
+    #[test]
+    fn inspect_renders_nested_json_but_leaves_scalars_alone() {
+        assert_eq!(
+            pretty_value(r#"{"data": {"sks dog": 3}}"#),
+            r#"{"data":{"sks dog":3}}"#
+        );
+        assert_eq!(pretty_value(r#"["sks dog"]"#), r#"["sks dog"]"#);
+        assert_eq!(pretty_value("16"), "16", "a scalar is not JSON-normalized");
+        assert_eq!(pretty_value("networks.lora"), "networks.lora");
+        assert_eq!(pretty_value("(512, 512)"), "(512, 512)");
+    }
+
+    /// Every metadata key `inspect` can encounter must land in exactly one
+    /// group, or in the explicit "other" bucket — never be dropped. The
+    /// prefixes are mutually exclusive, which is what lets the "other" filter
+    /// be the negation of the same list.
+    #[test]
+    fn inspect_groups_are_mutually_exclusive() {
+        for key in [
+            "modelspec.title",
+            "ss_network_dim",
+            "sshs_model_hash",
+            "civitai_model_id",
+        ] {
+            let hits = GROUPS
+                .iter()
+                .filter(|(_, prefix)| key.starts_with(prefix))
+                .count();
+            assert!(hits <= 1, "{key} matched {hits} groups");
+        }
+        assert!(
+            !"sshs_model_hash".starts_with("ss_"),
+            "the hash prefix must not fall into the ss_ group"
+        );
+        assert!(
+            !GROUPS
+                .iter()
+                .any(|(_, p)| "civitai_model_id".starts_with(p)),
+            "an unknown vocabulary must reach the `other` bucket"
+        );
     }
 
     /// Every `loractl init` preset's embedded template must parse into a

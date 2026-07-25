@@ -1226,14 +1226,19 @@ where
     let base_model_file = denoiser
         .file_name()
         .map(|n| n.to_string_lossy().into_owned());
-    let metadata_for = |steps_done: u64| {
+    // `finished` is false for mid-run checkpoints: a step-5 file of a
+    // 300-step run must not claim a training-finished time, or a consumer
+    // computing duration from the pair gets a wrong answer for every
+    // checkpoint. `modelspec.date` still lands (the builder falls back to
+    // `started_at`), so a checkpoint is dated without claiming completion.
+    let metadata_for = |steps_done: u64, finished: bool| {
         crate::metadata::build_metadata(&crate::metadata::RunFacts {
             config,
             steps_done,
             dataset: Some(dataset_facts.clone()),
             base_model_file: base_model_file.clone(),
             started_at,
-            finished_at: crate::metadata::unix_now(),
+            finished_at: finished.then(crate::metadata::unix_now).flatten(),
         })
     };
 
@@ -1419,7 +1424,7 @@ where
             export_adapters(
                 &set,
                 ExportFormat::Krea2Diffusers,
-                Some(&metadata_for(step)),
+                Some(&metadata_for(step, false)),
                 &path,
             )
             .with_context(|| format!("writing checkpoint at step {step}"))?;
@@ -1433,7 +1438,7 @@ where
     export_adapters(
         &set,
         ExportFormat::Krea2Diffusers,
-        Some(&metadata_for(total)),
+        Some(&metadata_for(total, true)),
         &adapter_path,
     )
     .context("writing the final adapter export")?;

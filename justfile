@@ -371,3 +371,10 @@ krea2-reference:
 # pinned mmdit.py at regen time only; torch/transformers/diffusers via uv.
 fp8-reference:
     uv run reference/fp8_reference.py --out crates/loractl-core/tests/fixtures
+
+# Regenerate the LoRA `__metadata__` consumer-contract golden — the metadata
+# keys AUTOMATIC1111's Lora extension reads, extracted from PINNED upstream
+# source (tag v1.10.1) rather than transcribed. Needs network; the emitted
+# golden keeps `tests/lora_metadata_keys.rs` offline.
+lora-metadata-keys-reference:
+    uv run reference/lora_metadata_keys_reference.py --out crates/loractl-core/tests/golden

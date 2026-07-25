@@ -17,6 +17,40 @@
 //! | `modelspec.*` | Stability AI's [ModelSpec] schema | title/author/license/date/architecture/`trigger_phrase` |
 //! | `sshs_*` | sd-webui-additional-networks | the two file hashes (see [`crate::export`]) |
 //!
+//! ## Which consumer reads what (verified, 2026-07-25)
+//!
+//! An interop key nobody reads is indistinguishable from one nobody wrote,
+//! and the failure is silent — the file loads and shows nothing (the #137
+//! shape; see `.claude/rules/testing.md`). So the contract is **pinned
+//! mechanically**, not just described: `tests/lora_metadata_keys.rs` asserts
+//! every key a real consumer reads is either written here or carries a
+//! recorded reason for its absence, against a golden generated from that
+//! consumer's own source at a pinned tag
+//! (`reference/lora_metadata_keys_reference.py`, `just
+//! lora-metadata-keys-reference`).
+//!
+//! The consumer is AUTOMATIC1111's Lora extension at tag `v1.10.1`
+//! (`extensions-builtin/Lora/`) — the open-source tool that actually parses
+//! this header. ComfyUI ignores `__metadata__` entirely (its contract is the
+//! *tensor* keys, pinned by `tests/krea2_lora_keys.rs`) and Civitai is closed
+//! source, so neither can pin anything here. What that consumer does with
+//! each key:
+//!
+//! | key | read by |
+//! |---|---|
+//! | `ss_tag_frequency` | `ui_edit_user_metadata.py::build_tags` — ranks the tags and offers them for the LoRA's activation text. **This is the load-bearing trigger-word path**: A1111's own activation text comes from its user-metadata JSON, not from the file, and this is what populates the suggestions. |
+//! | `sshs_model_hash` | `network.py` — the file's identity |
+//! | `ss_output_name` | `network.py` — the alias shown in the UI |
+//! | `ss_base_model_version`, `ss_v2` | `network.py` — SD-version detection (both prefix/equality tests we correctly do not match: Krea 2 is neither SDXL nor SD2, and `ss_v2` is left unwritten) |
+//! | `ss_sd_model_name`, `ss_clip_skip`, `ss_network_module`, `ss_training_started_at`, `ss_bucket_info`, `ss_dataset_dirs`, `ss_resolution`, `ss_num_train_images` | `ui_edit_user_metadata.py::get_metadata_table` / `network.py`'s `metadata_tags_order` — the metadata panel |
+//!
+//! `ss_trained_words` and `modelspec.trigger_phrase` are **not** read by that
+//! extension; they are ai-toolkit/Civitai-side conventions, written because
+//! they are the explicit, unambiguous statement of the trigger phrase and
+//! cost nothing. The honest summary: `ss_tag_frequency` is what makes a
+//! trigger word discoverable in A1111 today, and it works because the
+//! trigger phrase is in the captions the frequency is derived from.
+//!
 //! ## What is derived vs. configured
 //!
 //! Anything a run already knows is **derived** here from the [`TrainConfig`]
@@ -72,9 +106,16 @@ use std::path::Path;
 
 /// The `__metadata__` map of a LoRA `.safetensors`.
 ///
-/// A `BTreeMap` (not a `HashMap`) so the written header is **deterministic**:
-/// key order is sorted, so two runs with the same inputs produce the same
-/// header bytes and a diff of two exports is readable.
+/// A `BTreeMap` (not a `HashMap`) so iteration is sorted and every reader of
+/// this type — `loractl inspect`, the tests, the `ss_`-prefix filter the
+/// hashes are computed over — sees a stable order.
+///
+/// It does **not** make the on-disk key order deterministic: `safetensors`
+/// takes the header map as a `HashMap` and serializes it in hash-iteration
+/// order, which `RandomState` randomizes. Nothing depends on that order —
+/// a JSON object with the same pairs has the same byte *length* whatever the
+/// order, so the tensor-data offsets, and therefore both `sshs_*` hashes, are
+/// unaffected.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoraMetadata(BTreeMap<String, String>);
 
@@ -299,14 +340,47 @@ fn quant_label(quant: Quant) -> Option<&'static str> {
     }
 }
 
-/// Format an `f32`/`f64` the way a config reader expects to see it back:
-/// `16` not `16.0` for whole values, full precision otherwise.
+/// Format an `f64` the way a config reader expects to see it back: `16` not
+/// `16.0` for whole values, the shortest round-tripping decimal otherwise.
 fn num(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         format!("{}", v as i64)
     } else {
         format!("{v}")
     }
+}
+
+/// [`num`] for an `f32`, formatting at **f32 precision**.
+///
+/// Not `num(v as f64)`: `{}` prints the shortest decimal that round-trips the
+/// type it is given, so widening first prints the f64 that the f32 happens to
+/// equal — `alpha: 12.8` would land in the header as `12.800000190734863`,
+/// and `dropout: 0.05` as `0.05000000074505806`. The config said `12.8`; the
+/// metadata must say `12.8`. Whole values (the defaults, and every value the
+/// example configs use) are identical either way, which is exactly why this
+/// needs a test with a non-exact value — see
+/// `.claude/rules/burn-optimizer-and-dropout.md` on defaults that make right
+/// and wrong wiring indistinguishable.
+fn num32(v: f32) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// An `f32` as a JSON **number** at f32 precision.
+///
+/// `serde_json`'s `From<f32>` stores `f as f64` (`Number::from_f32`), so
+/// `json!(12.8f32)` renders `12.800000190734863` — the same widening trap as
+/// [`num32`], one layer down. Routing through the f32's shortest decimal and
+/// back gives the f64 that *prints* as `12.8`.
+fn json_f32(v: f32) -> serde_json::Value {
+    num32(v)
+        .parse::<f64>()
+        .ok()
+        .and_then(serde_json::Number::from_f64)
+        .map_or(serde_json::Value::Null, serde_json::Value::Number)
 }
 
 /// Build the `__metadata__` map for an exported adapter.
@@ -374,8 +448,8 @@ pub fn build_metadata(facts: &RunFacts<'_>) -> LoraMetadata {
     // ---- Network topology. ----
     m.set("ss_network_module", "networks.lora");
     m.set("ss_network_dim", config.lora.rank.to_string());
-    m.set("ss_network_alpha", num(config.lora.alpha as f64));
-    m.set("ss_network_dropout", num(config.lora.dropout as f64));
+    m.set("ss_network_alpha", num32(config.lora.alpha));
+    m.set("ss_network_dropout", num32(config.lora.dropout));
     // Per-target rank/alpha overrides and the target patterns themselves have
     // no kohya key of their own; kohya's `ss_network_args` is exactly the
     // "arguments this network was built with" slot, so they ride there.
@@ -390,7 +464,7 @@ pub fn build_metadata(facts: &RunFacts<'_>) -> LoraMetadata {
                 o.insert("rank".into(), r.into());
             }
             if let Some(a) = t.alpha {
-                o.insert("alpha".into(), a.into());
+                o.insert("alpha".into(), json_f32(a));
             }
             serde_json::Value::Object(o)
         })
@@ -495,6 +569,17 @@ pub fn build_metadata(facts: &RunFacts<'_>) -> LoraMetadata {
             m.set("ss_num_epochs", epochs.to_string());
         }
         m.set("ss_bucket_info", bucket_info_json(ds));
+        // kohya's per-subset counts, which A1111's metadata panel displays.
+        // loractl has no repeat mechanism, so `n_repeats` is truthfully 1.
+        let mut dirs = serde_json::Map::new();
+        dirs.insert(
+            ds.name.clone(),
+            serde_json::json!({"n_repeats": 1, "img_count": ds.entries.len()}),
+        );
+        m.set(
+            "ss_dataset_dirs",
+            serde_json::Value::Object(dirs).to_string(),
+        );
         // Keyed by subset directory, as kohya writes it — a UI shows the
         // frequencies per folder.
         let mut by_subset = serde_json::Map::new();
@@ -558,11 +643,25 @@ pub fn read_metadata(path: &Path) -> Result<LoraMetadata> {
     file.read_exact(&mut len_bytes)
         .with_context(|| format!("{} is too short to be a safetensors file", path.display()))?;
     let n = u64::from_le_bytes(len_bytes);
-    // The format's own ceiling (100 MB) — a bogus length must not turn into a
-    // multi-GB allocation.
+    // Validate the claimed header length BEFORE allocating for it. Two
+    // bounds, because either alone lets a hostile or corrupt file steer the
+    // allocation: the format's own 100 MB ceiling, and the file's actual
+    // size — an 8-byte file claiming a 100 MB header must cost 8 bytes to
+    // reject, not 100 MB.
     if n > 100_000_000 {
         bail!(
             "{}: safetensors header claims {n} bytes — not a safetensors file",
+            path.display()
+        );
+    }
+    let file_len = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
+    if n + 8 > file_len {
+        bail!(
+            "{}: safetensors header claims {n} bytes but the file is {file_len} — truncated or \
+             not a safetensors file",
             path.display()
         );
     }
@@ -617,5 +716,28 @@ mod tests {
     fn numbers_render_without_trailing_zeros() {
         assert_eq!(num(16.0), "16");
         assert_eq!(num(0.0001), "0.0001");
+        assert_eq!(num32(16.0), "16");
+    }
+
+    /// Pins BOTH sides of the widening trap: what the f32 formatters produce,
+    /// and what the `as f64` / `json!(f32)` spellings they replace produce.
+    /// If `serde_json` ever renders `From<f32>` at f32 precision, the last
+    /// assertion fails and [`json_f32`] can be deleted — a loud signal rather
+    /// than a workaround that outlives its cause.
+    #[test]
+    fn f32_values_are_not_widened_before_formatting() {
+        assert_eq!(num32(12.8), "12.8");
+        assert_eq!(
+            num(12.8f32 as f64),
+            "12.800000190734863",
+            "the trap num32 exists to avoid"
+        );
+        assert_eq!(num32(0.05), "0.05");
+        assert_eq!(json_f32(2.7).to_string(), "2.7");
+        assert_eq!(
+            serde_json::json!(2.7f32).to_string(),
+            "2.700000047683716",
+            "serde_json's From<f32> still stores `f as f64`"
+        );
     }
 }

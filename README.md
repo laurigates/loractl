@@ -157,7 +157,13 @@ metadata:
 ```
 
 `--trigger-word` overrides the list per run; `metadata.embed: false` (or
-`--no-metadata`) writes no header at all, for a byte-reproducible export.
+`--no-metadata`) writes no header at all, for a byte-reproducible export. The
+block applies to the **diffusion** trainer's exports — the synthetic/MNIST
+demo writes a burn-native adapter plus a JSON sidecar and ignores it.
+
+Which keys a consumer actually reads is recorded (with where it was checked)
+in `crates/loractl-core/src/metadata.rs` — notably `ss_tag_frequency`, which
+is what surfaces a trigger word in A1111's LoRA metadata editor.
 Read any `.safetensors` file's header back — tensors are never touched, so it
 is instant even on a multi-gigabyte checkpoint:
 

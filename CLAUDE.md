@@ -107,7 +107,13 @@ an `Option<&LoraMetadata>` parameter). Derived-not-configured is the rule:
 only trigger words/title/author/license/tags/comment are authored. `loractl
 inspect <file>` reads any safetensors header back (header bytes only, no
 tensors); `metadata.embed: false` / `--no-metadata` is a byte-identical
-opt-out. See the roadmap in `README.md`.
+opt-out. The header has its own **consumer-contract** pin, the #137 rule one
+layer up from tensor names: `tests/lora_metadata_keys.rs` asserts every
+metadata key a real consumer reads is written or deliberately omitted with a
+recorded reason, against a golden generated from AUTOMATIC1111's Lora
+extension at a pinned tag (`just lora-metadata-keys-reference`) — the tool
+that actually parses this header, since ComfyUI ignores `__metadata__` and
+Civitai is closed. See the roadmap in `README.md`.
 
 **Next direction (M14's remaining checkbox, #25):** the real run — train a
 LoRA on `krea/Krea-2-Raw` through the landed `DiffusionTrainer` and prove

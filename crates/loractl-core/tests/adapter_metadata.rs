@@ -294,6 +294,12 @@ fn builder_derives_the_training_record() {
         serde_json::json!({"sks-dog": {"sks dog": 3, "park": 2, "sunny": 1, "indoors": 1}}),
         "captions split on commas and trim, keyed by subset dir — kohya's shape"
     );
+    assert_eq!(
+        nested(&meta, "ss_dataset_dirs"),
+        serde_json::json!({"sks-dog": {"n_repeats": 1, "img_count": 3}}),
+        "A1111's metadata panel reads this; loractl has no repeat mechanism, \
+         so n_repeats is truthfully 1"
+    );
 
     // The resolution-dependent shift (#84) has no single value to report, so
     // its anchors are what a reader needs instead.
@@ -325,6 +331,34 @@ fn builder_derives_the_training_record() {
     ] {
         assert!(meta.get(absent).is_none(), "{absent} must not be written");
     }
+}
+
+/// Non-whole `f32` config values must reach the header at **f32 precision**.
+///
+/// `num(v as f64)` would widen first and print the f64's shortest decimal —
+/// `alpha: 12.8` landing as `12.800000190734863`, `dropout: 0.05` as
+/// `0.05000000074505806`. Every other test here uses whole values (8.0, 0.0),
+/// which are byte-identical under both spellings, so this is the only case
+/// that can tell the two apart — the defaults-hide-the-bug shape
+/// `.claude/rules/burn-optimizer-and-dropout.md` describes. The same trap
+/// exists one layer down in `serde_json`'s `From<f32>` (it stores `f as f64`),
+/// which is why the per-target alpha is checked too.
+#[test]
+fn non_exact_f32_config_values_keep_f32_precision() {
+    let mut config = config();
+    config.lora.alpha = 12.8;
+    config.lora.dropout = 0.05;
+    config.lora.targets[0].alpha = Some(2.7);
+    let entries = entries();
+    let meta = metadata_for(&config, &entries);
+
+    assert_eq!(meta.get("ss_network_alpha"), Some("12.8"));
+    assert_eq!(meta.get("ss_network_dropout"), Some("0.05"));
+    assert_eq!(
+        nested(&meta, "ss_network_args")["targets"][0]["alpha"].to_string(),
+        "2.7",
+        "the JSON number must render at f32 precision too"
+    );
 }
 
 #[test]

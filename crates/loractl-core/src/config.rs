@@ -73,6 +73,13 @@ pub struct TrainConfig {
 /// `#[serde(default)]` on the struct plus the hand-written [`Default`] means
 /// every existing YAML — which carries no `metadata:` block — deserializes
 /// unchanged and still gets the derived (`ss_*`/`modelspec.*`) fields.
+///
+/// **Scope:** this block applies to the **diffusion** trainer's interop
+/// exports (`model.base` pointing at a Krea 2-layout checkpoint). The
+/// synthetic/MNIST `BurnTrainer` demo writes a burn-native adapter plus a
+/// JSON sidecar instead, and ignores this block — its adapter is attached to
+/// no public base model, so it is not an ecosystem artifact. Setting
+/// `metadata:` in `config/examples/lora.yaml` is a no-op.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MetadataConfig {

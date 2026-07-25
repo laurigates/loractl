@@ -1,0 +1,23 @@
+{
+  "consumer": "AUTOMATIC1111/stable-diffusion-webui extensions-builtin/Lora",
+  "ref": "v1.10.1",
+  "sources": [
+    "extensions-builtin/Lora/network.py",
+    "extensions-builtin/Lora/ui_edit_user_metadata.py"
+  ],
+  "keys_read": [
+    "ss_base_model_version",
+    "ss_bucket_info",
+    "ss_clip_skip",
+    "ss_dataset_dirs",
+    "ss_network_module",
+    "ss_num_train_images",
+    "ss_output_name",
+    "ss_resolution",
+    "ss_sd_model_name",
+    "ss_tag_frequency",
+    "ss_training_started_at",
+    "ss_v2",
+    "sshs_model_hash"
+  ]
+}
