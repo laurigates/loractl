@@ -237,7 +237,10 @@ the recomputed block is the follow-on if the transient needs shrinking.
 the prescribed *mechanism* did not survive contact: a custom autodiff op
 cannot recompute a block on burn 0.21.
 
-## Addendum 3 (2026-07-23 — the fix landed and the fit is MEASURED; #134, PR #135)
+## Addendum 3 (2026-07-25 — the fix landed and the fit is MEASURED; #134, PR #135)
+
+*Records events of 2026-07-19 (fix merged, fit probed) through 2026-07-24
+(the upstream deadlock fix merged).*
 
 Addendum 2's verdict is executed. Its arithmetic held; its prescribed
 mechanism did not.
@@ -284,12 +287,39 @@ the restructuring just happens at the step level rather than the op level.
 
 | | monolithic (Addendum 2) | block-checkpointed |
 |---|---|---|
-| logical demand / peak | **67.9 GiB** pinned per forward | **19.4 GB** peak |
+| figure | **67.9 GiB** logical demand pinned per forward | **19.4 GB** peak device memory |
 | outcome at 512px int4 | OOM storm, garbage loss | **zero-panic**, 3/3 steps, 196/196 sites |
 
-~4 GB of headroom on the card. Addendum 2's 16–18 GB projection was right to
-within ~1.4 GB, slightly under the measured peak. The gate was the one this
-ADR insists on — **zero panics**, not a survived storm.
+**The two columns are different quantities and are not subtractable.** The
+67.9 GiB is host-side *logical demand* from the retention ledger — what the
+step would need if nothing failed, measurable only because the ledger records
+retention decisions rather than allocations. The 19.4 GB is *actual peak
+device memory*, `nvidia-smi`-sampled by `just step-probe`. The pairing shows
+a step that could not fit now fits; it does not express a ~48 GiB "saving".
+
+~4 GB of headroom on the card, so Addendum 2's 16–18 GB projection landed
+~1.4 GB under the measured peak. The gate was the one this ADR insists on —
+**zero panics**, not a survived storm.
+
+**Provenance and units — read before comparing your own run.** The 19.4 GB
+figure is as reported on [#134] from the on-box run (2026-07-19); the probe's
+raw summary line was not captured into the repo, so two things are *not*
+pinned here and a re-run should fix that by pasting the literal
+`STEP_PROBE_SUMMARY … baseline_mib=… peak_mib=…` line into this addendum:
+
+- **Unit basis (GB vs GiB) is unresolved** — `step_probe.rs` reports MiB, and
+  the reported figure was rounded to "19.4 GB"; at this magnitude the GB/GiB
+  distinction is ~7%, which is the same order as the gap to the projection.
+  Addendum 2's "16–18 GB" carries the same ambiguity, so the comparison
+  between them is at least self-consistent.
+- **Total vs above-baseline**: `step_probe` prints both. The reported ~4 GB
+  headroom against a 24 GB card implies the *total* reading, but that is an
+  inference from the arithmetic, not a stated basis.
+
+Neither ambiguity threatens the verdict — the discriminator was always
+zero-panic vs OOM, not a specific byte count — but the number is quoted
+downstream (README, roadmap, example configs), so its basis should be pinned
+on the next probe run.
 
 Numerics: `tests/block_ckpt.rs` pins the checkpointed loss and **every**
 per-`ParamId` adapter gradient bit-identical to the monolithic path on the

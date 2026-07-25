@@ -7,10 +7,10 @@ current-direction detail. Milestones are tracked as GitHub issues #1–#4,
 
 ## Where the project is
 
-Milestones M1–M15 (#1–#4, #17–#24, plus #82) have landed. The remaining open
-box is **M14's real-run interop proof** (#25): train a LoRA on
-`krea/Krea-2-Raw` through the landed `DiffusionTrainer` and prove the exported
-adapter loads and visibly conditions generation in ComfyUI / Krea-2-Turbo.
+Milestones M1–M15 (#1–#4, #17–#25, plus #82) have landed, **M14 included** —
+its real-run interop proof closed 2026-07-23: a LoRA trained on
+`krea/Krea-2-Raw` through `DiffusionTrainer` visibly conditions Krea-2-Turbo
+generation in ComfyUI, on a 24 GB card (details below).
 
 The strategy and gap analysis for the Krea 2 image-diffusion target is
 [ADR-0004](adrs/0004-krea2-image-diffusion-target.md).

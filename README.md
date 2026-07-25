@@ -205,9 +205,9 @@ Fitting the ~12.8B Krea 2 base on a single GPU is a memory problem, addressed
 by three orthogonal knobs above: `precision: f16` (wgpu, ~24.6 GB on a 48 GiB
 host), `grad_checkpointing`, and frozen-base `quant: int8`/`int4` (the QLoRA
 pattern — quantized frozen base, f32 adapters; `ndarray`/`cuda` + f32 only).
-The measured reality on a 24 GB card is that the training step is **VRAM-bound**
-at the full LoRA target set; int4 + block-level gradient checkpointing is the
-route in progress. The full analysis is
+The monolithic training step is **VRAM-bound** on a 24 GB card at the full LoRA
+target set; **int4 + block-level gradient checkpointing is the route that fixes
+it**, measured at 19.4 GB peak (512px, 196/196 sites). The full analysis is
 [ADR-0005](docs/adrs/0005-int4-training-vram-bound.md); the precision-accuracy
 trade-off is [ADR-0006](docs/adrs/0006-reduced-precision-accuracy-gate.md).
 
