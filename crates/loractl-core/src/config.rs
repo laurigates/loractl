@@ -51,6 +51,70 @@ pub struct TrainConfig {
     /// `task: flow-matching` (defaults to the SD3/kohya production values).
     #[serde(default)]
     pub flow: FlowConfig,
+
+    /// Author-supplied provenance embedded in the exported LoRA's
+    /// safetensors `__metadata__` header (trigger words, title, license, …).
+    /// Everything a *run* already knows — rank, alpha, lr, steps, buckets,
+    /// tag frequency — is derived, not configured. See
+    /// [`crate::metadata`].
+    #[serde(default)]
+    pub metadata: MetadataConfig,
+}
+
+/// Author-supplied metadata for the exported adapter's `__metadata__` header.
+///
+/// The `.safetensors` format carries a JSON header ahead of the tensor data,
+/// so a trainer can embed provenance directly in the artifact — which is how
+/// ComfyUI/Forge/A1111/Civitai learn a LoRA's trigger words, base model, and
+/// training hyperparameters. Only the fields a run *cannot* know go here; the
+/// rest ([`crate::metadata::build_metadata`]) is derived from the
+/// [`TrainConfig`] and the dataset.
+///
+/// `#[serde(default)]` on the struct plus the hand-written [`Default`] means
+/// every existing YAML — which carries no `metadata:` block — deserializes
+/// unchanged and still gets the derived (`ss_*`/`modelspec.*`) fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetadataConfig {
+    /// Write the `__metadata__` header at all. `true` by default — an
+    /// adapter with no metadata is the worst-behaved artifact in the
+    /// ecosystem (a UI can show no trigger word and no base model). Set
+    /// `false` for a byte-reproducible export (the derived fields embed a
+    /// timestamp) or to keep run details out of a published file.
+    pub embed: bool,
+    /// The caption tokens that activate this LoRA, e.g. `["sks dog"]`.
+    /// Emitted as `ss_trained_words` (a JSON array) and, for the first entry,
+    /// `modelspec.trigger_phrase`.
+    pub trigger_words: Vec<String>,
+    /// Human-readable name (`modelspec.title`). Defaults to
+    /// [`OutputConfig::name`] when unset.
+    pub title: Option<String>,
+    /// One-line summary (`modelspec.description`).
+    pub description: Option<String>,
+    /// Who trained it (`modelspec.author`).
+    pub author: Option<String>,
+    /// SPDX id or free text (`modelspec.license`).
+    pub license: Option<String>,
+    /// Free-form tags for gallery/search UIs (`modelspec.tags`, comma-joined
+    /// as the spec requires).
+    pub tags: Vec<String>,
+    /// Free-form note carried through as kohya's `ss_training_comment`.
+    pub comment: Option<String>,
+}
+
+impl Default for MetadataConfig {
+    fn default() -> Self {
+        Self {
+            embed: true,
+            trigger_words: Vec::new(),
+            title: None,
+            description: None,
+            author: None,
+            license: None,
+            tags: Vec::new(),
+            comment: None,
+        }
+    }
 }
 
 /// The base model being adapted.

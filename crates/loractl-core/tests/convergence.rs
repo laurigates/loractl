@@ -10,8 +10,8 @@
 //! test in `mnist_lora.rs`.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -90,6 +90,7 @@ fn synthetic_training_converges() {
         compute: ComputeConfig::default(),
         // Unused by the classification task.
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     };
 
     let mut losses = Vec::new();

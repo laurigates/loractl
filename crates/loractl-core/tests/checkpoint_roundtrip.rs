@@ -18,8 +18,8 @@
 
 use loractl_core::adapter;
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -83,6 +83,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
         },
         compute: ComputeConfig::default(),
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     }
 }
 

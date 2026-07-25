@@ -41,6 +41,11 @@ enum Command {
     /// Run one deterministic sample forward pass from a trained adapter.
     Sample(SampleCmd),
 
+    /// Print a `.safetensors` file's embedded metadata — trigger words, base
+    /// model, and the training record. Reads only the header, so it is
+    /// instant even on a multi-gigabyte checkpoint.
+    Inspect(InspectCmd),
+
     /// Scaffold a starter training config from a template (to stdout, or a file
     /// with `-o`). Presets: `synthetic` (default), `wgpu`, `flow`, `krea2`,
     /// `krea2-comfyui` (scattered ComfyUI file paths).
@@ -220,6 +225,30 @@ struct TrainCmd {
     /// error, never a silent fetch.
     #[arg(long)]
     tokenizer: Option<PathBuf>,
+
+    /// Override `metadata.trigger_words`: the caption token(s) that activate
+    /// the trained LoRA, embedded in the exported file's `__metadata__`
+    /// header (`ss_trained_words` / `modelspec.trigger_phrase`). Repeatable;
+    /// passing any replaces the config's whole list.
+    #[arg(long = "trigger-word", value_name = "WORD")]
+    trigger_words: Vec<String>,
+
+    /// Override `metadata.embed`: write no `__metadata__` header at all.
+    /// The export then carries only tensors (byte-reproducible; no
+    /// timestamps, no run details).
+    #[arg(long)]
+    no_metadata: bool,
+}
+
+#[derive(Args)]
+struct InspectCmd {
+    /// Path to the `.safetensors` file to read metadata from.
+    file: PathBuf,
+
+    /// Print the raw metadata map as JSON instead of the grouped, key-sorted
+    /// listing (nested values such as `ss_tag_frequency` stay JSON strings).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -280,6 +309,7 @@ pub fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Train(cmd) => train(cmd),
         Command::Sample(cmd) => sample(cmd),
+        Command::Inspect(cmd) => inspect(cmd),
         Command::Init(cmd) => init(cmd),
         Command::Completions { shell } => {
             let mut cmd = Cli::command();
@@ -349,7 +379,86 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     if let Some(tokenizer) = &cmd.tokenizer {
         config.model.tokenizer = Some(tokenizer.clone());
     }
+    // Metadata overrides (#154). An empty `--trigger-word` list means "not
+    // passed", so the config's list stands — the same partial-override
+    // semantics as every flag above.
+    if !cmd.trigger_words.is_empty() {
+        config.metadata.trigger_words = cmd.trigger_words.clone();
+    }
+    if cmd.no_metadata {
+        config.metadata.embed = false;
+    }
     Ok(config)
+}
+
+/// Render a `.safetensors` file's `__metadata__` header.
+///
+/// Core reads it ([`loractl_core::read_metadata`] — header bytes only, no
+/// tensors); this function only decides how it looks, which is the
+/// core-emits/CLI-renders split the workspace is built around.
+fn inspect(cmd: InspectCmd) -> Result<()> {
+    let meta = loractl_core::read_metadata(&cmd.file)
+        .with_context(|| format!("reading metadata from {}", cmd.file.display()))?;
+
+    if cmd.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(meta.as_map()).context("rendering metadata as JSON")?
+        );
+        return Ok(());
+    }
+
+    if meta.is_empty() {
+        println!(
+            "{}: no __metadata__ header (diffusers scripts and minimal trainers write none)",
+            cmd.file.display()
+        );
+        return Ok(());
+    }
+
+    println!("{}  ({} keys)", cmd.file.display(), meta.len());
+    // Grouped by vocabulary, in the order a reader cares about: what it is,
+    // then how it was trained, then the file's identity hashes. Anything with
+    // an unknown prefix still prints, under "other" — never silently dropped.
+    for (label, prefix) in [
+        ("modelspec", "modelspec."),
+        ("training (kohya ss_*)", "ss_"),
+        ("hashes", "sshs_"),
+    ] {
+        let group = meta.with_prefix(prefix);
+        if group.is_empty() {
+            continue;
+        }
+        println!("\n{label}:");
+        for (key, value) in group.iter() {
+            println!("  {key} = {}", pretty_value(value));
+        }
+    }
+    let others: Vec<(&str, &str)> = meta
+        .iter()
+        .filter(|(k, _)| {
+            !k.starts_with("modelspec.") && !k.starts_with("ss_") && !k.starts_with("sshs_")
+        })
+        .collect();
+    if !others.is_empty() {
+        println!("\nother:");
+        for (key, value) in others {
+            println!("  {key} = {}", pretty_value(value));
+        }
+    }
+    Ok(())
+}
+
+/// Values such as `ss_tag_frequency` are JSON *inside* a string; re-render
+/// those compactly-parsed rather than as an escape-laden blob, and leave
+/// everything else verbatim.
+fn pretty_value(value: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(value) {
+        Ok(v) if v.is_object() || v.is_array() => {
+            serde_json::to_string(&v).unwrap_or_else(|_| value.to_string())
+        }
+        _ => value.to_string(),
+    }
 }
 
 fn train(cmd: TrainCmd) -> Result<()> {
@@ -506,6 +615,8 @@ mod tests {
             text_encoder: None,
             vae: None,
             tokenizer: None,
+            trigger_words: Vec::new(),
+            no_metadata: false,
         }
     }
 

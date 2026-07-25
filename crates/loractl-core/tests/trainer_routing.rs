@@ -16,8 +16,8 @@
 //!   classification task.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{TrainConfig, TrainEvent, select_trainer};
 use std::path::PathBuf;
@@ -87,6 +87,7 @@ fn config(base: &str, out: &TempDir) -> TrainConfig {
         },
         compute: ComputeConfig::default(),
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     }
 }
 

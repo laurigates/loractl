@@ -15,8 +15,8 @@
 //! milliseconds.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
-    TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
+    OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -82,6 +82,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
         },
         compute: ComputeConfig::default(),
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     };
 
     let mut losses = Vec::new();

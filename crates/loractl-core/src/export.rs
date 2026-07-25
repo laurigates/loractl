@@ -28,11 +28,13 @@
 //! early interop lock (see the milestone plan / ADR-0004).
 
 use crate::adapters::LoraAdapters;
+use crate::metadata::LoraMetadata;
 use anyhow::{Context, Result, bail};
 use burn::module::Param;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Tensor, TensorData};
 use safetensors::tensor::{Dtype, View};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -207,8 +209,57 @@ fn scalar_f32(value: f32) -> OwnedF32Tensor {
     }
 }
 
+/// The two file hashes sd-webui-additional-networks indexes LoRAs by, computed
+/// over a serialized safetensors buffer (`sshs_model_hash`,
+/// `sshs_legacy_hash`).
+///
+/// Both algorithms are sd-webui-additional-networks', which kohya-ss/sd-scripts
+/// calls at save time (`precalculate_safetensors_hashes`):
+///
+/// - **model hash** — SHA-256 over the **tensor-data region** (everything past
+///   the JSON header). Header-offset-independent, so a consumer recomputing it
+///   from the finished file gets the same value even though the file it hashes
+///   carries more metadata than the buffer it was computed from.
+/// - **legacy hash** — SHA-256 of the 64 KiB at the fixed file offset
+///   `0x100000`, truncated to 8 hex chars. That offset makes it
+///   header-size-**dependent**, and therefore not recomputable from the
+///   finished file (adding the hashes themselves grows the header — the
+///   computation cannot include its own output). sd-scripts has the same
+///   property; it is a legacy index key, not an integrity check. Files smaller
+///   than 1 MiB hash an empty read, exactly as the Python does.
+fn sd_webui_hashes(bytes: &[u8]) -> (String, String) {
+    // The 8-byte little-endian header length prefixes the JSON header.
+    let n = u64::from_le_bytes(
+        bytes[..8]
+            .try_into()
+            .expect("serialized buffer has a header"),
+    );
+    let data_start = (n as usize) + 8;
+
+    let mut model = Sha256::new();
+    model.update(&bytes[data_start.min(bytes.len())..]);
+
+    const LEGACY_OFFSET: usize = 0x100000;
+    const LEGACY_LEN: usize = 0x10000;
+    let mut legacy = Sha256::new();
+    if bytes.len() > LEGACY_OFFSET {
+        let end = (LEGACY_OFFSET + LEGACY_LEN).min(bytes.len());
+        legacy.update(&bytes[LEGACY_OFFSET..end]);
+    }
+
+    let hex = |d: Sha256| {
+        d.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let legacy = hex(legacy);
+    (hex(model), legacy[..8].to_string())
+}
+
 /// Export a [`LoraAdapters`] set to `path` as a portable `.safetensors` in
-/// `fmt`'s naming/layout convention.
+/// `fmt`'s naming/layout convention, with `metadata` in the file's
+/// `__metadata__` header.
 ///
 /// For each delta, three tensors are written under the format's keys:
 /// - **down** = `lora_a.weight` transposed to `[rank, d_in]`
@@ -221,9 +272,22 @@ fn scalar_f32(value: f32) -> OwnedF32Tensor {
 /// out (mirroring how the GPT-2 loader keeps HF `Conv1D` weights un-transposed
 /// on the way *in*). The burn-native snapshot ([`crate::adapter`]) remains the
 /// internal checkpoint format — this is strictly the outward-facing copy.
+///
+/// ## Metadata and the two hashes
+///
+/// `metadata` (from [`build_metadata`](crate::metadata::build_metadata)) is
+/// written verbatim, plus the `sshs_model_hash` / `sshs_legacy_hash` pair this
+/// function computes — it can only be computed once the tensors are laid out,
+/// which is why the hashes are added here rather than by the builder. Following
+/// sd-scripts, the hashed buffer carries only the **`ss_*`** subset of the
+/// metadata: user-editable `modelspec.*` fields must not change a file's
+/// identity. `None` (or an empty map) writes no header at all — the
+/// `metadata.embed: false` path, and what keeps the export goldens
+/// byte-stable.
 pub fn export_adapters<B: Backend>(
     set: &LoraAdapters<B>,
     fmt: ExportFormat,
+    metadata: Option<&LoraMetadata>,
     path: &Path,
 ) -> Result<()> {
     let mapper = fmt.mapper();
@@ -254,7 +318,29 @@ pub fn export_adapters<B: Backend>(
     // Borrow the owned tensors as `View`s for the serializer.
     let views: Vec<(&str, &OwnedF32Tensor)> =
         tensors.iter().map(|(k, t)| (k.as_str(), t)).collect();
-    safetensors::serialize_to_file(views, None, path)
+
+    let header = match metadata.filter(|m| !m.is_empty()) {
+        None => None,
+        Some(meta) => {
+            // Pass 1: serialize with the ss_* subset only, to hash. sd-scripts
+            // does the same double pass for the same reason — the hashes
+            // describe the tensors, so they cannot be inputs to themselves.
+            let hashed = safetensors::serialize(
+                views.clone(),
+                Some(meta.with_prefix("ss_").into_map().into_iter().collect()),
+            )
+            .context("serializing the adapter export for hashing")?;
+            let (model_hash, legacy_hash) = sd_webui_hashes(&hashed);
+            drop(hashed);
+
+            let mut full = meta.clone();
+            full.set("sshs_model_hash", model_hash);
+            full.set("sshs_legacy_hash", legacy_hash);
+            Some(full.into_map().into_iter().collect())
+        }
+    };
+
+    safetensors::serialize_to_file(views, header, path)
         .with_context(|| format!("writing adapter export to {}", path.display()))?;
 
     Ok(())

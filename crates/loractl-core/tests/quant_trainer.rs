@@ -20,8 +20,8 @@
 //!    fp8-snapshot branch (fp8 → f32 → int8).
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig,
-    OutputConfig, TargetSpec, TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig,
+    ModelVariant, OptimConfig, OutputConfig, TargetSpec, TaskKind,
 };
 use loractl_core::{
     BackendKind, BurnTrainer, DiffusionTrainer, Precision, Quant, TrainConfig, TrainEvent, Trainer,
@@ -127,6 +127,7 @@ fn config(out: &TempDir, dataset: PathBuf, steps: u64) -> TrainConfig {
         },
         compute: ComputeConfig::default(),
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     }
 }
 

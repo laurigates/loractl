@@ -101,7 +101,7 @@ fn exported_keys(dir: &std::path::Path) -> Vec<String> {
     assert_eq!(set.deltas.len(), EXPECTED_SITES, "every site gets a delta");
 
     let path = dir.join("krea2-contract.safetensors");
-    export_adapters(&set, ExportFormat::Krea2Diffusers, &path).expect("export succeeds");
+    export_adapters(&set, ExportFormat::Krea2Diffusers, None, &path).expect("export succeeds");
 
     let bytes = std::fs::read(&path).expect("export is readable");
     let st = SafeTensors::deserialize(&bytes).expect("export parses");

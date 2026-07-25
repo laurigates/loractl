@@ -323,6 +323,12 @@ pub struct PreparedDataset<B: Backend> {
     pub items: Vec<PreparedItem<B>>,
     /// The bucket set the items reference.
     pub buckets: Vec<Bucket>,
+    /// The scan that produced [`Self::items`], index-for-index — captions and
+    /// bucket assignments kept alongside the encoded tensors so the adapter's
+    /// `ss_tag_frequency`/`ss_bucket_info` metadata
+    /// ([`crate::metadata`]) describes the data this run actually consumed,
+    /// rather than a second scan of a folder that may have changed since.
+    pub entries: Vec<DatasetEntry>,
 }
 
 /// One training batch: same-bucket examples concatenated on the batch dim.
@@ -479,5 +485,9 @@ pub fn prepare_dataset<B: Backend>(
         });
     }
 
-    Ok(PreparedDataset { items, buckets })
+    Ok(PreparedDataset {
+        items,
+        buckets,
+        entries,
+    })
 }

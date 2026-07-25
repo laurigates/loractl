@@ -78,6 +78,7 @@ pub mod fp8;
 pub mod gpt2;
 pub mod hf;
 pub mod lora;
+pub mod metadata;
 pub mod mmdit;
 pub mod model;
 pub mod probe;
@@ -91,14 +92,15 @@ pub mod training_adapter;
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use burn_trainer::BurnTrainer;
 pub use config::{
-    BackendKind, ComputeConfig, FlowConfig, ModelVariant, Precision, Quant, ShiftMode, TaskKind,
-    TrainConfig,
+    BackendKind, ComputeConfig, FlowConfig, MetadataConfig, ModelVariant, Precision, Quant,
+    ShiftMode, TaskKind, TrainConfig,
 };
 pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
 pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters, import_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};
+pub use metadata::{LoraMetadata, RunFacts, build_metadata, read_metadata};
 pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};

@@ -64,7 +64,13 @@ VAE, and text encoder were all greenfield in burn.
   the consumer's, which is the gap
   [#137](https://github.com/laurigates/loractl/issues/137) surfaced. ComfyUI
   accepts both the bare diffusers key we emit and the native
-  `diffusion_model.blocks.N.*` form community LoRAs use.
+  `diffusion_model.blocks.N.*` form community LoRAs use. Every export also
+  carries a safetensors `__metadata__` header (`src/metadata.rs`): kohya
+  `ss_*` (network topology, optimizer, buckets, `ss_tag_frequency`,
+  `ss_trained_words`), `modelspec.*`, and the `sshs_*` sd-webui hashes — the
+  provenance ComfyUI/Forge/Civitai read back. Author-supplied fields live in a
+  `metadata:` config block; everything a run knows is derived. `loractl
+  inspect` prints any file's header.
 - **M7 — GPU compute backend** ([#18](https://github.com/laurigates/loractl/issues/18)).
   The training loop is generic over `B: AutodiffBackend`; `BurnTrainer`
   dispatches a config-selected backend (`compute.backend`) at run time —

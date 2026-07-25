@@ -96,8 +96,17 @@ into `load_quant_module`'s f32 transient is the tracked #83 follow-up).
 Timestep-shift parity (#84) landed as `flow.shift_mode:
 resolution` — per-batch `exp(μ(gh·gw))` with Krea 2's ai-toolkit-documented
 anchors (0.5@256 → 1.15@6400 image tokens) as the `FlowConfig` defaults,
-golden-pinned; the krea2 example configs use it. See
-the roadmap in `README.md`.
+golden-pinned; the krea2 example configs use it. LoRA metadata
+landed as `src/metadata.rs` + a `metadata:` config block: every interop
+export now writes a safetensors `__metadata__` header — kohya `ss_*` (network
+topology, optimizer, `ss_bucket_info`, `ss_tag_frequency` derived from the
+dataset's captions, `ss_trained_words`), `modelspec.*`, and the two `sshs_*`
+sd-webui hashes computed at write time in `export.rs` (`export_adapters` gained
+an `Option<&LoraMetadata>` parameter). Derived-not-configured is the rule:
+only trigger words/title/author/license/tags/comment are authored. `loractl
+inspect <file>` reads any safetensors header back (header bytes only, no
+tensors); `metadata.embed: false` / `--no-metadata` is a byte-identical
+opt-out. See the roadmap in `README.md`.
 
 **M14 is complete (#25, closed 2026-07-23):** a LoRA trained on
 `krea/Krea-2-Raw` through `DiffusionTrainer` visibly conditions

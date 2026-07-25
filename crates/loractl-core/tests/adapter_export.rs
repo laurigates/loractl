@@ -109,7 +109,7 @@ fn kohya_export_matches_golden() {
     // exactly how a ComfyUI/Krea LoRA loader reads it.
     let out = TempDir::new("adapter-export");
     let path = out.0.join("adapter.safetensors");
-    export_adapters(&set, ExportFormat::KohyaSs, &path).expect("export succeeds");
+    export_adapters(&set, ExportFormat::KohyaSs, None, &path).expect("export succeeds");
 
     let bytes = std::fs::read(&path).expect("read exported file");
     let st = SafeTensors::deserialize(&bytes).expect("valid safetensors");
@@ -173,7 +173,7 @@ fn multi_delta_export_writes_distinct_keys_per_target() {
 
     let out = TempDir::new("adapter-export-multi");
     let path = out.0.join("adapter.safetensors");
-    export_adapters(&set, ExportFormat::KohyaSs, &path).expect("export succeeds");
+    export_adapters(&set, ExportFormat::KohyaSs, None, &path).expect("export succeeds");
 
     let bytes = std::fs::read(&path).expect("read exported file");
     let st = SafeTensors::deserialize(&bytes).expect("valid safetensors");

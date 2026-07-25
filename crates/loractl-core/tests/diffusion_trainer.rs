@@ -13,8 +13,8 @@
 //! interop step tracked on #25.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig,
-    OutputConfig, TargetSpec, TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig,
+    ModelVariant, OptimConfig, OutputConfig, TargetSpec, TaskKind,
 };
 use loractl_core::{DiffusionTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
@@ -140,6 +140,7 @@ fn config(out: &TempDir, dataset: PathBuf) -> TrainConfig {
         },
         compute: ComputeConfig::default(),
         flow: FlowConfig::default(),
+        metadata: MetadataConfig::default(),
     }
 }
 
