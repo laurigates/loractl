@@ -563,4 +563,21 @@ fn read_metadata_rejects_non_safetensors_and_tolerates_headerless_files() {
     let truncated = out.0.join("truncated.safetensors");
     std::fs::write(&truncated, b"abc").unwrap();
     assert!(read_metadata(&truncated).is_err());
+
+    // A file that lies about its header length with a PLAUSIBLE number. This
+    // is the only case that reaches the file-size bound: `junk` above trips
+    // the 100 MB ceiling first (its first 8 bytes read as an astronomically
+    // large LE u64), so without this the size check would be dead code that
+    // still looks covered.
+    let lying = out.0.join("lying.safetensors");
+    let mut bytes = 500u64.to_le_bytes().to_vec();
+    bytes.extend_from_slice(b"{}"); // claims a 500-byte header; the file is 10
+    std::fs::write(&lying, bytes).unwrap();
+    let err = read_metadata(&lying)
+        .expect_err("a header longer than the file must be rejected")
+        .to_string();
+    assert!(
+        err.contains("500") && err.contains("10"),
+        "the error should name both the claimed and actual size: {err}"
+    );
 }
