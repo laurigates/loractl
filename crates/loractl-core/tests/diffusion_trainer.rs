@@ -16,7 +16,7 @@ use loractl_core::config::{
     ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig,
     ModelVariant, OptimConfig, OutputConfig, TargetSpec, TaskKind,
 };
-use loractl_core::{DiffusionTrainer, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{DiffusionTrainer, TrainConfig, TrainEvent, Trainer, read_metadata};
 use std::path::{Path, PathBuf};
 
 const BUNDLE: &str = "tests/fixtures/tiny-krea2";
@@ -235,6 +235,72 @@ fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
     assert_eq!(alpha.shape(), &[1][..]);
     let alpha = f32::from_le_bytes(alpha.data()[..4].try_into().unwrap());
     assert_eq!(alpha, 8.0, "the configured lora.alpha must round-trip");
+
+    // The `__metadata__` wiring seam (#154). `build_metadata` is tested as a
+    // pure function in tests/adapter_metadata.rs; what is only observable
+    // HERE is that the trainer actually calls it, with facts drawn from the
+    // real run — a mis-wired `Some(&metadata_for(..))` still compiles and
+    // still exports a loadable file.
+    let final_meta = read_metadata(&adapter).expect("the final export carries a header");
+    assert_eq!(
+        final_meta.get("ss_steps"),
+        Some(STEPS.to_string().as_str()),
+        "the final export records the completed run"
+    );
+    assert!(
+        final_meta.get("ss_training_finished_at").is_some(),
+        "only the final export claims a finish time"
+    );
+    // Facts that can only come from the live run, not from the config:
+    // the dataset scan, the batch count, and the loaded checkpoint's name.
+    // 5 = the 4 checked-in fixture images + the portrait `staged_dataset`
+    // synthesizes, which is also why two buckets are populated below.
+    assert_eq!(final_meta.get("ss_num_train_images"), Some("5"));
+    assert_eq!(final_meta.get("ss_sd_model_name"), Some("raw.safetensors"));
+    assert_eq!(final_meta.get("ss_network_dim"), Some("4"));
+    let tags: serde_json::Value =
+        serde_json::from_str(final_meta.get("ss_tag_frequency").expect("tag frequency"))
+            .expect("ss_tag_frequency is JSON");
+    let subset = tags
+        .as_object()
+        .and_then(|o| o.values().next())
+        .and_then(|v| v.as_object())
+        .expect("one subset of tags");
+    assert_eq!(
+        subset.len(),
+        5,
+        "one tag per staged caption, all distinct: {subset:?} — derived from \
+         the scan, not from the config"
+    );
+    // Bucket info comes from the live assignment, not the configured
+    // resolution: the square fixtures and the 32x48 portrait land in
+    // different buckets.
+    let buckets: serde_json::Value =
+        serde_json::from_str(final_meta.get("ss_bucket_info").expect("bucket info"))
+            .expect("ss_bucket_info is JSON");
+    let populated = buckets["buckets"].as_object().expect("a bucket map").len();
+    assert_eq!(
+        populated, 2,
+        "the portrait must be bucketed apart from the square images: {buckets}"
+    );
+
+    // Each checkpoint records ITS OWN step, and does not claim a finish time.
+    for (step, path) in &checkpoints {
+        let meta = read_metadata(path).expect("checkpoints carry a header too");
+        assert_eq!(
+            meta.get("ss_steps"),
+            Some(step.to_string().as_str()),
+            "checkpoint at step {step} must record its own progress"
+        );
+        assert_eq!(
+            meta.get("ss_max_train_steps"),
+            Some(STEPS.to_string().as_str())
+        );
+        assert!(
+            meta.get("ss_training_finished_at").is_none(),
+            "a mid-run checkpoint must not claim the run finished"
+        );
+    }
 
     // The adapter genuinely trained: zero-init `B` (lora_up) moved off zero.
     let sum: f32 = up

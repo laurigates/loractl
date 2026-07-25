@@ -100,7 +100,7 @@ pub use event::TrainEvent;
 pub use export::{ExportFormat, export_adapters, import_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};
-pub use metadata::{LoraMetadata, RunFacts, build_metadata, read_metadata};
+pub use metadata::{DatasetFacts, LoraMetadata, RunFacts, build_metadata, read_metadata};
 pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};

@@ -284,6 +284,16 @@ fn sd_webui_hashes(bytes: &[u8]) -> (String, String) {
 /// identity. `None` (or an empty map) writes no header at all — the
 /// `metadata.embed: false` path, and what keeps the export goldens
 /// byte-stable.
+///
+/// Hashing therefore serializes the file **twice** — once in memory to hash,
+/// once to disk — since the hashes describe the tensors and so cannot be
+/// inputs to themselves. sd-scripts pays the same cost for the same reason.
+/// It is accepted deliberately: this now runs at every checkpoint, but a LoRA
+/// export is adapter-only (tens of MB at production rank/target counts, not
+/// the multi-GB base), and the alternative — reimplementing the serializer's
+/// tensor ordering to hash the data region without materializing it — would
+/// be a silent-drift hazard for a bounded allocation saving. Revisit if
+/// `import_adapters`-scale files ever grow by an order of magnitude.
 pub fn export_adapters<B: Backend>(
     set: &LoraAdapters<B>,
     fmt: ExportFormat,
