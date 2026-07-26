@@ -11,6 +11,13 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+# Throughput measurement (#110): the backend-agnostic RESULT/SANITY/MODEL line
+# schema, the wall-sync timer (the cubecl#1421 workaround) and the dead-graph
+# guards, ported from CAEF. Dependency-free itself, so this adds no external
+# surface; `src/bench.rs` is the burn-side adapter over it. Deliberately a
+# normal dependency and not a dev-dependency: timing a run is a library
+# capability the CLI and API can both reach for, not a test fixture.
+loractl-bench = { path = "../loractl-bench" }
 # ML backend. `ndarray` is the portable CPU backend (no GPU/CUDA needed for the
 # MNIST correctness harness); `autodiff` wraps a backend for training. Backends
 # stay generic so a GPU backend (wgpu/cuda) can be swapped in later.

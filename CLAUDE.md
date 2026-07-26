@@ -143,8 +143,11 @@ zero-panic `just step-probe` (#126) at 512px int4 peaks at **19.4 GB** —
 Addendum 3). The gate is always a **zero-panic** run, never a survived
 OOM storm (a ceiling-riding run silently corrupts the forward — a
 negative MSE was observed). Still open on this route: step
-**throughput** is unmeasured (#110's harness), and int4's dequant error
-vs adapter quality is a separate question from fit. The wgpu f16 route
+**throughput** is unmeasured *on real hardware* — #110's harness now
+exists and is wired end to end (`just bench`; see Commands), but it has
+only run on the offline fixture, so the real number still needs a GPU
+dispatch — and int4's dequant error vs adapter quality is a separate
+question from fit. The wgpu f16 route
 (`config/examples/krea2-lora.yaml`, the 48 GiB Metal host) stays blocked
 by burn's GPU autodiff bug (burn#5162, unchanged). Strategy and gap
 analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
@@ -176,6 +179,8 @@ Recipes live in the `justfile` (`just` to list). Cargo directly also works.
 | Supply-chain gate (licenses/bans/sources) | `just deny` (`cargo deny check licenses bans sources`, per `deny.toml`) |
 | Coverage summary | `just coverage` (`cargo llvm-cov` — per-file table; local, no thresholds) |
 | Tests (offline) | `just test` (`cargo test`) — numerics vs PyTorch golden + synthetic convergence |
+| Time real training steps (#110) | `just bench <config> [--steps N] [--seq-len N]` — drives a REAL run on cuda and prints `RESULT`/`SANITY`/`MODEL` lines (median ms/step, tok/s, effective TFLOP/s, peak VRAM). The throughput sibling of `just step-probe`'s VRAM answer |
+| Bench harness smoke (offline) | `just bench-offline` — the same driver over the tiny-krea2 fixture on ndarray. Keeps the harness runnable without a GPU; its *numbers* are meaningless (a 2-block toy at 32px) |
 | Real-MNIST convergence proof | `just test-mnist` (opt-in, downloads MNIST) |
 | Real-GPT-2 forward-parity proof | `just test-gpt2-real` (opt-in; run `just gpt2-reference` first) |
 | Real Qwen-Image VAE parity proof (M9) | `just test-vae-real` (opt-in; run `just vae-real-reference` first) |
@@ -222,13 +227,14 @@ gpu.yml header).
 
 ## Architecture — the one rule that matters
 
-The workspace is three crates:
+The workspace is four crates:
 
 | Crate | Role |
 |---|---|
 | `loractl-core` | The pipeline: `TrainConfig` schema, `TrainEvent` stream, `Trainer` trait, `MockTrainer`, the LoRA/GPT-2 modules and `BurnTrainer`. |
 | `loractl-cli` | The `loractl` binary — parses args, layers config, renders events. |
 | `loractl-api` | The `loractl-api` binary — serializes the same `TrainEvent`s over HTTP/SSE for a GUI; renders nothing itself. Wire contract: `docs/api/events.md`. |
+| `loractl-bench` | Dependency-free measurement primitives ported from CAEF (#110): the `RESULT`/`SANITY`/`MODEL` line schema, the wall-sync timer, the dead-graph guards. Backend-agnostic by construction — the burn-side adapter that drives it lives in `loractl-core::bench`. |
 
 **Load-bearing invariant: `loractl-core` emits events; it never renders.**
 Concretely, core must not import `clap` and must not `println!`/write to

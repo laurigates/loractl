@@ -206,10 +206,12 @@ Addendum 3). The gate is always a **zero-panic** run, never a survived OOM
 storm. The wgpu f16 route (`config/examples/krea2-lora.yaml`, the 48 GiB Metal
 host) stays blocked by burn's GPU autodiff bug (burn#5162, unchanged).
 
-Open from here: step **throughput** is unmeasured (the extra per-block forward
-costs something; needs #110's harness), int4's dequant error vs adapter quality
-is a separate question from fit, and the dataset-pipeline ergonomics issues
-(#147–#149) are the next user-facing gap.
+Open from here: step **throughput** is unmeasured on real hardware — the extra
+per-block forward costs something, and the #110 harness that can now price it
+(`just bench`, `crates/loractl-bench` + `loractl-core::bench`) has only been
+exercised on the offline fixture; the number needs a GPU dispatch. int4's
+dequant error vs adapter quality is a separate question from fit, and the
+dataset-pipeline ergonomics issues (#147–#149) are the next user-facing gap.
 
 ## A note on the text side
 
