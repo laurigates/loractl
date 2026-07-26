@@ -91,9 +91,8 @@ Two bounds on reading these figures as "what the lever is worth":
   ~0.98 GB at 512px. Prefetch depth is a real tuning knob, and a deeper pipeline
   buys overlap by giving back reclaim.
 - **They are batch-1 figures and scale linearly with batch.** At batch 4 the
-  512px set is 4× the batch-1 figure (~4.2 GB — note this happens to equal an
-  earlier *wrong* 1024px figure that scaled seq with pixel area; they are
-  unrelated). The peak scales too, so the *ratio* that Decision 2
+  512px set is 4× the batch-1 figure (~4.2 GB). The peak scales too, so the
+  *ratio* that Decision 2
   argues from is more stable than either number — but the ratio is what the
   decision rests on, so it should be re-derived, not assumed, at any other batch
   size.
