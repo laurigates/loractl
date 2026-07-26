@@ -56,7 +56,8 @@
 //!
 //! Flags: `--steps N` (overrides `steps`), `--warmup N` (leading windows
 //! excluded from the aggregate, default 1), `--seq-len N` (the trunk's real
-//! sequence length — see below), `--label NAME` (the `RESULT label=`).
+//! sequence length — see below), `--label NAME` (the `RESULT label=`; must be
+//! whitespace-free, since the lines are space-delimited).
 //!
 //! ## Why `--seq-len` is worth passing
 //!
@@ -123,7 +124,22 @@ fn parse_args() -> Result<Args> {
                     format!("--seq-len expects a positive integer, got {raw:?}")
                 })?);
             }
-            "--label" => label = value("--label")?,
+            // Rejected rather than mangled: the label is the ONE
+            // caller-controlled token in a schema whose entire purpose is
+            // whitespace-delimited grep-parseability, and `label=int4 512px`
+            // reads as `label=int4` plus a stray token to any parser — in the
+            // very log that gets pasted into #96/#158. Silently substituting
+            // underscores would mean the label in the output isn't the one
+            // that was asked for, so say so instead.
+            "--label" => {
+                label = value("--label")?;
+                if label.is_empty() || label.contains(char::is_whitespace) {
+                    anyhow::bail!(
+                        "--label must be non-empty and whitespace-free (the RESULT/MODEL \
+                         lines are space-delimited), got {label:?}"
+                    );
+                }
+            }
             other if other.starts_with("--") => anyhow::bail!(
                 "unknown flag {other} (expected --steps, --warmup, --seq-len, --label)"
             ),
@@ -178,6 +194,24 @@ fn work_model(config: &TrainConfig, seq_len_flag: Option<usize>) -> (StepWork, S
         Some(n) => (n, "declared"),
         None => (image_tokens, "derived_image_only"),
     };
+
+    // A zero denominator is worse than an absent one: `tok_s=0.0000
+    // tflops=0.0000` reads as a measurement rather than as "no model". The
+    // derivation floors twice (`resolution/8` then `/patch`), so any
+    // resolution below `8·patch` lands here. Unreachable from the shipped
+    // configs, but the whole point of the MODEL line is that a denominator is
+    // auditable, and one that is silently zero is neither.
+    if seq_len == 0 || batch == 0 {
+        return (
+            StepWork::unmodelled(),
+            format!(
+                "work model: none — {batch} × {seq_len} tokens/step is degenerate \
+                 (resolution {} over an f8 VAE and patch {} gives {image_tokens} image \
+                 tokens); reporting ms= and vram_mib= only. Pass --seq-len to model it.",
+                config.dataset.resolution, cfg.patch,
+            ),
+        );
+    }
 
     let note = format!(
         "work model: {batch} × {seq_len} tokens/step ({source}); \
