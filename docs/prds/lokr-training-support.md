@@ -421,7 +421,8 @@ changes (the event abstraction holds; `select_trainer` untouched).
    ComfyUI LoKr tooling expects?
 5. **Adapter-quality vs int4 base.** Independent of format: does LoKr's higher
    effective rank interact with the int4-quantized frozen base's ~7% worst-case
-   dequant error differently than LoRA (the open #25 quality question)? A/B is
+   dequant error differently than LoRA (the open #25 quality question, now
+   tracked as [#159](https://github.com/laurigates/loractl/issues/159))? A/B is
    the only way to know; out of scope to answer here, in scope to note.
 6. **burn 0.22 migration.** The `AdapterDelta` enum + `track_adapters`
    `require_grad` workaround are both burn-0.21-specific; PR #5045 fixes the

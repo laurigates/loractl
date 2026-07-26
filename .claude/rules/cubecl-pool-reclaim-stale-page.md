@@ -45,6 +45,19 @@ offload/spill/unified-memory mechanism, by design:
 - **loractl** — owns the model, training loop, config; base-weight streaming
   and target-set choices live here.
 
+**If you reach for host offload, read
+[ADR-0008](../../docs/adrs/0008-host-offload-mechanism-and-scope.md) first.** It
+fixes the mechanism — **explicit scheduled transfer over pinned buffers, never
+CUDA unified memory / demand paging**, because the #134 block boundary is a
+statically known schedule and UVM is documented by bitsandbytes to lose "half or
+worse" of PCIe bandwidth and cannot overlap transfer with compute. It also sizes
+the lever (the retained block-input set is ~1.06 GB at 512px, ~3.17 GB at
+1024px — batch-1, derived, and an upper bound before prefetch retention; note
+seq does *not* scale with pixel area, since the 512-token caption block is
+fixed) and makes #110's bench harness a hard prerequisite: this is
+the first loractl memory lever that spends throughput to buy VRAM. Tracked as
+#158; the older "reserved under #96" pointer is dead (#96 is closed).
+
 ## The levers (and the measured non-levers)
 
 Updated by the 2026-07-19 **retention-ledger attribution** (#132, PR #133)
@@ -82,12 +95,14 @@ is a scope/quality choice only), **`grad_checkpointing: false`** (60.8 GiB,
 ALL retained into backward), and **LoRA rank** (params are a small
 fraction).
 
-Separately open: int4's ~7% worst-case dequant error and what it does to
-adapter *quality*. The #25 ComfyUI A/B proved the trained adapter visibly
-conditions generation, which is a conditioning proof, not a quality
-benchmark — memory fit and output quality remain different questions. Also
-unmeasured: step **throughput** under block checkpointing (one extra trunk
-forward per step; needs #110's harness).
+Separately open (tracked as **#159**): int4's ~7% worst-case dequant error and
+what it does to adapter *quality*. The #25 ComfyUI A/B proved the trained
+adapter visibly conditions generation, which is a conditioning proof, not a
+quality benchmark — memory fit and output quality remain different questions.
+Also unmeasured: step **throughput** under block checkpointing (one extra trunk
+forward per step; needs #110's harness — whose reusable core landed as
+`crates/loractl-bench`, but nothing depends on it yet, so no training step has
+ever been timed).
 
 Measure with `just step-probe` (the recipe landed in #126) —
 don't re-derive peaks from `nvidia-smi` eyeballing.
