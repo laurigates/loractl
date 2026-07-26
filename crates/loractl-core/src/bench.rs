@@ -224,11 +224,18 @@ impl StepWork {
     /// **under**-count, so the reported `tflops=` is a floor on achieved
     /// throughput, not a ceiling.
     ///
-    /// **Backward multiplier** — a LoRA step backpropagates through a frozen
-    /// base: burn computes an input gradient for each frozen projection but no
-    /// weight gradient, so the backward costs about one forward, not two.
+    /// **Backward multipliers — different for the two terms.** A LoRA step
+    /// backpropagates through a *frozen* base, so a projection `Y = XW` needs
+    /// only `dX = dY·Wᵀ`: one matmul, and its backward costs one forward. The
+    /// attention matmuls are activation×activation, so **both** operands need
+    /// gradients — `S = QKᵀ` needs `dQ = dS·K` *and* `dK = dSᵀ·Q`; `O = P·V`
+    /// needs `dP` and `dV` — and their backward costs *two* forwards. Applying
+    /// one multiplier to the sum would drop a whole `attn` term (~2% of the
+    /// step at `seq_len` 1536, ~5% at 4096, since attention is the quadratic
+    /// one). So projections get `×2` and attention `×3`.
+    ///
     /// `grad_checkpointing` (#134) replays the trunk forward once more in the
-    /// backward sweep, adding another. Hence `×2`, or `×3` when checkpointing.
+    /// backward sweep, adding one to each: `×3` and `×4`.
     ///
     /// The VAE and text encoder are absent by construction, not by omission:
     /// the M12 dataset pipeline caches latents and conditioning, so a step
@@ -249,18 +256,22 @@ impl StepWork {
         // Per sequence, per block: QKᵀ then P·V, both [seq, seq] × width f.
         let attn = 4.0 * (seq_len * seq_len) as f64 * f as f64 * (batch * cfg.layers) as f64;
 
-        let fwd = proj + attn;
-        let passes = if grad_checkpointing { 3.0 } else { 2.0 };
+        // Forward, plus a backward that costs one forward for the frozen
+        // projections and two for the activation×activation attention.
+        let proj_passes = if grad_checkpointing { 3.0 } else { 2.0 };
+        let attn_passes = proj_passes + 1.0;
 
         Self::unmodelled()
             .with_tokens((batch * seq_len) as u64)
-            .with_flops(fwd * passes)
+            .with_flops(proj * proj_passes + attn * attn_passes)
             .with_term("batch", batch)
             .with_term("seq_len", seq_len)
             .with_term("layers", cfg.layers)
             .with_term("features", f)
-            .with_term("fwd_flops", fwd)
-            .with_term("passes", passes)
+            .with_term("fwd_proj_flops", proj)
+            .with_term("fwd_attn_flops", attn)
+            .with_term("proj_passes", proj_passes)
+            .with_term("attn_passes", attn_passes)
             .with_term("grad_ckpt", grad_checkpointing)
             .with_term(
                 "excludes",
@@ -1023,21 +1034,37 @@ mod tests {
         ]
         .iter()
         .sum();
-        let fwd = 2.0 * per_token as f64 * (seq * batch * cfg.layers) as f64
-            + 4.0 * (seq * seq * f * batch * cfg.layers) as f64;
+        let proj = 2.0 * per_token as f64 * (seq * batch * cfg.layers) as f64;
+        let attn = 4.0 * (seq * seq * f * batch * cfg.layers) as f64;
+
+        // The two terms carry different backward multipliers, so they are
+        // asserted separately rather than as one scaled `fwd`. A frozen
+        // projection's backward is `dX = dY·Wᵀ` alone (one forward's worth);
+        // attention is activation×activation, so `S = QKᵀ` owes `dQ` and `dK`
+        // and `O = P·V` owes `dP` and `dV` — two forwards' worth.
         let flops = work.flops.expect("mmdit_step always models flops");
         assert!(
-            (flops - fwd * 2.0).abs() < 1.0,
-            "frozen-base backward costs one forward: {flops} vs {}",
-            fwd * 2.0
+            (flops - (proj * 2.0 + attn * 3.0)).abs() < 1.0,
+            "frozen projections ×2, attention ×3: {flops} vs {}",
+            proj * 2.0 + attn * 3.0
         );
 
-        // Checkpointing replays the trunk forward once more per step.
+        // Checkpointing replays the trunk forward once more, adding one pass
+        // to each term.
         let ckpt = StepWork::mmdit_step(&cfg, batch, seq, true).flops.unwrap();
         assert!(
-            (ckpt - fwd * 3.0).abs() < 1.0,
-            "checkpointing adds a replayed forward: {ckpt} vs {}",
-            fwd * 3.0
+            (ckpt - (proj * 3.0 + attn * 4.0)).abs() < 1.0,
+            "checkpointing adds a replayed forward to both: {ckpt} vs {}",
+            proj * 3.0 + attn * 4.0
+        );
+
+        // The multipliers must actually differ — collapsing them back to one
+        // uniform pass over `proj + attn` drops a whole attention term, which
+        // is what this test exists to prevent recurring.
+        let uniform = (proj + attn) * 2.0;
+        assert!(
+            (flops - uniform).abs() > 1.0,
+            "a uniform multiplier would under-count by one attn term"
         );
     }
 
