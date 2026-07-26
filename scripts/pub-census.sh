@@ -16,7 +16,7 @@
 #   ./scripts/pub-census.sh --porcelain # file|symbol, one per line
 #
 # ---------------------------------------------------------------------------
-# Accuracy, from the one time this was run in anger (11 of 49 candidates were
+# Accuracy, from the one time this was run in anger (10 of 49 candidates were
 # genuinely internal):
 #
 #   * FALSE POSITIVES ARE THE NORM. The scan matches names textually, so it
@@ -84,7 +84,10 @@ while IFS= read -r f; do
         # is never reinterpreted as a pattern. Searching all of crates/
         # deliberately includes tests/ and examples/: those are separate
         # crates, so an item they name must stay `pub`.
-        if [[ -z "$(grep -rwlF "$sym" crates --include='*.rs' | grep -v "^$f$")" ]]; then
+        #
+        # -xF on the exclusion for the same reason as -F above: `$f` would
+        # otherwise be a BRE, where the `.` in `foo.rs` is a wildcard.
+        if [[ -z "$(grep -rwlF "$sym" crates --include='*.rs' | grep -vxF "$f")" ]]; then
             if $porcelain; then
                 echo "$f|$sym"
             else

@@ -886,25 +886,38 @@ mod tests {
     }"#;
 
     /// The hand-written [`Default`] impls and the `#[serde(default …)]`
-    /// attributes are two independent descriptions of the same defaults, and
-    /// nothing in the type system ties them together. If they drift, a test
-    /// written as `TrainConfig { steps: 3, ..Default::default() }` silently
-    /// describes a *different run* than the YAML it is supposed to stand in
-    /// for — which is precisely the kind of divergence that makes a golden
-    /// disagree for reasons unrelated to the code under test.
+    /// attributes are two descriptions of the same defaults, and nothing in
+    /// the type system ties them together. If they drift, a test written as
+    /// `TrainConfig { steps: 3, ..Default::default() }` silently describes a
+    /// *different run* than the YAML it is supposed to stand in for — the kind
+    /// of divergence that makes a golden disagree for reasons unrelated to the
+    /// code under test.
     ///
     /// Comparing serialized values rather than the structs themselves keeps
     /// this working without a `PartialEq` bound on every config type, and
     /// makes a new field participate automatically.
     ///
-    /// **Scope, so this is not over-trusted:** the two-independent-sources
-    /// claim holds for the eight fields carrying `#[serde(default …)]`, whose
-    /// values come from serde and the `Default` impls separately. It does not
-    /// hold for `model.base`, `lora`, and `dataset.path` — those have no serde
-    /// default, so their "serde side" is the [`MINIMAL`] literal below, written
-    /// by hand to match. Changing `ModelConfig::default().base` would just be
-    /// mirrored there; nothing here would object. What guards *those* three is
-    /// [`required_fields_are_still_required_when_deserializing`].
+    /// **What this actually catches, stated precisely — because today it is
+    /// green by construction, not by coincidence:**
+    ///
+    /// - `optim`, `output`, `compute`, `flow`, `metadata` carry *struct-level*
+    ///   `#[serde(default)]`, so serde's default **is** `X::default()`. Both
+    ///   sides are the same call.
+    /// - `steps`, `lora.rank`, `lora.alpha`, `dataset.resolution`,
+    ///   `dataset.batch_size` delegate to the same `defaults::` function from
+    ///   both sides, deliberately (see [`LoraConfig`]'s `Default`).
+    /// - `seed` and `task` take `#[serde(default)]`, i.e. `Default::default()`,
+    ///   which is what the impl writes too.
+    /// - `model.base`, `lora`, `dataset.path` have no serde default at all, so
+    ///   their "serde side" is the [`MINIMAL`] literal below — hand-written to
+    ///   match, and it would simply be edited in lockstep. What guards those
+    ///   three is [`required_fields_are_still_required_when_deserializing`].
+    ///
+    /// So no field currently has two *independent* sources. The guard is
+    /// against a **future** field added with `#[serde(default = "defaults::x")]`
+    /// whose `Default` arm hardcodes a literal instead of calling `defaults::x`
+    /// — a likely enough mistake to be worth pinning, and the reason to keep
+    /// delegating rather than inlining values into the impls.
     #[test]
     fn rust_defaults_match_the_serde_defaults() {
         let from_serde: TrainConfig =

@@ -165,7 +165,8 @@ test:
 # manifest dependencies nothing imports. REPORTING ONLY, deliberately not part
 # of `just lint` — the pub-item scan matches names textually, so it cannot see
 # an item reached through type inference (`model.transformer.h[0]` never writes
-# `Transformer`) and over-reports by roughly 2:1. Treat the output as
+# `Transformer`). On its one run in anger, 10 of 49 candidates were genuinely
+# internal — so expect to reject most of what it prints. Treat the output as
 # candidates and let `cargo check --all-targets` + `cargo doc` adjudicate each
 # one; scripts/pub-census.sh's header documents the workflow.
 #

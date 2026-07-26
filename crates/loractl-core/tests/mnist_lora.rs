@@ -104,8 +104,9 @@ fn mnist_lora_converges() {
         },
         // Default (ndarray) backend — the opt-in MNIST proof stays on CPU.
         compute: ComputeConfig::default(),
-        // Remaining defaults: the synthetic `model` base, plus `flow`/`metadata`,
-        // neither of which the classification task consults.
+        // Remaining defaults are `flow`/`metadata`, neither of which the
+        // classification task consults. `model` is NOT defaulted here — this
+        // test spells out `base: "mnist"` above.
         ..Default::default()
     };
 
