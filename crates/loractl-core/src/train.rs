@@ -41,10 +41,24 @@ pub trait Trainer {
 /// arms by their observable behavior (the demo's event stream, the mnist
 /// fallback warning, the diffusion trainer's flow-matching bail).
 pub fn select_trainer(config: &TrainConfig) -> Box<dyn Trainer + Send> {
-    match config.model.base.as_str() {
-        "synthetic" | "mnist" => Box::new(BurnTrainer),
-        _ => Box::new(DiffusionTrainer),
+    if is_builtin_demo_base(&config.model.base) {
+        Box::new(BurnTrainer)
+    } else {
+        Box::new(DiffusionTrainer)
     }
+}
+
+/// Whether `model.base` names one of [`BurnTrainer`]'s built-in demo datasets
+/// (rather than a checkpoint directory for [`DiffusionTrainer`]).
+///
+/// Exported so that tooling which must know *which* trainer a config will get —
+/// without constructing it — reads the same predicate [`select_trainer`] routes
+/// on, instead of re-spelling the match arm. `examples/bench_step.rs` needs
+/// exactly this: its MMDiT work model is meaningless for the LoRA-MLP demo, and
+/// a second copy of the rule would go stale silently, surfacing only as a wrong
+/// `tok_s=`. Routing itself stays pinned by `tests/trainer_routing.rs`.
+pub fn is_builtin_demo_base(base: &str) -> bool {
+    matches!(base, "synthetic" | "mnist")
 }
 
 /// A stand-in trainer that exercises the event pipeline without any ML.

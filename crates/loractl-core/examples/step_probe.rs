@@ -45,6 +45,7 @@
 use anyhow::{Context, Result};
 use figment::Figment;
 use figment::providers::{Format, Yaml};
+use loractl_core::bench::resident_vram_mib;
 use loractl_core::config::TargetSpec;
 use loractl_core::mmdit::MmditConfig;
 use loractl_core::{TrainConfig, TrainEvent, select_trainer};
@@ -52,26 +53,6 @@ use regex::Regex;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-/// Resident VRAM (MiB) on device 0, via `nvidia-smi`. Best-effort — a
-/// missing tool degrades to `None`, not a probe failure.
-fn resident_vram_mib() -> Option<u64> {
-    let out = std::process::Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=memory.used",
-            "--format=csv,noheader,nounits",
-            "--id=0",
-        ])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .lines()
-        .next()?
-        .trim()
-        .parse()
-        .ok()
-}
 
 fn main() -> Result<()> {
     // Args: the config path (first positional), repeatable `--target <regex>`

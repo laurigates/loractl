@@ -110,7 +110,7 @@ pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};
 pub use qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
-pub use train::{MockTrainer, Trainer, select_trainer};
+pub use train::{MockTrainer, Trainer, is_builtin_demo_base, select_trainer};
 
 // Re-exported so `loractl-cli` can name the concrete inference backend/device
 // (`sample()` in `cli.rs`) without needing its own direct `burn` dependency —

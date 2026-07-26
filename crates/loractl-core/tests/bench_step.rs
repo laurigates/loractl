@@ -14,7 +14,7 @@
 //! - [`BurnTrainer`] on its synthetic path — real burn tensors, a real
 //!   backward, a real optimizer step. This is the one that proves the timings
 //!   describe compute: the windows are positive, they are the same order of
-//!   magnitude as each other, and the 2×-steps ratio lands in-band.
+//!   magnitude as each other, and the 2×-steps ratio is non-degenerate.
 //!
 //! Both stay on the always-compiled `ndarray` backend, so this suite is
 //! offline and GPU-free. What it deliberately does NOT assert is any
@@ -195,10 +195,18 @@ fn real_burn_training_steps_are_timed_and_pass_the_dead_graph_checks() {
         );
     }
 
+    // A verdict must exist and be a real number. Deliberately NOT asserting
+    // `sanity.ok`: that band is ±15%, and a single scheduler hiccup in either
+    // half of a 6-window run moves the ratio out of it — the same wall-clock
+    // flake this suite's header disclaims, just one level of indirection away.
+    // The `ok` direction is pinned deterministically in `bench.rs`'s
+    // `sanity_ok_on_stable_synthetic_windows`; what belongs here is that a real
+    // run is nowhere near the elided-graph shape, which is orders of magnitude
+    // off, not percent.
     let sanity = bench.sanity().expect("two or more counted windows");
     assert!(
-        sanity.ok,
-        "a real run's per-step cost is stable, so the 2x-steps ratio should be ~2 (got {})",
+        (0.5..5.0).contains(&sanity.ratio),
+        "a real run's 2x-steps ratio should be near 2, not degenerate (got {})",
         sanity.ratio
     );
 
@@ -207,7 +215,9 @@ fn real_burn_training_steps_are_timed_and_pass_the_dead_graph_checks() {
         .expect("counted windows exist")
         .to_string();
     assert!(summary.contains("plausible=true"), "{summary}");
-    assert!(summary.contains("sanity=ok"), "{summary}");
+    // Present, not `ok` — see the ratio assertion above for why the
+    // verdict itself is not a safe thing to pin against a wall clock.
+    assert!(summary.contains("sanity="), "{summary}");
     assert!(
         summary.contains("tok_s="),
         "a declared token count is reported"

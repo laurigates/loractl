@@ -72,7 +72,7 @@ use figment::Figment;
 use figment::providers::{Format, Yaml};
 use loractl_core::bench::{StepBench, StepWork};
 use loractl_core::mmdit::MmditConfig;
-use loractl_core::{TrainConfig, TrainEvent, select_trainer};
+use loractl_core::{TrainConfig, TrainEvent, is_builtin_demo_base, select_trainer};
 use std::path::PathBuf;
 
 /// The parsed command line.
@@ -146,8 +146,13 @@ fn parse_args() -> Result<Args> {
 /// is a LoRA-MLP whose "tokens" mean nothing comparable, so it reports time
 /// and VRAM and claims no throughput — the honest output for a run whose
 /// denominator does not exist.
+///
+/// The which-trainer test is `is_builtin_demo_base`, the same predicate
+/// `select_trainer` routes on, rather than a second copy of its match arm — a
+/// stale copy here would model MMDiT work for a non-MMDiT trainer and show up
+/// only as a wrong `tok_s=`.
 fn work_model(config: &TrainConfig, seq_len_flag: Option<usize>) -> (StepWork, String) {
-    if matches!(config.model.base.as_str(), "synthetic" | "mnist") {
+    if is_builtin_demo_base(&config.model.base) {
         return (
             StepWork::unmodelled(),
             "work model: none — the synthetic/mnist demo has no comparable token \
@@ -169,7 +174,7 @@ fn work_model(config: &TrainConfig, seq_len_flag: Option<usize>) -> (StepWork, S
     let note = format!(
         "work model: {batch} × {seq_len} tokens/step ({source}); \
          {image_tokens} image tokens derived from resolution {} \
-         (latent {latent}, patch {})",
+         (latent {latent}, patch {}), assuming the square bucket and a full batch",
         config.dataset.resolution, cfg.patch,
     );
     let work = StepWork::mmdit_step(&cfg, batch, seq_len, config.compute.grad_checkpointing)
@@ -178,7 +183,14 @@ fn work_model(config: &TrainConfig, seq_len_flag: Option<usize>) -> (StepWork, S
         // Recorded, not assumed away: the image-token derivation takes Krea
         // 2's f8 VAE. A bundle with a different downsample makes the derived
         // count wrong, and `--seq-len` is then the only correct route.
-        .with_term("vae_downsample", 8);
+        .with_term("vae_downsample", 8)
+        // Two more assumptions worth naming rather than burying. `dataset.rs`
+        // buckets by aspect ratio (area-preserving, but 16-px aligned), so the
+        // square derivation is approximate; and `batches()` chunks per bucket,
+        // so a bucket's last batch can be smaller than `batch_size` — those
+        // steps process fewer tokens than modelled, and `tok_s=`/`tflops=`
+        // over-report for them.
+        .with_term("assumes", "square_bucket,full_batch");
     (work, note)
 }
 

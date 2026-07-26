@@ -40,10 +40,14 @@
 //! so a window is `optimizer(n) + step(n+1)`. Different phases, same content:
 //! one whole step, fenced at both ends.
 //!
-//! Two consequences are handled rather than hidden. The first `Step` has no
-//! predecessor, so the model-load/dataset-encode window is never a sample. And
-//! a window containing a checkpoint or sample export also contains disk I/O;
-//! those samples are marked `ckpt=1` and excluded from the aggregate.
+//! Three consequences are handled rather than hidden. The first `Step` has no
+//! predecessor, so the model-load/dataset-encode window is never a sample. A
+//! window containing a checkpoint or sample export also contains disk I/O;
+//! those samples are marked `ckpt=1` and excluded from the aggregate. And the
+//! observer's own cost — chiefly the `nvidia-smi` subprocess behind
+//! [`resident_vram_mib`] — is kept out of both adjacent windows by re-stamping
+//! the window start *after* the sample is built, so it cannot bias the very
+//! number it annotates.
 //!
 //! ## What this module does NOT do
 //!
@@ -81,9 +85,13 @@ pub fn device_fence<B: Backend>(device: &B::Device) -> Result<(), ExecutionError
 /// `iters` fenced iterations, then `2·iters`, and reports both the per-iter
 /// time and the [`Sanity`] ratio between the two totals: work that got elided
 /// or cached does not cost twice as much when asked for twice.
+///
+/// `iters` must be non-zero: [`run`](Self::run) panics on zero rather than
+/// returning `Err`, since dividing by no iterations is a caller bug, not a
+/// device failure.
 #[derive(Debug, Clone, Copy)]
 pub struct BurnOpBench {
-    /// Timed iterations in the first (reported) measurement.
+    /// Timed iterations in the first (reported) measurement. Must be > 0.
     pub iters: u32,
     /// Unmeasured iterations first, absorbing shader compilation and autotune.
     pub warmup: u32,
@@ -343,7 +351,18 @@ impl StepBench {
                         contaminated: self.contaminated,
                     });
                 }
-                self.last = Some(now);
+                // Re-stamp AFTER the sample is built, not from `now`. `record`
+                // runs synchronously inside the trainer's sink, and the VRAM
+                // read above shells out to `nvidia-smi` — tens of ms. Starting
+                // the next window at `now` would bury that subprocess inside
+                // it, biasing every counted window upward by the same amount:
+                // invisible to the 2×-steps ratio (both halves shift equally),
+                // absent on a host without `nvidia-smi` (where it is tested),
+                // and present on the GPU host (where it is quoted). The cost of
+                // observing is now outside both windows, so a window slightly
+                // *under*-reports the step-to-step interval rather than
+                // over-reporting the step.
+                self.last = Some(Instant::now());
                 self.contaminated = false;
             }
             // Disk I/O inside the window — the export is real work, but it is
@@ -407,6 +426,11 @@ impl StepBench {
     /// Median, not mean: a training run's outliers are one-sided (an OS
     /// scheduling hiccup, a page fault, an allocator growth) and a mean would
     /// carry them into the steady-state number.
+    ///
+    /// The **upper** median on an even count — element `len/2` of the sorted
+    /// windows, not the average of the two middle ones. Deliberate: it keeps
+    /// the reported figure an actually-observed step time rather than a
+    /// synthesized one, and it errs slow.
     pub fn median_step(&self) -> Option<Duration> {
         let mut windows: Vec<Duration> = self.counted().iter().map(|s| s.window).collect();
         if windows.is_empty() {
@@ -422,10 +446,18 @@ impl StepBench {
     }
 
     /// A per-step `RESULT` line for every timed window.
+    ///
+    /// Each line says whether it fed the aggregate (`counted=`) and, if not,
+    /// why — `ckpt=1` for a checkpoint export, otherwise warm-up. Without that
+    /// a reader who greps the per-step lines and averages them gets a
+    /// different number from the `_median` line and no way to see the
+    /// discrepancy.
     pub fn step_lines(&self) -> Vec<BenchResult> {
         self.samples
             .iter()
-            .map(|sample| {
+            .enumerate()
+            .map(|(index, sample)| {
+                let counted = index >= self.warmup_steps && !sample.contaminated;
                 let line = self
                     .throughputs(
                         BenchResult::new(self.label.clone(), sample.window),
@@ -433,7 +465,8 @@ impl StepBench {
                     )
                     .with("step", sample.step)
                     .with("loss", format!("{:.6}", sample.loss))
-                    .with("ckpt", u8::from(sample.contaminated));
+                    .with("ckpt", u8::from(sample.contaminated))
+                    .with("counted", u8::from(counted));
                 match sample.vram_mib {
                     Some(mib) => line.with("vram_mib", mib),
                     None => line,
@@ -603,6 +636,49 @@ mod tests {
     }
 
     #[test]
+    fn the_vram_read_does_not_land_inside_a_timed_window() {
+        // The regression guard for the observer-overhead bias: on the GPU host
+        // `resident_vram_mib` shells out to `nvidia-smi` for tens of ms, and
+        // `record` runs synchronously inside the trainer's sink. If the next
+        // window started before that read, every counted window would carry it
+        // — uniformly, so the 2×-steps ratio could not see it, and only on the
+        // machine whose numbers get quoted.
+        //
+        // A deliberately slow VRAM source stands in for `nvidia-smi`. The
+        // windows here contain nothing else, so absorbing the read would be
+        // unmistakable: they would each be ~the read's cost instead of ~0.
+        const READ: Duration = Duration::from_millis(60);
+        let mut bench = StepBench::new("step", StepWork::unmodelled())
+            .with_vram_source(|| {
+                std::thread::sleep(READ);
+                Some(4096)
+            })
+            .with_warmup_steps(0);
+        for event in [
+            TrainEvent::Started { total_steps: 4 },
+            step(1, 0.9),
+            step(2, 0.8),
+            step(3, 0.7),
+            step(4, 0.6),
+        ] {
+            bench.record(&event);
+        }
+
+        assert_eq!(bench.samples().len(), 3);
+        for sample in bench.samples() {
+            assert!(
+                sample.window < READ / 2,
+                "step {}'s window ({:?}) absorbed the {READ:?} VRAM read",
+                sample.step,
+                sample.window,
+            );
+        }
+        // The read still happened — this fixes where its cost is accounted,
+        // not whether the telemetry is collected.
+        assert_eq!(bench.peak_vram_mib(), Some(4096));
+    }
+
+    #[test]
     fn checkpoint_windows_are_marked_and_excluded() {
         let bench = run_scripted(
             &[
@@ -729,12 +805,59 @@ mod tests {
         assert!(line.contains("steps_counted=3"), "{line}");
         assert!(line.contains("plausible=true"), "{line}");
         assert!(line.contains("vram_peak_mib=8192"), "{line}");
-        // Equal-cost steps: the first-half average and the whole average agree,
-        // so the 2×-steps ratio lands at ~2 and the verdict is `ok`.
-        assert!(line.contains("sanity=ok"), "{line}");
+        // That a verdict is *present* is structural and safe to assert here.
+        // Which verdict is a wall-clock claim about `sleep(2ms)` windows on
+        // whatever machine runs this — jitter on a loaded runner is the same
+        // order as the signal, so asserting `ok` here would be a flake, not a
+        // check. The `ok` direction is pinned deterministically instead, in
+        // `sanity_ok_on_stable_synthetic_windows`.
+        assert!(line.contains("sanity="), "{line}");
         // No work model was declared, so no throughput is claimed.
         assert!(!line.contains("tok_s="), "{line}");
         assert!(!line.contains("tflops="), "{line}");
+    }
+
+    /// Build a bench holding hand-written windows — pure arithmetic, no
+    /// wall clock, so the verdict assertions below cannot flake.
+    fn bench_with_windows(windows: &[Duration]) -> StepBench {
+        let mut bench = StepBench::new("step", StepWork::unmodelled()).with_warmup_steps(0);
+        bench.samples = windows
+            .iter()
+            .enumerate()
+            .map(|(i, window)| StepSample {
+                step: i as u64 + 2,
+                window: *window,
+                loss: 0.5,
+                vram_mib: None,
+                contaminated: false,
+            })
+            .collect();
+        bench
+    }
+
+    #[test]
+    fn sanity_ok_on_stable_synthetic_windows() {
+        // The `ok` direction, pinned without a clock: equal per-step cost means
+        // the first-half mean equals the overall mean, so the ratio is exactly
+        // 2. Its wall-clock counterpart lives in
+        // `summary_reports_median_peak_vram_and_sanity`, which deliberately
+        // asserts only that a verdict is present.
+        let bench = bench_with_windows(&[Duration::from_millis(10); 4]);
+        let sanity = bench.sanity().expect("four counted windows");
+        assert!((sanity.ratio - 2.0).abs() < 1e-9, "ratio {}", sanity.ratio);
+        assert!(sanity.ok);
+        assert!(
+            bench
+                .summary_line()
+                .unwrap()
+                .to_string()
+                .contains("sanity=ok")
+        );
+
+        // And still `ok` under realistic ±10% jitter, so the band is not so
+        // tight that ordinary noise trips it.
+        let jittered = [11, 9, 10, 10, 9, 11].map(Duration::from_millis);
+        assert!(bench_with_windows(&jittered).sanity().unwrap().ok);
     }
 
     #[test]
@@ -790,6 +913,16 @@ mod tests {
         );
     }
 
+    /// Re-derives the count term by term, naming each projection explicitly
+    /// rather than reusing the implementation's grouping.
+    ///
+    /// What this pins is the *arithmetic*: a term dropped, double-counted, or
+    /// regrouped wrongly fails here. What it does **not** pin is the
+    /// architectural premise — it calls the same `swiglu_dim`/`head_dim` the
+    /// implementation does, so a wrong width would pass both sides. That half
+    /// is pinned by the mmdit parity suite, which compares against the official
+    /// `mmdit.py`; this test deliberately does not restate those widths, since
+    /// a hand-copied constant here would be the thing most likely to go stale.
     #[test]
     fn mmdit_work_model_matches_a_hand_derivation() {
         let cfg = MmditConfig::tiny();

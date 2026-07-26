@@ -287,6 +287,11 @@ step-probe *args:
 # e.g. `just bench config/examples/krea2-comfyui.yaml --steps 8 --seq-len 1536`
 # Pass --seq-len: without it the token count is image-only and understates
 # tok_s/tflops (ms= is measured either way). See the example's header.
+# cuda-only, and there is deliberately no `bench-wgpu`: the harness itself is
+# backend-agnostic (it reads `compute.backend`), but a wgpu real-model run has
+# nothing trustworthy to time until burn#5162 is fixed — timing a numerically
+# corrupt run would produce a real number for work nobody wants. Build with
+# --features wgpu by hand if that changes.
 bench *args:
     cargo run --release -p loractl-core --features cuda --example bench_step -- "$@"
 
