@@ -213,8 +213,8 @@ ergonomics issues (#147–#149) are the next user-facing gap. The next *memory*
 lever — offloading the #134 block-boundary activations to host RAM (#158) — is
 now scoped and priced by [ADR-0008](adrs/0008-host-offload-mechanism-and-scope.md):
 explicit scheduled transfer rather than demand paging, worth ~1.06 GB of the
-19.4 GB peak at 512px (~4.2 GB at 1024px, derived), and blocked on #110 because
-it is the first lever that spends throughput to buy VRAM.
+19.4 GB peak at 512px (~3.17 GB at 1024px; batch-1, derived), and blocked on
+#110 because it is the first lever that spends throughput to buy VRAM.
 
 ## A note on the text side
 

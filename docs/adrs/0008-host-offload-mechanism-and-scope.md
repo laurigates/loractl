@@ -48,7 +48,7 @@ before anyone writes offload code.
 Two tracking gaps surfaced while writing this and are now closed:
 ADR-0007 reserved the lever "under #96", but **#96 is closed**, so the
 reservation tracked nothing (now [#158](https://github.com/laurigates/loractl/issues/158));
-and the int4-quality question, called open in four documents, had no issue at
+and the int4-quality question, called open in six documents, had no issue at
 all (now [#159](https://github.com/laurigates/loractl/issues/159)).
 
 ### What the lever is actually worth (derived)
@@ -59,14 +59,37 @@ features]` block-input residual streams
 (`crates/loractl-core/src/mmdit.rs:170-186` — `layers: 28`, `features: 6144`) at
 batch 1, f32:
 
-| resolution | seq | retained block inputs |
-|---|---|---|
-| 512px | 1536 | 28 × 1536 × 6144 × 4 B = **1.057 GB** (0.984 GiB) |
-| 1024px | 6144 | **4.228 GB** (3.938 GiB) |
+Sequence length is **not** proportional to pixel area: the trunk concatenates
+text and image tokens and zero-pads the result to a multiple of 256
+(`crates/loractl-core/src/mmdit.rs:1388-1399`), and the text side is a *fixed*
+512-token caption budget (`crates/loractl-core/src/qwen3vl.rs:567`). So the
+constant text block must not be scaled with resolution. Decomposed — the 384px
+and 512px rows reproduce ADR-0005 Addendum 2's two stated anchors exactly, which
+is what makes the 1024px row trustworthy:
+
+| resolution | latent (f8) | image tokens (patch 2) | + 512 text | pad → 256 | retained block inputs |
+|---|---|---|---|---|---|
+| 384px | 48² | 576 | 1088 | **1280** | (ADR-0005 anchor ✓) |
+| 512px | 64² | 1024 | 1536 | **1536** | 28 × 1536 × 6144 × 4 B = **1.057 GB** (0.984 GiB) |
+| 1024px | 128² | 4096 | 4608 | **4608** | **3.171 GB** (2.953 GiB) |
 
 The whole set is co-resident at the peak: the reverse sweep drains it last→first,
 so all 28 are live when the sweep begins, and the peak is one block interior on
 top of that.
+
+Two bounds on reading these figures as "what the lever is worth":
+
+- **They are an upper bound on the reclaim, not the reclaim.** Decision 1's
+  mechanism prefetches the next block's input during the current block's replay,
+  so a prefetch depth of `d` leaves `d` block inputs device-resident at all
+  times. At the minimum useful `d = 2` the net reclaim is `26/28` of the set —
+  ~0.98 GB at 512px. Prefetch depth is a real tuning knob, and a deeper pipeline
+  buys overlap by giving back reclaim.
+- **They are batch-1 figures and scale linearly with batch.** At batch 4 the
+  512px set is ~4.2 GB. The peak scales too, so the *ratio* that Decision 2
+  argues from is more stable than either number — but the ratio is what the
+  decision rests on, so it should be re-derived, not assumed, at any other batch
+  size.
 
 **These are derived figures — computed from the config and the capture
 contract, not measured.** The one measured anchor is ADR-0005 Addendum 3's
@@ -108,10 +131,11 @@ sweep because inferred figures were once stated as measured.
    demand paging would want a spill target that does not exist.
 
 2. **The lever stays reserved, now with a number rather than an assertion.**
-   ~1.06 GB of a 19.4 GB peak at 512px does not justify the complexity or the
-   throughput cost while ~4 GB of headroom exists. It becomes a genuine
-   candidate at **≥1024px** (~4.2 GB; note the trunk pads seq to multiples of
-   256) or on **≤16 GB cards**. Tracked as
+   ~1.06 GB of a 19.4 GB peak at 512px — less after prefetch retention — does
+   not justify the complexity or the throughput cost while ~4 GB of headroom
+   exists. It becomes a genuine candidate at **≥1024px** (~3.17 GB) or on
+   **≤16 GB cards**. Both figures are batch-1; re-derive the ratio rather than
+   reusing it if batch size changes. Tracked as
    [#158](https://github.com/laurigates/loractl/issues/158).
 
 3. **It cannot merge before [#110](https://github.com/laurigates/loractl/issues/110)
@@ -184,7 +208,9 @@ sweep because inferred figures were once stated as measured.
   [#158](https://github.com/laurigates/loractl/issues/158) (the lever, replacing
   the dead "#96" reservation) and
   [#159](https://github.com/laurigates/loractl/issues/159) (int4 dequant error
-  vs adapter quality, previously open in four documents and tracked in none).
+  vs adapter quality, previously called open in **six** documents — `CLAUDE.md`,
+  the cubecl rule, `docs/roadmap.md`, ADR-0005, ADR-0007 and the LoKr PRD — and
+  tracked in none; all six now carry the pointer).
 - **No code lands with this ADR.** There is nothing to implement until #110
   exists (Decision 3); shipping an implementation anyway would contradict the
   document.

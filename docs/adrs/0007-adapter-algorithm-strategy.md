@@ -116,8 +116,10 @@ new *format* it emits inherits the interop rule below.
      [ADR-0008](0008-host-offload-mechanism-and-scope.md) now fixes the offload
      lever's *mechanism* (explicit scheduled transfer, never CUDA unified
      memory / demand paging) and sizes it: the retained block-input set is
-     ~1.06 GB at 512px and ~4.2 GB at 1024px (derived), so it is worth ~5% of
-     the measured peak today and gates on #110.
+     ~1.06 GB at 512px (seq 1536) and ~3.17 GB at 1024px (seq 4608 — the
+     512-token caption block is fixed, so seq does not scale with pixel area),
+     both batch-1 and derived, so it is worth ~5% of the measured peak today
+     and gates on #110.
    - **burn 0.22-gated ([#79](https://github.com/laurigates/loractl/issues/79)):**
      COAT-style fp8 activation training (blocked today — no fp8 store dtype),
      the mechanistically correct attack on the attention trio; and burn's native

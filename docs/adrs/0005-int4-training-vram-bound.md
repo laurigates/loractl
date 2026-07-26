@@ -371,6 +371,11 @@ visibly conditions Krea-2-Turbo generation in ComfyUI.
 - **Throughput is unmeasured.** The fit is measured; the cost of one extra
   trunk forward per step is not — loractl has no benchmark harness
   ([#110](https://github.com/laurigates/loractl/issues/110)).
+  *(Refined by [ADR-0008](0008-host-offload-mechanism-and-scope.md) Decision 3:
+  #110's reusable core has since landed as `crates/loractl-bench`, but nothing
+  in the workspace depends on it — no training-step adapter, no VRAM read-out,
+  no `just bench` recipe — so the conclusion is unchanged: no training step has
+  ever been timed.)*
 - **Chunked attention inside the recomputed block** stays the reserved
   follow-on, now unneeded at 19.4 GB but relevant if sequence length grows
   (demand scales with seq; the trunk pads to multiples of 256).
@@ -381,7 +386,8 @@ visibly conditions Krea-2-Turbo generation in ComfyUI.
   burn#5045's `Param` rewrite is released. Both are recorded in
   `.claude/rules/burn-nested-backward-and-param-clone.md`.
 - int4's ~7% worst-case dequant error vs adapter quality remains a separate
-  question from fit, unchanged by this addendum.
+  question from fit, unchanged by this addendum. *(Now tracked as
+  [#159](https://github.com/laurigates/loractl/issues/159).)*
 
 [burn#5193]: https://github.com/tracel-ai/burn/issues/5193
 [burn#5194]: https://github.com/tracel-ai/burn/pull/5194
