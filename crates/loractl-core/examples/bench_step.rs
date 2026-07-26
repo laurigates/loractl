@@ -19,8 +19,11 @@
 //!
 //! - `MODEL label=… …` — the analytic work model behind the derived
 //!   throughputs, with its `excludes=` list. Absent when nothing is modelled.
-//! - `RESULT label=<label> ms=… tok_s=… tflops=… step=… loss=… ckpt=… vram_mib=…`
-//!   — one per timed step window.
+//! - `RESULT label=<label> ms=… tok_s=… tflops=… step=… loss=… ckpt=…
+//!   counted=… vram_mib=…` — one per timed step window. `counted=0` marks a
+//!   window the aggregate dropped, and `ckpt=1` says it was dropped for a
+//!   checkpoint export rather than as warm-up; averaging the per-step lines
+//!   without filtering on `counted=1` will not match the `_median` line.
 //! - `RESULT label=<label>_median …` — the aggregate, and the line to quote:
 //!   median step time over the counted windows, peak VRAM, `plausible=`, and
 //!   the 2×-steps `sanity=` verdict.

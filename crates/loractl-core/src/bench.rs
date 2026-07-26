@@ -49,6 +49,15 @@
 //! the window start *after* the sample is built, so it cannot bias the very
 //! number it annotates.
 //!
+//! That last one bounds the bias but does not remove the pause: a default
+//! [`StepBench`] still spawns `nvidia-smi` at every step boundary, so a long
+//! run is not quite back-to-back training and the GPU idles briefly between
+//! steps. It is outside the reported windows, so it cannot inflate `ms=`, but
+//! if a real dispatch ever shows step times drifting across a run (clock or
+//! thermal behaviour rather than compute), the knob is
+//! [`with_vram_source`](StepBench::with_vram_source) — sample every N steps, or
+//! poll from a watcher thread the way `examples/step_probe.rs` does.
+//!
 //! ## What this module does NOT do
 //!
 //! It does not render. [`StepBench`] accumulates [`StepSample`]s and hands back
@@ -377,13 +386,24 @@ impl StepBench {
         &self.samples
     }
 
+    /// Whether the sample at `index` feeds the aggregate.
+    ///
+    /// The single spelling of the rule: [`counted`](Self::counted) selects with
+    /// it and [`step_lines`](Self::step_lines) annotates with it, so a
+    /// `counted=1` can never appear on a line the aggregate actually dropped —
+    /// which is the exact discrepancy the annotation exists to expose.
+    fn is_counted(&self, index: usize, sample: &StepSample) -> bool {
+        index >= self.warmup_steps && !sample.contaminated
+    }
+
     /// The samples the aggregate is computed from: warm-up dropped, windows
     /// contaminated by a checkpoint export dropped.
     pub fn counted(&self) -> Vec<&StepSample> {
         self.samples
             .iter()
-            .skip(self.warmup_steps)
-            .filter(|s| !s.contaminated)
+            .enumerate()
+            .filter(|(index, sample)| self.is_counted(*index, sample))
+            .map(|(_, sample)| sample)
             .collect()
     }
 
@@ -457,7 +477,7 @@ impl StepBench {
             .iter()
             .enumerate()
             .map(|(index, sample)| {
-                let counted = index >= self.warmup_steps && !sample.contaminated;
+                let counted = self.is_counted(index, sample);
                 let line = self
                     .throughputs(
                         BenchResult::new(self.label.clone(), sample.window),
@@ -854,10 +874,24 @@ mod tests {
                 .contains("sanity=ok")
         );
 
-        // And still `ok` under realistic ±10% jitter, so the band is not so
-        // tight that ordinary noise trips it.
-        let jittered = [11, 9, 10, 10, 9, 11].map(Duration::from_millis);
-        assert!(bench_with_windows(&jittered).sanity().unwrap().ok);
+        // And still `ok` when the two halves genuinely differ, so the band is
+        // shown to have room rather than only being hit dead centre. The
+        // sequence is deliberately unbalanced — first half means 9.667 ms
+        // against 10 ms overall, ratio ≈ 2.069 — because a *balanced* jitter
+        // sequence averages back to exactly 2.0 and would re-assert the
+        // arithmetic above instead of the tolerance.
+        let jittered = [9, 11, 9, 11, 10, 10].map(Duration::from_millis);
+        let sanity = bench_with_windows(&jittered).sanity().unwrap();
+        assert!(
+            (sanity.ratio - 2.0).abs() > 0.05,
+            "the jitter case must actually leave 2.0 (got {})",
+            sanity.ratio
+        );
+        assert!(
+            sanity.ok,
+            "±10% jitter must not trip the band: {}",
+            sanity.ratio
+        );
     }
 
     #[test]
