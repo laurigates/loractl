@@ -196,7 +196,7 @@ new *format* it emits inherits the interop rule below.
   fit and output quality are different questions, and the adapter algorithm does
   not decide either. Now tracked as
   [#159](https://github.com/laurigates/loractl/issues/159); it had no issue
-  while four documents called it open.
+  while six documents called it open.
 - **burn 0.22 dependency:** the strongest activation lever (COAT fp8) and the
   cleanest #134 re-expression are gated on the milestone-scale migration (#79);
   the seam generalization in Decision 2 is designed to survive it (kohya export

@@ -61,17 +61,22 @@ batch 1, f32:
 
 Sequence length is **not** proportional to pixel area: the trunk concatenates
 text and image tokens and zero-pads the result to a multiple of 256
-(`crates/loractl-core/src/mmdit.rs:1388-1399`), and the text side is a *fixed*
-512-token caption budget (`crates/loractl-core/src/qwen3vl.rs:567`). So the
-constant text block must not be scaled with resolution. Decomposed — the 384px
-and 512px rows reproduce ADR-0005 Addendum 2's two stated anchors exactly, which
-is what makes the 1024px row trustworthy:
+(`crates/loractl-core/src/mmdit.rs:1388-1399`), and the text side is a fixed
+512-token block — `tokenize` truncates *and* right-pads every caption to the
+same `body_len` (`crates/loractl-core/src/qwen3vl.rs:611-618`), and
+`variant_configs` passes `512` for Krea 2
+(`crates/loractl-core/src/diffusion_trainer.rs:121`), so the text contribution
+is exactly 512 for any caption, not merely capped at it. That makes the
+decomposition below exact rather than an upper bound, and the constant text
+block must not be scaled with resolution. The 384px and 512px rows reproduce
+ADR-0005 Addendum 2's two stated anchors exactly, which is what makes the
+1024px row trustworthy:
 
 | resolution | latent (f8) | image tokens (patch 2) | + 512 text | pad → 256 | retained block inputs |
 |---|---|---|---|---|---|
-| 384px | 48² | 576 | 1088 | **1280** | (ADR-0005 anchor ✓) |
-| 512px | 64² | 1024 | 1536 | **1536** | 28 × 1536 × 6144 × 4 B = **1.057 GB** (0.984 GiB) |
-| 1024px | 128² | 4096 | 4608 | **4608** | **3.171 GB** (2.953 GiB) |
+| 384px | 48² | 576 | 1088 | **1280** (ADR-0005 anchor ✓) | 28 × 1280 × 6144 × 4 B = **0.881 GB** (0.820 GiB) |
+| 512px | 64² | 1024 | 1536 | **1536** (ADR-0005 anchor ✓) | 28 × 1536 × 6144 × 4 B = **1.057 GB** (0.984 GiB) |
+| 1024px | 128² | 4096 | 4608 | **4608** | 28 × 4608 × 6144 × 4 B = **3.171 GB** (2.953 GiB) |
 
 The whole set is co-resident at the peak: the reverse sweep drains it last→first,
 so all 28 are live when the sweep begins, and the peak is one block interior on
@@ -86,7 +91,9 @@ Two bounds on reading these figures as "what the lever is worth":
   ~0.98 GB at 512px. Prefetch depth is a real tuning knob, and a deeper pipeline
   buys overlap by giving back reclaim.
 - **They are batch-1 figures and scale linearly with batch.** At batch 4 the
-  512px set is ~4.2 GB. The peak scales too, so the *ratio* that Decision 2
+  512px set is 4× the batch-1 figure (~4.2 GB — note this happens to equal an
+  earlier *wrong* 1024px figure that scaled seq with pixel area; they are
+  unrelated). The peak scales too, so the *ratio* that Decision 2
   argues from is more stable than either number — but the ratio is what the
   decision rests on, so it should be re-derived, not assumed, at any other batch
   size.
