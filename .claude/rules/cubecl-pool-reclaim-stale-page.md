@@ -45,6 +45,17 @@ offload/spill/unified-memory mechanism, by design:
 - **loractl** — owns the model, training loop, config; base-weight streaming
   and target-set choices live here.
 
+**If you reach for host offload, read
+[ADR-0008](../../docs/adrs/0008-host-offload-mechanism-and-scope.md) first.** It
+fixes the mechanism — **explicit scheduled transfer over pinned buffers, never
+CUDA unified memory / demand paging**, because the #134 block boundary is a
+statically known schedule and UVM is documented by bitsandbytes to lose "half or
+worse" of PCIe bandwidth and cannot overlap transfer with compute. It also sizes
+the lever (the retained block-input set is ~1.06 GB at 512px, ~4.2 GB at
+1024px — derived) and makes #110's bench harness a hard prerequisite: this is
+the first loractl memory lever that spends throughput to buy VRAM. Tracked as
+#158; the older "reserved under #96" pointer is dead (#96 is closed).
+
 ## The levers (and the measured non-levers)
 
 Updated by the 2026-07-19 **retention-ledger attribution** (#132, PR #133)

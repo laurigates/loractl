@@ -113,6 +113,11 @@ new *format* it emits inherits the interop rule below.
      lever, stacking on #134; and encoder unload after latent/conditioning
      caching (M12) to free a fixed few GB. Chunked attention inside the
      recomputed block is the reserved follow-on if the fit rides too close.
+     [ADR-0008](0008-host-offload-mechanism-and-scope.md) now fixes the offload
+     lever's *mechanism* (explicit scheduled transfer, never CUDA unified
+     memory / demand paging) and sizes it: the retained block-input set is
+     ~1.06 GB at 512px and ~4.2 GB at 1024px (derived), so it is worth ~5% of
+     the measured peak today and gates on #110.
    - **burn 0.22-gated ([#79](https://github.com/laurigates/loractl/issues/79)):**
      COAT-style fp8 activation training (blocked today — no fp8 store dtype),
      the mechanistically correct attack on the attention trio; and burn's native
@@ -172,8 +177,13 @@ new *format* it emits inherits the interop rule below.
   (ADR-0005 Addendum 3). CPU activation offload on the #134 block boundary and
   encoder unload after caching are therefore *unneeded at 512px* and become
   relevant only at longer sequences or smaller cards; they stay reserved under
-  #96. What is genuinely unmeasured is the **throughput** cost of the extra
-  per-block forward (needs #110's harness).
+  [#158](https://github.com/laurigates/loractl/issues/158) — **not** under #96,
+  which is closed, so the earlier reservation tracked nothing (corrected by
+  [ADR-0008](0008-host-offload-mechanism-and-scope.md), which also fixes the
+  mechanism and sizes the lever). What is genuinely unmeasured is the
+  **throughput** cost of the extra per-block forward (needs #110's harness) —
+  and #110 is now a hard prerequisite for the offload lever, which trades VRAM
+  for PCIe time.
 - **Open follow-up (quality/interop):** land LoKr behind the generalized seam
   (Decision 2) with its ComfyUI consumer-contract test (Decision 4); optionally
   OFT (Cayley-Neumann, burn has no differentiable matrix inverse) emitting
@@ -182,7 +192,9 @@ new *format* it emits inherits the interop rule below.
 - **Open follow-up (quality, orthogonal to this ADR):** int4's ~7% worst-case
   dequant error and its effect on adapter quality (the #25 ComfyUI A/B) — memory
   fit and output quality are different questions, and the adapter algorithm does
-  not decide either.
+  not decide either. Now tracked as
+  [#159](https://github.com/laurigates/loractl/issues/159); it had no issue
+  while four documents called it open.
 - **burn 0.22 dependency:** the strongest activation lever (COAT fp8) and the
   cleanest #134 re-expression are gated on the milestone-scale migration (#79);
   the seam generalization in Decision 2 is designed to survive it (kohya export
