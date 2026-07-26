@@ -6,10 +6,12 @@
 # produces are about a 2-block toy at 32px and mean nothing about training
 # throughput. The real measurement is `just bench <config>` on the cuda host.
 #
-# `steps: 6` is the minimum that makes the aggregate meaningful: the first
-# Step event opens the first window rather than closing one, `--warmup 1`
-# drops the next, and the 2×-steps sanity ratio needs at least two counted
-# windows on top of that.
+# `steps: 8` is the smallest run worth quoting, not the smallest that reports.
+# The first Step event opens a window rather than closing one and `--warmup 1`
+# drops the next, so 4 steps is the structural floor — but that leaves the
+# 2×-steps sanity ratio comparing against a single window, where one scheduling
+# hiccup reads SUSPECT. 8 steps gives 6 counted windows and a 3-window
+# baseline. The driver prints this advice itself when a run is below it.
 
 task: flow-matching
 
@@ -31,7 +33,7 @@ lora:
 optim:
   lr: 1.0e-2
 
-steps: 6
+steps: 8
 seed: 42
 
 output:
@@ -39,7 +41,7 @@ output:
   name: tiny-bench
   # Past `steps`, so no checkpoint export lands mid-run and contaminates a
   # timed window. The bench marks such windows `ckpt=1` and excludes them; on
-  # a 6-step run that would throw away most of the sample.
+  # an 8-step run that would throw away most of the sample.
   checkpoint_every: 1000
 
 compute:

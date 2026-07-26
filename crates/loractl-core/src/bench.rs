@@ -66,6 +66,7 @@
 //! load-bearing invariant, and it is what lets the same measurement feed a
 //! terminal, a CI log, or an HTTP surface unchanged.
 
+use crate::config::TrainConfig;
 use crate::event::TrainEvent;
 use crate::mmdit::MmditConfig;
 use burn::tensor::backend::{Backend, ExecutionError};
@@ -166,16 +167,23 @@ impl BurnOpBench {
 /// reports, so the model travels with them: [`StepBench::model_line`] prints
 /// its terms and the `excludes=` list. Time and VRAM are measured; these are
 /// derived.
+/// Fields are private on purpose. They are pairwise-coupled — `flops` must
+/// equal the printed `step_flops=` term, and declaring a quotient without any
+/// term at all would emit `tok_s=`/`tflops=` with **no `MODEL` line**, the
+/// strongest form of the unauditable-quotient failure this type exists to
+/// prevent. The builders maintain both invariants; a struct literal or field
+/// write could not. Same move as `is_counted` and `set_mirrored_term`: make
+/// the invariant structural rather than conventional.
 #[derive(Debug, Clone, Default)]
 pub struct StepWork {
     /// Tokens the trunk processes per step (`batch × seq_len`). `None`
     /// suppresses `tok_s=`.
-    pub tokens: Option<u64>,
+    tokens: Option<u64>,
     /// Modelled FLOPs per step, forward **and** backward. `None` suppresses
     /// `tflops=`.
-    pub flops: Option<f64>,
+    flops: Option<f64>,
     /// Terms of the model, for the `MODEL` line.
-    pub terms: Vec<(String, String)>,
+    terms: Vec<(String, String)>,
 }
 
 impl StepWork {
@@ -299,6 +307,92 @@ impl StepWork {
                 "excludes",
                 "text_fusion,modulation,norms,rope,softmax,patch_embed,lora_delta",
             )
+    }
+
+    /// The work model a [`TrainConfig`] implies, plus a human-readable note
+    /// saying where the token count came from. The caller decides whether to
+    /// print the note; core does not render.
+    ///
+    /// Lives here rather than in the driver so the derivation is *tested*
+    /// rather than only exercised by running an example — a wrong `tok_s=`
+    /// traces back to exactly this function. Same reasoning that puts
+    /// `is_builtin_demo_base` in `train.rs`: a config → behaviour mapping
+    /// belongs beside the thing it describes.
+    ///
+    /// Only the diffusion path is modelled. [`BurnTrainer`](crate::BurnTrainer)'s
+    /// synthetic/mnist demo is a LoRA-MLP whose "tokens" mean nothing
+    /// comparable, so it claims no throughput — the honest output for a run
+    /// whose denominator does not exist. The which-trainer test is
+    /// [`is_builtin_demo_base`](crate::is_builtin_demo_base), the predicate
+    /// `select_trainer` itself routes on, so this cannot drift into modelling
+    /// MMDiT work for a non-MMDiT trainer.
+    ///
+    /// `seq_len_flag` overrides the derived token count. The image half is
+    /// exact — `(resolution / 8 / patch)²`, the VAE's f8 downsample then the
+    /// patch grid — but caption length is data and the trunk pads the combined
+    /// sequence to a multiple of 256, so the derived figure is image-only and
+    /// says so via `seq_len_source=`.
+    pub fn for_config(config: &TrainConfig, seq_len_flag: Option<usize>) -> (Self, String) {
+        if crate::is_builtin_demo_base(&config.model.base) {
+            return (
+                Self::unmodelled(),
+                "work model: none — the synthetic/mnist demo has no comparable token \
+                 geometry, so only ms= and vram_mib= are reported"
+                    .to_string(),
+            );
+        }
+
+        let cfg = MmditConfig::for_variant(config.model.variant);
+        let batch = config.dataset.batch_size as usize;
+        let latent = (config.dataset.resolution as usize) / 8;
+        let image_tokens = (latent / cfg.patch).pow(2);
+        let (seq_len, source) = match seq_len_flag {
+            Some(n) => (n, "declared"),
+            None => (image_tokens, "derived_image_only"),
+        };
+
+        // A zero denominator is worse than an absent one: `tok_s=0.0000
+        // tflops=0.0000` reads as a measurement rather than as "no model". The
+        // note names the input that is actually degenerate — a declared
+        // `--seq-len 0` is not the derivation's fault, and quoting the
+        // resolution at someone who overrode it reads as a contradiction.
+        if seq_len == 0 || batch == 0 {
+            let cause = if batch == 0 {
+                "dataset.batch_size is 0".to_string()
+            } else if seq_len_flag.is_some() {
+                "the declared --seq-len is 0".to_string()
+            } else {
+                format!(
+                    "resolution {} over an f8 VAE and patch {} derives {image_tokens} \
+                     image tokens",
+                    config.dataset.resolution, cfg.patch,
+                )
+            };
+            return (
+                Self::unmodelled(),
+                format!(
+                    "work model: none — {batch} × {seq_len} tokens/step is degenerate \
+                     ({cause}); reporting ms= and vram_mib= only"
+                ),
+            );
+        }
+
+        let note = format!(
+            "work model: {batch} × {seq_len} tokens/step ({source}); \
+             {image_tokens} image tokens derived from resolution {} \
+             (latent {latent}, patch {}), assuming the square bucket and a full batch",
+            config.dataset.resolution, cfg.patch,
+        );
+        let work = Self::mmdit_step(&cfg, batch, seq_len, config.compute.grad_checkpointing)
+            .with_term("seq_len_source", source)
+            .with_term("image_tokens", image_tokens)
+            // Recorded, not assumed away: the image-token derivation takes
+            // Krea 2's f8 VAE, the square bucket, and a full batch.
+            // `dataset.rs` buckets by aspect ratio (area-preserving but 16-px
+            // aligned) and a bucket's last batch can be short.
+            .with_term("vae_downsample", 8)
+            .with_term("assumes", "square_bucket,full_batch");
+        (work, note)
     }
 }
 
@@ -1154,6 +1248,110 @@ mod tests {
             "step_flops must mirror the modelled total: {:?}",
             work.terms
         );
+    }
+
+    /// A diffusion config at `resolution`, batch 2.
+    fn diffusion_config(resolution: u32) -> TrainConfig {
+        TrainConfig {
+            model: crate::config::ModelConfig {
+                base: "some/krea2-dir".into(),
+                variant: crate::config::ModelVariant::TinyKrea2,
+                ..Default::default()
+            },
+            dataset: crate::config::DatasetConfig {
+                resolution,
+                batch_size: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn for_config_derives_image_tokens_from_resolution() {
+        // 32px over an f8 VAE is a 4×4 latent; at patch 2 that is a 2×2 grid,
+        // so 4 image tokens — the same arithmetic the driver used to do
+        // untested. batch 2 makes it 8 tokens/step.
+        let (work, note) = StepWork::for_config(&diffusion_config(32), None);
+        assert_eq!(work.tokens, Some(8));
+        let model = bench_with_work(work).model_line().unwrap().to_string();
+        assert_eq!(line_term(&model, "image_tokens"), Some("4"), "{model}");
+        assert_eq!(line_term(&model, "seq_len"), Some("4"), "{model}");
+        assert_eq!(
+            line_term(&model, "seq_len_source"),
+            Some("derived_image_only"),
+            "{model}"
+        );
+        assert!(note.contains("4 image tokens"), "{note}");
+    }
+
+    #[test]
+    fn for_config_prefers_a_declared_seq_len() {
+        // The declared length replaces the derived one and says so, because
+        // the text half of a real run's sequence is not derivable from config.
+        let (work, note) = StepWork::for_config(&diffusion_config(32), Some(1536));
+        assert_eq!(work.tokens, Some(2 * 1536));
+        let model = bench_with_work(work).model_line().unwrap().to_string();
+        assert_eq!(line_term(&model, "seq_len"), Some("1536"), "{model}");
+        assert_eq!(
+            line_term(&model, "seq_len_source"),
+            Some("declared"),
+            "{model}"
+        );
+        // The derived image count is still reported beside it, so a reader can
+        // see how much of the declared sequence is text.
+        assert_eq!(line_term(&model, "image_tokens"), Some("4"), "{model}");
+        assert!(note.contains("declared"), "{note}");
+    }
+
+    #[test]
+    fn for_config_claims_nothing_for_the_synthetic_demo() {
+        // The LoRA-MLP demo has no comparable token geometry, so the honest
+        // output is time and VRAM with no derived throughput at all.
+        let config = TrainConfig::default();
+        assert!(crate::is_builtin_demo_base(&config.model.base));
+        let (work, note) = StepWork::for_config(&config, None);
+        assert_eq!(work.tokens, None);
+        assert_eq!(work.flops, None);
+        assert!(bench_with_work(work).model_line().is_none());
+        assert!(note.contains("none"), "{note}");
+    }
+
+    #[test]
+    fn for_config_refuses_a_degenerate_denominator() {
+        // A zero token count would print `tok_s=0.0000 tflops=0.0000`, which
+        // reads as a measurement. It must read as "no model" instead — and the
+        // note must name the input that is actually degenerate, not blame the
+        // resolution when the caller declared the zero.
+        //
+        // 8px is below the 8·patch floor, so the derivation itself yields 0.
+        // (Unreachable end to end: `dataset::generate_buckets` rejects any
+        // resolution that is not a multiple of 16. Guarded anyway — a future
+        // variant with a different patch or a non-f8 VAE could reach it.)
+        let (derived, note) = StepWork::for_config(&diffusion_config(8), None);
+        assert_eq!(derived.tokens, None);
+        assert_eq!(derived.flops, None);
+        assert!(bench_with_work(derived).model_line().is_none());
+        assert!(note.contains("derives 0 image tokens"), "{note}");
+        assert!(!note.contains("--seq-len is 0"), "{note}");
+
+        let (zero_batch, note) = StepWork::for_config(
+            &TrainConfig {
+                dataset: crate::config::DatasetConfig {
+                    batch_size: 0,
+                    ..diffusion_config(512).dataset
+                },
+                ..diffusion_config(512)
+            },
+            None,
+        );
+        assert_eq!(zero_batch.tokens, None);
+        assert!(note.contains("batch_size is 0"), "{note}");
+    }
+
+    /// A bench holding `work`, for rendering its `MODEL` line.
+    fn bench_with_work(work: StepWork) -> StepBench {
+        StepBench::new("step", work)
     }
 
     #[test]

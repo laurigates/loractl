@@ -80,8 +80,7 @@ use anyhow::{Context, Result};
 use figment::Figment;
 use figment::providers::{Format, Yaml};
 use loractl_core::bench::{StepBench, StepWork};
-use loractl_core::mmdit::MmditConfig;
-use loractl_core::{TrainConfig, TrainEvent, is_builtin_demo_base, select_trainer};
+use loractl_core::{TrainConfig, TrainEvent, select_trainer};
 use std::path::PathBuf;
 
 /// The parsed command line.
@@ -120,9 +119,16 @@ fn parse_args() -> Result<Args> {
             }
             "--seq-len" => {
                 let raw = value("--seq-len")?;
-                seq_len = Some(raw.parse().with_context(|| {
+                let n: usize = raw.parse().with_context(|| {
                     format!("--seq-len expects a positive integer, got {raw:?}")
-                })?);
+                })?;
+                // Rejected here rather than handled downstream: a declared 0
+                // is a typo, and the work model would otherwise have to
+                // explain a degenerate denominator the caller asked for.
+                if n == 0 {
+                    anyhow::bail!("--seq-len must be positive (0 tokens/step models nothing)");
+                }
+                seq_len = Some(n);
             }
             // Rejected rather than mangled: the label is the ONE
             // caller-controlled token in a schema whose entire purpose is
@@ -163,79 +169,6 @@ fn parse_args() -> Result<Args> {
     })
 }
 
-/// The work model for this config, plus a human note about where the token
-/// count came from.
-///
-/// Only the diffusion path is modelled: `BurnTrainer`'s synthetic/mnist demo
-/// is a LoRA-MLP whose "tokens" mean nothing comparable, so it reports time
-/// and VRAM and claims no throughput — the honest output for a run whose
-/// denominator does not exist.
-///
-/// The which-trainer test is `is_builtin_demo_base`, the same predicate
-/// `select_trainer` routes on, rather than a second copy of its match arm — a
-/// stale copy here would model MMDiT work for a non-MMDiT trainer and show up
-/// only as a wrong `tok_s=`.
-fn work_model(config: &TrainConfig, seq_len_flag: Option<usize>) -> (StepWork, String) {
-    if is_builtin_demo_base(&config.model.base) {
-        return (
-            StepWork::unmodelled(),
-            "work model: none — the synthetic/mnist demo has no comparable token \
-             geometry, so only ms= and vram_mib= are reported"
-                .to_string(),
-        );
-    }
-
-    let cfg = MmditConfig::for_variant(config.model.variant);
-    let batch = config.dataset.batch_size as usize;
-    // The image half, exactly: the VAE's f8 downsample, then the patch grid.
-    let latent = (config.dataset.resolution as usize) / 8;
-    let image_tokens = (latent / cfg.patch).pow(2);
-    let (seq_len, source) = match seq_len_flag {
-        Some(n) => (n, "declared"),
-        None => (image_tokens, "derived_image_only"),
-    };
-
-    // A zero denominator is worse than an absent one: `tok_s=0.0000
-    // tflops=0.0000` reads as a measurement rather than as "no model". The
-    // derivation floors twice (`resolution/8` then `/patch`), so any
-    // resolution below `8·patch` lands here. Unreachable from the shipped
-    // configs, but the whole point of the MODEL line is that a denominator is
-    // auditable, and one that is silently zero is neither.
-    if seq_len == 0 || batch == 0 {
-        return (
-            StepWork::unmodelled(),
-            format!(
-                "work model: none — {batch} × {seq_len} tokens/step is degenerate \
-                 (resolution {} over an f8 VAE and patch {} gives {image_tokens} image \
-                 tokens); reporting ms= and vram_mib= only. Pass --seq-len to model it.",
-                config.dataset.resolution, cfg.patch,
-            ),
-        );
-    }
-
-    let note = format!(
-        "work model: {batch} × {seq_len} tokens/step ({source}); \
-         {image_tokens} image tokens derived from resolution {} \
-         (latent {latent}, patch {}), assuming the square bucket and a full batch",
-        config.dataset.resolution, cfg.patch,
-    );
-    let work = StepWork::mmdit_step(&cfg, batch, seq_len, config.compute.grad_checkpointing)
-        .with_term("seq_len_source", source)
-        .with_term("image_tokens", image_tokens)
-        // Recorded, not assumed away: the image-token derivation takes Krea
-        // 2's f8 VAE. A bundle with a different downsample makes the derived
-        // count wrong, and `--seq-len` is then the only correct route.
-        .with_term("vae_downsample", 8)
-        // Two more assumptions worth naming rather than burying. `dataset.rs`
-        // buckets by aspect ratio (area-preserving, but 16-px aligned), so the
-        // square derivation is approximate; and `batches()` chunks per bucket,
-        // so a bucket's last batch can be smaller than `batch_size` — those
-        // steps process fewer tokens than modelled, and `tok_s=`/`tflops=`
-        // over-report for them.
-        .with_term("assumes", "square_bucket,full_batch");
-    (work, note)
-}
-
 fn main() -> Result<()> {
     let args = parse_args()?;
 
@@ -251,7 +184,13 @@ fn main() -> Result<()> {
     // and every timed window is bounded by a Step event on each side — so the
     // run needs `warmup + 3` steps before it can say anything. Say so up
     // front rather than printing an empty summary at the end.
+    // `warmup + 3` is the structural floor, but it is the *weakest* run that
+    // reports anything: at 2 counted windows `sanity()`'s baseline is a single
+    // sample, so one scheduling hiccup swings a verdict that is documented as
+    // voiding the timings. `warmup + 7` gives a 3-window baseline, which is
+    // why the `just bench` example passes `--steps 8`.
     let needed = args.warmup as u64 + 3;
+    let comfortable = args.warmup as u64 + 7;
     if config.steps < needed {
         println!(
             "note: steps={} is below the {needed} this bench needs \
@@ -260,9 +199,16 @@ fn main() -> Result<()> {
              the aggregate may be absent or weak",
             config.steps, args.warmup,
         );
+    } else if config.steps < comfortable {
+        println!(
+            "note: steps={} meets the {needed}-step floor but leaves the 2×-steps \
+             sanity baseline at 1–2 windows, where one scheduling hiccup can read \
+             SUSPECT — prefer --steps {comfortable} or more for a quotable run",
+            config.steps,
+        );
     }
 
-    let (work, note) = work_model(&config, args.seq_len);
+    let (work, note) = StepWork::for_config(&config, args.seq_len);
     println!(
         "config {} — backend {:?}, precision {:?}, quant {:?}, grad_ckpt {}",
         args.config.display(),
