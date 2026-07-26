@@ -1,15 +1,66 @@
-//! Shared GPU-smoke helpers: the synthetic smoke `TrainConfig` builder and the
-//! backend-agnostic run-and-assert driver. Consumed by `wgpu_smoke.rs` and
-//! `cuda_smoke.rs` — each of those is fully feature-gated at file level, so
-//! this module is only ever compiled when a GPU feature is on and never in the
-//! default/offline build.
+//! Shared integration-test helpers.
+//!
+//! Two groups, with different compile profiles:
+//!
+//! - **Numeric comparison** ([`max_abs_diff`], [`cosine`], [`assert_stage`]) —
+//!   used by the staged-parity suite (`*_parity.rs`, `*_real.rs`), which is
+//!   partly always-compiled and partly behind the opt-in real-weights features.
+//! - **GPU smoke** ([`smoke_config`], [`run_smoke`]) — used by `wgpu_smoke.rs`
+//!   and `cuda_smoke.rs`, each fully feature-gated at file level.
+//!
+//! Every integration test is its own crate, so Cargo compiles this module
+//! separately into each consumer, and each consumer uses only a subset of it.
+//! That makes unused items the norm here rather than a smell — hence the
+//! blanket allow, which is what keeps `just lint`'s `-D warnings` green.
+#![allow(dead_code)]
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
+    ComputeConfig, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
+
+/// Peak absolute elementwise difference between two flattened tensors.
+///
+/// Panics on a length mismatch rather than comparing a prefix: two staged
+/// activations of different lengths mean the shapes diverged, which is a
+/// bigger failure than any tolerance breach and should not be reported as one.
+pub fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "length mismatch: {} vs {}",
+        a.len(),
+        b.len()
+    );
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max)
+}
+
+/// Cosine similarity, accumulated in f64.
+///
+/// The tolerance-free backstop in the parity suite: it is scale-invariant, so
+/// it catches a structurally wrong result (permuted heads, a dropped residual)
+/// that a generous absolute tolerance would wave through.
+pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
+    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    dot / (na * nb)
+}
+
+/// Assert one stage of a staged-parity comparison, reporting the margin.
+///
+/// The `eprintln!` is deliberate: on a green run `cargo test -- --nocapture`
+/// shows how much headroom each stage had, which is what tells you a tolerance
+/// is drifting toward its limit *before* it starts failing.
+pub fn assert_stage(name: &str, got: &[f32], want: &[f32], tol: f32) {
+    let diff = max_abs_diff(got, want);
+    assert!(diff <= tol, "{name}: max|Δ| = {diff:e} exceeds tol {tol:e}",);
+    eprintln!("{name}: max|Δ| = {diff:e} (tol {tol:e})");
+}
 
 /// Build the smoke's TrainConfig for the given compute selection.
 pub fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConfig, PathBuf) {
@@ -23,26 +74,13 @@ pub fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConf
         steps,
         seed: 42,
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 8,
-            alpha: 16.0,
-            dropout: 0.0,
-            targets: vec![],
+            ..Default::default()
         },
         dataset: DatasetConfig {
-            path: PathBuf::from("unused"),
             resolution: 28,
-            batch_size: 1,
+            ..Default::default()
         },
         optim: OptimConfig {
             lr: 0.01,
@@ -57,9 +95,7 @@ pub fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConf
         },
         // The whole point: run on the caller-selected GPU backend.
         compute,
-        // Unused by the classification task.
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     };
     (config, out_dir)
 }

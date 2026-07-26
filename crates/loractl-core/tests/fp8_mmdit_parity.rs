@@ -18,8 +18,11 @@
 //! reference zeroes them in the dumped stages; this test zeroes its own
 //! stages with the same masks before comparing.
 
+mod common;
+
 use burn::backend::NdArray;
 use burn::tensor::{Tensor, TensorData};
+use common::{assert_stage, cosine};
 use loractl_core::diffusion_trainer::load_fp8_module;
 use loractl_core::mmdit::{Mmdit, MmditConfig};
 use serde::Deserialize;
@@ -69,35 +72,8 @@ struct Golden {
     output_shape: Vec<usize>,
 }
 
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(
-        a.len(),
-        b.len(),
-        "length mismatch: {} vs {}",
-        a.len(),
-        b.len()
-    );
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max)
-}
-
-fn assert_stage(name: &str, got: &[f32], want: &[f32], tol: f32) {
-    let diff = max_abs_diff(got, want);
-    assert!(diff <= tol, "{name}: max|Δ| = {diff:e} exceeds tol {tol:e}",);
-    eprintln!("{name}: max|Δ| = {diff:e} (tol {tol:e})");
-}
-
 fn flatten<Bk: burn::tensor::backend::Backend, const D: usize>(t: Tensor<Bk, D>) -> Vec<f32> {
     t.into_data().convert::<f32>().into_vec::<f32>().unwrap()
-}
-
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    dot / (na * nb)
 }
 
 fn argmax(v: &[f32]) -> usize {

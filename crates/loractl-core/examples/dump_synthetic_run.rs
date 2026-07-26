@@ -28,10 +28,7 @@
 use burn::backend::{Autodiff, NdArray};
 use burn::tensor::{Int, Tensor};
 use loractl_core::burn_trainer::synthetic_run_inputs;
-use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
-};
+use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
 use loractl_core::{LoraMlp, TrainConfig};
 use std::path::{Path, PathBuf};
 
@@ -58,16 +55,6 @@ fn config(out_dir: &Path) -> TrainConfig {
         steps: STEPS,
         seed: SEED,
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: RANK,
             alpha: ALPHA,
@@ -91,9 +78,7 @@ fn config(out_dir: &Path) -> TrainConfig {
             checkpoint_every: u64::MAX,
             sample_every: 0,
         },
-        compute: ComputeConfig::default(),
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     }
 }
 

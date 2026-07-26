@@ -26,7 +26,9 @@ tch = ["loractl-core/tch"]
 [dependencies]
 loractl-core = { path = "../loractl-core" }
 anyhow.workspace = true
-serde.workspace = true
+# NOTE: no direct `serde` dependency — the CLI derives nothing and names no
+# serde trait; every type it serializes is defined in core. `serde_json` below
+# carries the serde it needs. (Found by `just dead-code`.)
 # `inspect` renders a LoRA's `__metadata__` header, whose structured values
 # (`ss_tag_frequency`, `ss_bucket_info`) are JSON *inside* strings — this
 # re-renders them readably. Rendering is a front-end concern, so the

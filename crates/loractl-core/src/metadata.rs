@@ -133,7 +133,7 @@ impl LoraMetadata {
 
     /// Insert only when `value` is `Some` and non-empty — the "omit rather
     /// than write a blank" rule every optional field here follows.
-    pub fn set_opt(&mut self, key: impl Into<String>, value: Option<impl Into<String>>) {
+    pub(crate) fn set_opt(&mut self, key: impl Into<String>, value: Option<impl Into<String>>) {
         if let Some(v) = value {
             let v: String = v.into();
             if !v.is_empty() {
@@ -264,7 +264,7 @@ pub fn unix_now() -> Option<u64> {
 /// date crate in for one field: the conversion is proleptic-Gregorian
 /// arithmetic with no locale, timezone, or leap-second subtleties, and core's
 /// dependency surface is deliberately small.
-pub fn rfc3339_utc(secs: u64) -> String {
+pub(crate) fn rfc3339_utc(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let tod = secs % 86_400;
     let (y, m, d) = civil_from_days(days);
@@ -294,7 +294,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// a LoRA's tags as auto-complete. A natural-language caption with no commas
 /// therefore counts as one long "tag"; that is the format's behavior, not a
 /// bug here.
-pub fn caption_tags(caption: &str) -> Vec<&str> {
+pub(crate) fn caption_tags(caption: &str) -> Vec<&str> {
     caption
         .split(',')
         .map(str::trim)
@@ -303,7 +303,9 @@ pub fn caption_tags(caption: &str) -> Vec<&str> {
 }
 
 /// Tag → occurrence count over every caption, in sorted key order.
-pub fn tag_frequency<'a>(captions: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, usize> {
+pub(crate) fn tag_frequency<'a>(
+    captions: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, usize> {
     let mut freq: BTreeMap<String, usize> = BTreeMap::new();
     for caption in captions {
         for tag in caption_tags(caption) {

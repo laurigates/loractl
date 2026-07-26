@@ -22,8 +22,7 @@ use burn::tensor::{Tensor, TensorData};
 use loractl_core::adapter::{AdapterMeta, load_adapter};
 use loractl_core::burn_trainer::flow_batches;
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
+    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
 };
 use loractl_core::sample::sample_adapter;
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
@@ -85,16 +84,6 @@ fn flow_training_converges() {
         steps,
         seed: 42,
         task: TaskKind::FlowMatching,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 8,
             alpha: 16.0,
@@ -124,9 +113,9 @@ fn flow_training_converges() {
         // Default (ndarray) backend — this offline convergence proof must stay
         // on CPU; it doubles as the regression pin that the default is ndarray.
         compute: ComputeConfig::default(),
-        // SD3/kohya sampler defaults (logit-normal N(0,1), shift 3.0).
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        // Remaining defaults — load-bearing here: `flow` supplies the SD3/kohya
+        // sampler values (logit-normal N(0,1), shift 3.0) this proof trains against.
+        ..Default::default()
     };
 
     let mut losses = Vec::new();

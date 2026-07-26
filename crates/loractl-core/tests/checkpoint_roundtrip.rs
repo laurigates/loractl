@@ -17,10 +17,7 @@
 //! step). Offline, milliseconds.
 
 use loractl_core::adapter;
-use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
-};
+use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
 use loractl_core::{BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -50,16 +47,6 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
         steps,
         seed: 42,
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 8,
             alpha: 16.0,
@@ -81,9 +68,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
             checkpoint_every,
             sample_every,
         },
-        compute: ComputeConfig::default(),
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     }
 }
 

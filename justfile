@@ -161,6 +161,32 @@ fmt-check:
 test:
     cargo test
 
+# Dead-code report: `pub` items nothing outside their own file names, plus
+# manifest dependencies nothing imports. REPORTING ONLY, deliberately not part
+# of `just lint` — the pub-item scan matches names textually, so it cannot see
+# an item reached through type inference (`model.transformer.h[0]` never writes
+# `Transformer`). On its one run in anger, 10 of 49 candidates were genuinely
+# internal — so expect to reject most of what it prints. Treat the output as
+# candidates and let `cargo check --all-targets` + `cargo doc` adjudicate each
+# one; scripts/pub-census.sh's header documents the workflow.
+#
+# Deliberately NOT wired in as clippy lints, each measured on this tree:
+#   unused_crate_dependencies  797 hits — fires per-target for every dep a
+#                              given target does not use. Unusable.
+#   unreachable_pub             26 hits — 5 are the idiomatic `pub fn` in
+#                              tests/common/mod.rs, which is not a defect.
+#   clippy::redundant_clone     11 hits — nursery, i.e. explicitly unstable;
+#                              double-reports the same expression.
+#   clippy::needless_pass_by_value  10 hits — all in the trainer entry points
+#                              a future decomposition will rewrite anyway.
+# Needs cargo-machete (`cargo install cargo-machete`); skipped if absent.
+dead-code:
+    @./scripts/pub-census.sh
+    @echo
+    @if command -v cargo-machete >/dev/null 2>&1; then cargo machete; else \
+        echo "cargo-machete not installed — skipping the unused-dependency scan."; \
+        echo "  cargo install cargo-machete"; fi
+
 # Test-coverage summary via cargo-llvm-cov (default/offline features). Prints a
 # per-file table to stdout; local only, no thresholds or CI upload. For a
 # browsable report add `--html --open`; for CI add `--lcov --output-path …`.

@@ -16,8 +16,11 @@
 //! Tolerance-free backstops (latent argmax + cosine similarity) guard against
 //! a widened tolerance masking a real error.
 
+mod common;
+
 use burn::backend::NdArray;
 use burn::tensor::{Tensor, TensorData};
+use common::{assert_stage, cosine};
 use loractl_core::qwen_vae::{QwenVae, QwenVaeConfig};
 use serde::Deserialize;
 
@@ -82,41 +85,10 @@ fn load_tiny(expected_tensors: usize) -> QwenVae<B> {
     model
 }
 
-/// Max absolute difference between two equal-length flat slices.
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(
-        a.len(),
-        b.len(),
-        "length mismatch: {} vs {}",
-        a.len(),
-        b.len()
-    );
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max)
-}
-
-/// Assert a burn activation matches the golden within `tol`, reporting the
-/// observed max-abs diff so a widened tolerance is always visible.
-fn assert_stage(name: &str, got: &[f32], want: &[f32], tol: f32) {
-    let diff = max_abs_diff(got, want);
-    assert!(diff <= tol, "{name}: max|Δ| = {diff:e} exceeds tol {tol:e}",);
-    eprintln!("{name}: max|Δ| = {diff:e} (tol {tol:e})");
-}
-
 /// Flatten a burn tensor to a row-major `Vec<f32>`. The goldens' 5-D video
 /// shapes (`T = 1`) flatten identically to the port's squeezed 4-D shapes.
 fn flatten<const D: usize>(t: Tensor<B, D>) -> Vec<f32> {
     t.into_data().convert::<f32>().into_vec::<f32>().unwrap()
-}
-
-/// Cosine similarity of two equal-length vectors.
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    dot / (na * nb)
 }
 
 /// Index of the maximum element (the tolerance-free backstop's "argmax").
