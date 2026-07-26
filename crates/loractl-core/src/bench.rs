@@ -187,11 +187,26 @@ impl StepWork {
         Self::default()
     }
 
+    /// Record a term that mirrors a stored field, replacing any previous
+    /// value for `key` rather than appending a second one.
+    ///
+    /// The stored field is last-wins but `terms` is append-only, so a caller
+    /// who declares twice would otherwise get a line whose printed term
+    /// disagrees with the value actually divided by — the exact failure the
+    /// mirrored terms exist to rule out. Only for terms paired with a field;
+    /// [`with_term`](Self::with_term) stays append-only, since a caller adding
+    /// free-form annotations may legitimately want repeats.
+    fn set_mirrored_term(&mut self, key: &str, value: String) {
+        match self.terms.iter_mut().find(|(k, _)| k == key) {
+            Some((_, slot)) => *slot = value,
+            None => self.terms.push((key.to_string(), value)),
+        }
+    }
+
     /// Declare the per-step token count (`batch × seq_len`), enabling `tok_s=`.
     pub fn with_tokens(mut self, tokens: u64) -> Self {
         self.tokens = Some(tokens);
-        self.terms
-            .push(("tokens_per_step".into(), tokens.to_string()));
+        self.set_mirrored_term("tokens_per_step", tokens.to_string());
         self
     }
 
@@ -205,7 +220,7 @@ impl StepWork {
     /// auditable, and the total is the part a reader checks against `ms=`.
     pub fn with_flops(mut self, flops: f64) -> Self {
         self.flops = Some(flops);
-        self.terms.push(("step_flops".into(), flops.to_string()));
+        self.set_mirrored_term("step_flops", flops.to_string());
         self
     }
 
@@ -1006,6 +1021,32 @@ mod tests {
             model.contains("MODEL label=step tokens_per_step=2048"),
             "{model}"
         );
+        // The MODEL line carries the actual numerator the RESULT's `tflops=`
+        // was divided by, so the quotient closes by inspection: 1e12 FLOPs
+        // over the 1 s window is 1.0 TFLOP/s. Without this the term could be
+        // dropped or wrong and nothing would notice — which is the whole
+        // reason it is printed.
+        assert!(model.contains("step_flops=1000000000000"), "{model}");
+    }
+
+    #[test]
+    fn redeclaring_a_mirrored_term_replaces_it() {
+        // `tokens`/`flops` are last-wins, so their printed terms must be too.
+        // A second declaration appending instead of replacing would leave the
+        // line advertising a numerator that is NOT the one `tflops=` divided
+        // by — precisely the disagreement these terms exist to rule out.
+        let work = StepWork::unmodelled()
+            .with_tokens(1)
+            .with_flops(1.0)
+            .with_tokens(2048)
+            .with_flops(1e12);
+        let bench = StepBench::new("step", work);
+        let model = bench.model_line().expect("terms declared").to_string();
+
+        assert_eq!(model.matches("step_flops=").count(), 1, "{model}");
+        assert_eq!(model.matches("tokens_per_step=").count(), 1, "{model}");
+        assert!(model.contains("step_flops=1000000000000"), "{model}");
+        assert!(model.contains("tokens_per_step=2048"), "{model}");
     }
 
     /// Re-derives the count term by term, naming each projection explicitly
@@ -1075,6 +1116,17 @@ mod tests {
         assert!(
             (flops - uniform).abs() > 1.0,
             "a uniform multiplier would under-count by one attn term"
+        );
+
+        // And the printed numerator is the one `tflops=` divides by, for the
+        // real model and not just the hand-built one in
+        // `throughputs_appear_only_with_a_work_model`.
+        assert!(
+            work.terms
+                .iter()
+                .any(|(k, v)| k == "step_flops" && *v == flops.to_string()),
+            "step_flops must mirror the modelled total: {:?}",
+            work.terms
         );
     }
 
