@@ -913,11 +913,18 @@ mod tests {
     ///   six `Option` overrides (`None` vs `Option::default()`). Nine arms.
     ///   Editing `seed: 0` to `seed: 42` in the impl fails this test today —
     ///   verified, not assumed.
-    /// - **Not checked at all.** `model.base`, `lora`, `dataset.path` have no
-    ///   serde default, so their "serde side" is the [`MINIMAL`] literal below,
-    ///   hand-written to match and editable in lockstep.
-    ///   [`required_fields_are_still_required_when_deserializing`] is what
-    ///   guards those.
+    /// - **Not checked at all.** `model.base` and `dataset.path` have no serde
+    ///   default, so their "serde side" is the [`MINIMAL`] literal below —
+    ///   hand-written to match, and editable in lockstep.
+    ///
+    /// `lora` has no serde default either, but it does *not* belong in that
+    /// third bucket: [`MINIMAL`] supplies it as `{}`, which mirrors no value,
+    /// and every field inside resolves through its own attribute — which is why
+    /// `lora.rank`/`lora.alpha` land in the first bucket and
+    /// `lora.dropout`/`lora.targets` in the second. What is required of `lora`
+    /// is the block's *presence*, not any value in it. That — along with
+    /// `model` and `dataset` being present at all — is
+    /// [`required_fields_are_still_required_when_deserializing`]'s job.
     ///
     /// One mechanism note, since it is easy to credit the wrong attribute: the
     /// blocks resolve through the **field-level** `#[serde(default)]` on
