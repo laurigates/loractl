@@ -167,6 +167,7 @@ impl BurnOpBench {
 /// reports, so the model travels with them: [`StepBench::model_line`] prints
 /// its terms and the `excludes=` list. Time and VRAM are measured; these are
 /// derived.
+///
 /// Fields are private on purpose. They are pairwise-coupled — `flops` must
 /// equal the printed `step_flops=` term, and declaring a quotient without any
 /// term at all would emit `tok_s=`/`tflops=` with **no `MODEL` line**, the
@@ -353,26 +354,32 @@ impl StepWork {
 
         // A zero denominator is worse than an absent one: `tok_s=0.0000
         // tflops=0.0000` reads as a measurement rather than as "no model". The
-        // note names the input that is actually degenerate — a declared
-        // `--seq-len 0` is not the derivation's fault, and quoting the
-        // resolution at someone who overrode it reads as a contradiction.
+        // note names the input that is actually degenerate — a declared zero is
+        // not the derivation's fault, and quoting the resolution at someone who
+        // overrode it reads as a contradiction — and offers the remedy only in
+        // the case it applies to. Deliberately front-end-neutral: core hands
+        // this text back rather than printing it, so it must not name the CLI's
+        // flag spelling at an `loractl-api` or GUI caller that has no such flag.
         if seq_len == 0 || batch == 0 {
-            let cause = if batch == 0 {
-                "dataset.batch_size is 0".to_string()
+            let (cause, remedy) = if batch == 0 {
+                ("dataset.batch_size is 0".to_string(), "")
             } else if seq_len_flag.is_some() {
-                "the declared --seq-len is 0".to_string()
+                ("the declared sequence length is 0".to_string(), "")
             } else {
-                format!(
-                    "resolution {} over an f8 VAE and patch {} derives {image_tokens} \
-                     image tokens",
-                    config.dataset.resolution, cfg.patch,
+                (
+                    format!(
+                        "resolution {} over an f8 VAE and patch {} derives {image_tokens} \
+                         image tokens",
+                        config.dataset.resolution, cfg.patch,
+                    ),
+                    " Declare a sequence length to model it.",
                 )
             };
             return (
                 Self::unmodelled(),
                 format!(
                     "work model: none — {batch} × {seq_len} tokens/step is degenerate \
-                     ({cause}); reporting ms= and vram_mib= only"
+                     ({cause}); reporting ms= and vram_mib= only.{remedy}"
                 ),
             );
         }
@@ -1333,7 +1340,23 @@ mod tests {
         assert_eq!(derived.flops, None);
         assert!(bench_with_work(derived).model_line().is_none());
         assert!(note.contains("derives 0 image tokens"), "{note}");
-        assert!(!note.contains("--seq-len is 0"), "{note}");
+        assert!(!note.contains("sequence length is 0"), "{note}");
+        // The remedy belongs here — this is the case a caller can act on.
+        assert!(note.contains("Declare a sequence length"), "{note}");
+
+        // A declared zero is the CALLER's, not the derivation's. Blaming a
+        // resolution they overrode is the misattribution this arm exists to
+        // prevent, and advising them to declare a length they just declared is
+        // the remedy misfiring. Both are asserted, because deleting the arm
+        // would otherwise pass silently.
+        let (declared, note) = StepWork::for_config(&diffusion_config(512), Some(0));
+        assert_eq!(declared.tokens, None);
+        assert!(note.contains("the declared sequence length is 0"), "{note}");
+        assert!(!note.contains("resolution 512"), "{note}");
+        assert!(!note.contains("Declare a sequence length"), "{note}");
+        // Front-end-neutral: core must not name the CLI's flag spelling at an
+        // API/GUI caller that has no such flag.
+        assert!(!note.contains("--seq-len"), "{note}");
 
         let (zero_batch, note) = StepWork::for_config(
             &TrainConfig {
