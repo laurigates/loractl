@@ -897,27 +897,33 @@ mod tests {
     /// this working without a `PartialEq` bound on every config type, and
     /// makes a new field participate automatically.
     ///
-    /// **What this actually catches, stated precisely — because today it is
-    /// green by construction, not by coincidence:**
+    /// **What this actually catches.** The split is by how each `Default` arm
+    /// is *written*, not by which serde attribute it faces:
     ///
-    /// - `optim`, `output`, `compute`, `flow`, `metadata` carry *struct-level*
-    ///   `#[serde(default)]`, so serde's default **is** `X::default()`. Both
-    ///   sides are the same call.
-    /// - `steps`, `lora.rank`, `lora.alpha`, `dataset.resolution`,
-    ///   `dataset.batch_size` delegate to the same `defaults::` function from
-    ///   both sides, deliberately (see [`LoraConfig`]'s `Default`).
-    /// - `seed` and `task` take `#[serde(default)]`, i.e. `Default::default()`,
-    ///   which is what the impl writes too.
-    /// - `model.base`, `lora`, `dataset.path` have no serde default at all, so
-    ///   their "serde side" is the [`MINIMAL`] literal below — hand-written to
-    ///   match, and it would simply be edited in lockstep. What guards those
-    ///   three is [`required_fields_are_still_required_when_deserializing`].
+    /// - **Tautological — same call on both sides.** `steps`, `lora.rank`,
+    ///   `lora.alpha`, `dataset.resolution`, `dataset.batch_size` delegate to
+    ///   the same `defaults::` function serde names; `task`, `model.variant`,
+    ///   and the `optim`/`output`/`compute`/`flow`/`metadata` blocks resolve to
+    ///   `X::default()` on both sides. Nothing here can drift, by design — and
+    ///   that design is the reason to keep *delegating* rather than inlining a
+    ///   value into an impl.
+    /// - **Genuinely checked — a literal against the type's own `Default`.**
+    ///   `seed` (`0` vs `u64::default()`), `lora.dropout` (`0.0`),
+    ///   `lora.targets` (`Vec::new()` vs `Vec::default()`), and `ModelConfig`'s
+    ///   six `Option` overrides (`None` vs `Option::default()`). Nine arms.
+    ///   Editing `seed: 0` to `seed: 42` in the impl fails this test today —
+    ///   verified, not assumed.
+    /// - **Not checked at all.** `model.base`, `lora`, `dataset.path` have no
+    ///   serde default, so their "serde side" is the [`MINIMAL`] literal below,
+    ///   hand-written to match and editable in lockstep.
+    ///   [`required_fields_are_still_required_when_deserializing`] is what
+    ///   guards those.
     ///
-    /// So no field currently has two *independent* sources. The guard is
-    /// against a **future** field added with `#[serde(default = "defaults::x")]`
-    /// whose `Default` arm hardcodes a literal instead of calling `defaults::x`
-    /// — a likely enough mistake to be worth pinning, and the reason to keep
-    /// delegating rather than inlining values into the impls.
+    /// One mechanism note, since it is easy to credit the wrong attribute: the
+    /// blocks resolve through the **field-level** `#[serde(default)]` on
+    /// `TrainConfig` itself, not the struct-level one on `OptimConfig` and
+    /// friends. The latter governs a block that is present but partial;
+    /// [`MINIMAL`] omits those blocks entirely, so it never fires.
     #[test]
     fn rust_defaults_match_the_serde_defaults() {
         let from_serde: TrainConfig =
