@@ -725,6 +725,20 @@ mod tests {
         assert_eq!(contaminated, vec![3]);
         assert_eq!(bench.counted().len(), 2);
         assert!(bench.counted().iter().all(|s| !s.contaminated));
+
+        // The other half of the annotation: a contaminated window is dropped
+        // for a different reason than warm-up, and must still read counted=0.
+        assert_counted_terms_agree(&bench);
+        let contaminated_line = bench
+            .step_lines()
+            .iter()
+            .map(ToString::to_string)
+            .find(|l| l.contains("step=3 "))
+            .expect("step 3's line");
+        assert!(
+            contaminated_line.contains("ckpt=1") && contaminated_line.contains("counted=0"),
+            "{contaminated_line}"
+        );
     }
 
     #[test]
@@ -744,6 +758,35 @@ mod tests {
         assert_eq!(bench.samples().len(), 3);
         assert_eq!(bench.counted().len(), 2, "the first window is warm-up");
         assert_eq!(bench.counted()[0].step, 3);
+
+        // Tie the printed annotation to the selection it claims to describe.
+        // `counted=` exists so a reader can reconcile the per-step lines with
+        // the `_median` aggregate; without this the term could be inverted, or
+        // lose its warm-up clause, and the whole suite would still pass —
+        // leaving exactly the discrepancy it was added to expose.
+        assert_counted_terms_agree(&bench);
+        assert!(
+            bench.step_lines()[0].to_string().contains("counted=0"),
+            "the warm-up window must be marked as not counted"
+        );
+    }
+
+    /// Assert every `counted=` term matches [`StepBench::counted`]'s selection.
+    fn assert_counted_terms_agree(bench: &StepBench) {
+        let lines: Vec<String> = bench.step_lines().iter().map(ToString::to_string).collect();
+        let marked: Vec<&String> = lines.iter().filter(|l| l.contains("counted=1")).collect();
+        assert_eq!(
+            marked.len(),
+            bench.counted().len(),
+            "counted=1 lines must equal the aggregate's sample count\n{lines:#?}"
+        );
+        // Every line carries the term, so `counted=1` + `counted=0` accounts
+        // for all of them — an omitted term cannot hide as a `counted=0`.
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("counted=0")).count(),
+            lines.len() - marked.len(),
+            "every line must carry a counted= term\n{lines:#?}"
+        );
     }
 
     #[test]
