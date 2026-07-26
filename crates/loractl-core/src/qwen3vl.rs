@@ -550,16 +550,16 @@ pub struct Qwen3VlConditioner<B: Backend> {
 }
 
 /// `encoder.py`'s prompt template, verbatim.
-pub const PROMPT_PREFIX: &str = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n";
+pub(crate) const PROMPT_PREFIX: &str = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n";
 /// The assistant-turn suffix appended (as separately-tokenized ids) *after*
 /// the right-padded body — pad tokens sit between caption and suffix.
-pub const PROMPT_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n";
+pub(crate) const PROMPT_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n";
 /// Token length of [`PROMPT_PREFIX`]; the conditioning slice starts here.
-pub const PROMPT_PREFIX_LEN: usize = 34;
+pub(crate) const PROMPT_PREFIX_LEN: usize = 34;
 /// Token length of [`PROMPT_SUFFIX`] (folded into the body's pad budget).
-pub const PROMPT_SUFFIX_LEN: usize = 5;
+pub(crate) const PROMPT_SUFFIX_LEN: usize = 5;
 /// The pad token (Qwen vocabulary).
-pub const PAD_TOKEN: &str = "<|endoftext|>";
+pub(crate) const PAD_TOKEN: &str = "<|endoftext|>";
 
 impl<B: Backend> Qwen3VlConditioner<B> {
     /// Wrap a loaded encoder with the tokenizer at `tokenizer_json`

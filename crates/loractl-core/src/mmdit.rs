@@ -201,7 +201,7 @@ impl MmditConfig {
     }
 
     /// The 3-axis RoPE split of a head dim (`mmdit.py`'s `axes`).
-    pub fn rope_axes(head_dim: usize) -> [usize; 3] {
+    pub(crate) fn rope_axes(head_dim: usize) -> [usize; 3] {
         let unit = head_dim / 16;
         [head_dim - 12 * unit, 6 * unit, 6 * unit]
     }

@@ -133,7 +133,7 @@ impl QwenVaeConfig {
 
     /// The spatial compression factor: one 2× downsample per stage transition
     /// (`dim_mult.len() - 1` of them). 8 for the real config, 4 for the tiny.
-    pub fn spatial_compression(&self) -> usize {
+    pub(crate) fn spatial_compression(&self) -> usize {
         1 << (self.dim_mult.len() - 1)
     }
 }

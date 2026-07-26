@@ -141,7 +141,7 @@ pub struct DatasetEntry {
 /// an optional same-stem `.txt` caption), each assigned to its nearest
 /// bucket. Sorted by filename for determinism. Errors when the folder holds
 /// no images (fail fast — an empty dataset is a configuration mistake).
-pub fn scan_dataset(dir: &Path, buckets: &[Bucket]) -> Result<Vec<DatasetEntry>> {
+pub(crate) fn scan_dataset(dir: &Path, buckets: &[Bucket]) -> Result<Vec<DatasetEntry>> {
     let mut entries = Vec::new();
     let read = std::fs::read_dir(dir)
         .with_context(|| format!("reading dataset directory {}", dir.display()))?;

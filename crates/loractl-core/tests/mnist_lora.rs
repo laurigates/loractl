@@ -17,8 +17,7 @@ use burn::data::dataset::Dataset;
 use burn::data::dataset::vision::MnistDataset;
 use burn::tensor::{Device, Tensor, TensorData};
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
+    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
