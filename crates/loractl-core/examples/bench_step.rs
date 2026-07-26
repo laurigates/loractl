@@ -18,7 +18,9 @@
 //! Grep-parseable lines from the `loractl-bench` schema:
 //!
 //! - `MODEL label=… …` — the analytic work model behind the derived
-//!   throughputs, with its `excludes=` list. Absent when nothing is modelled.
+//!   throughputs, with its `excludes=` list. `step_flops=` is the actual
+//!   numerator `tflops=` was divided by, so it can be checked against `ms=`
+//!   without reassembling the component terms. Absent when nothing is modelled.
 //! - `RESULT label=<label> ms=… tok_s=… tflops=… step=… loss=… ckpt=…
 //!   counted=… vram_mib=…` — one per timed step window. `counted=0` marks a
 //!   window the aggregate dropped, and `ckpt=1` says it was dropped for a

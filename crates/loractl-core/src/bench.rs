@@ -197,8 +197,15 @@ impl StepWork {
 
     /// Declare modelled per-step FLOPs (forward + backward), enabling
     /// `tflops=`.
+    ///
+    /// Also records the value as the `step_flops=` term, so the `MODEL` line
+    /// always carries the **actual numerator** `tflops=` was divided by — not
+    /// a restatement of it, which could drift. A model whose components are
+    /// printed but whose total must be reassembled by hand is only half
+    /// auditable, and the total is the part a reader checks against `ms=`.
     pub fn with_flops(mut self, flops: f64) -> Self {
         self.flops = Some(flops);
+        self.terms.push(("step_flops".into(), flops.to_string()));
         self
     }
 
@@ -1058,9 +1065,12 @@ mod tests {
             proj * 3.0 + attn * 4.0
         );
 
-        // The multipliers must actually differ — collapsing them back to one
-        // uniform pass over `proj + attn` drops a whole attention term, which
-        // is what this test exists to prevent recurring.
+        // Names the specific regression this test guards: one uniform pass
+        // over `proj + attn` drops a whole attention term. NOT independent
+        // coverage — it is implied by the exact assertion above (their
+        // difference is just `attn`), so it can only fail once that one has.
+        // Kept as an executable comment, and flagged as such so a future edit
+        // that weakens the exact assertion doesn't mistake this for a backstop.
         let uniform = (proj + attn) * 2.0;
         assert!(
             (flops - uniform).abs() > 1.0,
