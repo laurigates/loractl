@@ -92,12 +92,12 @@ use burn::backend::{Wgpu, wgpu::WgpuDevice};
 ///
 /// Public so [`synthetic_run_inputs`] can hand a run's real batches out to the
 /// PyTorch reference generator.
-pub(crate) type Batch<B> = (Tensor<B, 2>, Tensor<B, 1, Int>);
+pub type Batch<B> = (Tensor<B, 2>, Tensor<B, 1, Int>);
 
 /// One flow-matching training batch: velocity-net input
 /// `[batch, FLOW_LATENT_DIM + 1]` (`concat[x_t, t]`) and its v-prediction
 /// target `[batch, FLOW_LATENT_DIM]`.
-pub(crate) type FlowBatch<B> = (Tensor<B, 2>, Tensor<B, 2>);
+pub type FlowBatch<B> = (Tensor<B, 2>, Tensor<B, 2>);
 
 /// Flattened MNIST-shaped input width (28×28).
 const INPUT_DIM: usize = 784;

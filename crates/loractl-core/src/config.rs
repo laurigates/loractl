@@ -66,7 +66,7 @@ impl Default for TrainConfig {
     /// backend, at the same values a YAML that omits those keys would get.
     ///
     /// Hand-written rather than derived because a derived impl would give
-    /// `steps: 0` while the serde default is [`defaults::steps`] (1000) — the
+    /// `steps: 0` while the serde default is `defaults::steps` (1000) — the
     /// two would silently disagree. Every field here either delegates to the
     /// matching `defaults::` function or to the sub-struct's own `Default`.
     ///
@@ -896,6 +896,15 @@ mod tests {
     /// Comparing serialized values rather than the structs themselves keeps
     /// this working without a `PartialEq` bound on every config type, and
     /// makes a new field participate automatically.
+    ///
+    /// **Scope, so this is not over-trusted:** the two-independent-sources
+    /// claim holds for the eight fields carrying `#[serde(default …)]`, whose
+    /// values come from serde and the `Default` impls separately. It does not
+    /// hold for `model.base`, `lora`, and `dataset.path` — those have no serde
+    /// default, so their "serde side" is the [`MINIMAL`] literal below, written
+    /// by hand to match. Changing `ModelConfig::default().base` would just be
+    /// mirrored there; nothing here would object. What guards *those* three is
+    /// [`required_fields_are_still_required_when_deserializing`].
     #[test]
     fn rust_defaults_match_the_serde_defaults() {
         let from_serde: TrainConfig =
