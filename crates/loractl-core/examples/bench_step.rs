@@ -18,17 +18,20 @@
 //! Grep-parseable lines from the `loractl-bench` schema:
 //!
 //! - `MODEL label=… …` — the analytic work model behind the derived
-//!   throughputs, with its `excludes=` list. `step_flops=` is the actual
-//!   numerator `tflops=` was divided by, so it can be checked against `ms=`
-//!   without reassembling the component terms. Absent when nothing is modelled.
+//!   throughputs. `step_flops=` is the actual numerator `tflops=` was divided
+//!   by, so it can be checked against `ms=` without reassembling the component
+//!   terms; `excludes=` lists what the count leaves out (all of it in the
+//!   under-count direction) and `assumes=` what it takes on faith. Absent when
+//!   nothing is modelled.
 //! - `RESULT label=<label> ms=… tok_s=… tflops=… step=… loss=… ckpt=…
 //!   counted=… vram_mib=…` — one per timed step window. `counted=0` marks a
 //!   window the aggregate dropped, and `ckpt=1` says it was dropped for a
 //!   checkpoint export rather than as warm-up; averaging the per-step lines
 //!   without filtering on `counted=1` will not match the `_median` line.
-//! - `RESULT label=<label>_median …` — the aggregate, and the line to quote:
-//!   median step time over the counted windows, peak VRAM, `plausible=`, and
-//!   the 2×-steps `sanity=` verdict.
+//! - `RESULT label=<label>_median ms=… tok_s=… tflops=… steps_counted=…
+//!   steps_timed=… plausible=… vram_peak_mib=… sanity=… x2_ratio=…` — the
+//!   aggregate, and the line to quote: median step time over the counted
+//!   windows, peak VRAM, and the 2×-steps dead-graph verdict.
 //! - `SANITY x2_iters_ratio=… verdict=…` — the dead-graph check.
 //!
 //! `ms=` and `vram_mib=` are measured. `tok_s=` and `tflops=` are quotients of

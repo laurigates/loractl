@@ -661,6 +661,20 @@ mod tests {
         bench
     }
 
+    /// The exact value of `key=` on a rendered `MODEL`/`RESULT` line.
+    ///
+    /// Deliberately not `contains("key=value")`: terms are space-delimited and
+    /// the last one has no trailing delimiter, so a substring check matches a
+    /// *prefix* of the value — `step_flops=1e13` contains `step_flops=1e12`'s
+    /// rendering, and a ×10 mutation would pass. `ends_with` would fix that
+    /// only while the term stays last. Splitting on whitespace is exact
+    /// regardless of position, which is what an assertion about a printed
+    /// number should be.
+    fn line_term<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+        line.split_whitespace()
+            .find_map(|term| term.strip_prefix(key)?.strip_prefix('='))
+    }
+
     fn step(step: u64, loss: f32) -> TrainEvent {
         TrainEvent::Step {
             step,
@@ -1026,7 +1040,11 @@ mod tests {
         // over the 1 s window is 1.0 TFLOP/s. Without this the term could be
         // dropped or wrong and nothing would notice — which is the whole
         // reason it is printed.
-        assert!(model.contains("step_flops=1000000000000"), "{model}");
+        assert_eq!(
+            line_term(&model, "step_flops"),
+            Some("1000000000000"),
+            "{model}"
+        );
     }
 
     #[test]
@@ -1045,8 +1063,16 @@ mod tests {
 
         assert_eq!(model.matches("step_flops=").count(), 1, "{model}");
         assert_eq!(model.matches("tokens_per_step=").count(), 1, "{model}");
-        assert!(model.contains("step_flops=1000000000000"), "{model}");
-        assert!(model.contains("tokens_per_step=2048"), "{model}");
+        assert_eq!(
+            line_term(&model, "step_flops"),
+            Some("1000000000000"),
+            "{model}"
+        );
+        assert_eq!(
+            line_term(&model, "tokens_per_step"),
+            Some("2048"),
+            "{model}"
+        );
     }
 
     /// Re-derives the count term by term, naming each projection explicitly
