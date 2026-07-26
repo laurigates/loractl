@@ -10,8 +10,7 @@
 //! test in `mnist_lora.rs`.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
+    ComputeConfig, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -52,16 +51,6 @@ fn synthetic_training_converges() {
         // The classification demo — doubles as the regression pin that the
         // default task is classification.
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 8,
             alpha: 16.0,
@@ -88,9 +77,9 @@ fn synthetic_training_converges() {
         // Default (ndarray) backend — this offline convergence proof must stay
         // on CPU; it doubles as the regression pin that the default is ndarray.
         compute: ComputeConfig::default(),
-        // Unused by the classification task.
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        // Remaining defaults: the synthetic `model` base, plus `flow`/`metadata`,
+        // neither of which the classification task consults.
+        ..Default::default()
     };
 
     let mut losses = Vec::new();

@@ -20,7 +20,10 @@
 //! stack is compared against the reference stack.
 #![cfg(feature = "qwen3vl-real")]
 
+mod common;
+
 use burn::backend::NdArray;
+use common::{cosine, max_abs_diff};
 use loractl_core::qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
 use serde::Deserialize;
 use std::path::Path;
@@ -42,21 +45,6 @@ struct Golden {
     max_length: usize,
     conditioning_shape: Vec<usize>,
     safetensors_keys: Vec<String>,
-}
-
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    dot / (na * nb)
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "length mismatch");
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max)
 }
 
 /// Read a named f32 tensor out of the golden safetensors file.

@@ -21,10 +21,13 @@
 //!    the adapters, which move; the frozen QFloat base is a constant.
 //! 4. **`base_linears_mut` coverage** — its paths equal `injectable_sites`.
 
+mod common;
+
 use burn::backend::{Autodiff, NdArray};
 use burn::tensor::backend::Backend;
 use burn::tensor::quantization::QuantValue;
 use burn::tensor::{Tensor, TensorData};
+use common::cosine;
 use loractl_core::adapters::LoraAdapters;
 use loractl_core::lora::LoraDelta;
 use loractl_core::mmdit::{Mmdit, MmditConfig, krea2_positions};
@@ -220,14 +223,6 @@ fn quantized_forward_matches_plain_within_int8_tolerance() {
 #[test]
 fn quantized_forward_matches_plain_within_int4_tolerance() {
     quantized_forward_matches_plain(QuantValue::Q4S, REL_TOL_INT4, COS_MIN_INT4);
-}
-
-/// Cosine similarity of two flattened outputs.
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    dot / (na * nb)
 }
 
 #[test]

@@ -20,9 +20,12 @@
 //! differed). The native load additionally must be complete: zero errors, zero
 //! missing params, zero unused file tensors, all 154 fixture tensors applied.
 
+mod common;
+
 use burn::backend::NdArray;
 use burn::tensor::{Tensor, TensorData};
 use burn_store::{ApplyResult, KeyRemapper, ModuleSnapshot, SafetensorsStore};
+use common::max_abs_diff;
 use loractl_core::qwen_vae::{QwenVae, QwenVaeConfig};
 use serde::Deserialize;
 
@@ -55,20 +58,6 @@ fn load(path: &str, remap: Vec<(&str, &str)>) -> (QwenVae<B>, ApplyResult) {
 /// Flatten a burn tensor to a row-major `Vec<f32>`.
 fn flatten<const D: usize>(t: Tensor<B, D>) -> Vec<f32> {
     t.into_data().convert::<f32>().into_vec::<f32>().unwrap()
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(
-        a.len(),
-        b.len(),
-        "length mismatch: {} vs {}",
-        a.len(),
-        b.len()
-    );
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max)
 }
 
 #[test]

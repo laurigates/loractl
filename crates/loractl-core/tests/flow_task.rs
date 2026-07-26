@@ -9,8 +9,8 @@
 
 use loractl_core::adapter::AdapterMeta;
 use loractl_core::config::{
-    BackendKind, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig,
-    OptimConfig, OutputConfig, ShiftMode, TaskKind,
+    BackendKind, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, OptimConfig, OutputConfig,
+    ShiftMode, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, Trainer};
 use std::path::PathBuf;
@@ -23,16 +23,6 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
         steps: 1,
         seed: 0,
         task: TaskKind::FlowMatching,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 2,
             alpha: 4.0,
@@ -60,8 +50,7 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
             backend,
             ..ComputeConfig::default()
         },
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     }
 }
 

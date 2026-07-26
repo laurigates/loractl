@@ -35,10 +35,7 @@
 
 use burn::tensor::{TensorData, Tolerance};
 use loractl_core::adapter::load_adapter;
-use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
-};
+use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
 use loractl_core::{BurnTrainer, Device, LoraMlp, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::{Path, PathBuf};
 
@@ -113,16 +110,6 @@ fn config(out_dir: &Path, weight_decay: f64) -> TrainConfig {
         steps: STEPS,
         seed: SEED,
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: RANK,
             alpha: ALPHA,
@@ -146,9 +133,7 @@ fn config(out_dir: &Path, weight_decay: f64) -> TrainConfig {
             checkpoint_every: u64::MAX,
             sample_every: 0,
         },
-        compute: ComputeConfig::default(),
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     }
 }
 

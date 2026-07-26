@@ -14,10 +14,7 @@
 //! loss sequence. Black-box (observes only the `TrainEvent` stream). Offline,
 //! milliseconds.
 
-use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, TaskKind,
-};
+use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -49,16 +46,6 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
         steps: 40,
         seed: 42,
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 8,
             alpha: 16.0,
@@ -80,9 +67,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
             checkpoint_every: 10_000,
             sample_every: 0,
         },
-        compute: ComputeConfig::default(),
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     };
 
     let mut losses = Vec::new();

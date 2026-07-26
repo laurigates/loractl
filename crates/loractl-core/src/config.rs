@@ -61,6 +61,36 @@ pub struct TrainConfig {
     pub metadata: MetadataConfig,
 }
 
+impl Default for TrainConfig {
+    /// A runnable synthetic-demo run: the M2 classification task on the CPU
+    /// backend, at the same values a YAML that omits those keys would get.
+    ///
+    /// Hand-written rather than derived because a derived impl would give
+    /// `steps: 0` while the serde default is [`defaults::steps`] (1000) — the
+    /// two would silently disagree. Every field here either delegates to the
+    /// matching `defaults::` function or to the sub-struct's own `Default`.
+    ///
+    /// Intended use is `TrainConfig { steps: 3, ..Default::default() }`: state
+    /// the handful of fields a test or front-end actually cares about, and let
+    /// the rest track the documented defaults instead of being restated at
+    /// every construction site.
+    fn default() -> Self {
+        Self {
+            steps: defaults::steps(),
+            seed: 0,
+            task: TaskKind::default(),
+            model: ModelConfig::default(),
+            lora: LoraConfig::default(),
+            dataset: DatasetConfig::default(),
+            optim: OptimConfig::default(),
+            output: OutputConfig::default(),
+            compute: ComputeConfig::default(),
+            flow: FlowConfig::default(),
+            metadata: MetadataConfig::default(),
+        }
+    }
+}
+
 /// Author-supplied metadata for the exported adapter's `__metadata__` header.
 ///
 /// The `.safetensors` format carries a JSON header ahead of the tensor data,
@@ -200,6 +230,28 @@ pub struct ModelConfig {
     pub training_adapter: Option<PathBuf>,
 }
 
+impl Default for ModelConfig {
+    /// The M2 synthetic demo, every component override unset.
+    ///
+    /// Note this is **not** the same contract as deserialization: `base` has no
+    /// `#[serde(default)]`, so a YAML omitting `model.base` is still an error.
+    /// This impl exists for programmatic construction (tests, front-ends
+    /// building a config field by field), where a runnable synthetic default is
+    /// the useful starting point.
+    fn default() -> Self {
+        Self {
+            base: "synthetic".into(),
+            variant: ModelVariant::default(),
+            checkpoint: None,
+            denoiser: None,
+            text_encoder: None,
+            vae: None,
+            tokenizer: None,
+            training_adapter: None,
+        }
+    }
+}
+
 /// The known Krea 2 architecture variants (M14).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -272,6 +324,19 @@ pub struct LoraConfig {
     pub targets: Vec<TargetSpec>,
 }
 
+impl Default for LoraConfig {
+    /// Delegates to the same `defaults::` functions the `#[serde(default = …)]`
+    /// attributes use, so the Rust and YAML defaults cannot drift apart.
+    fn default() -> Self {
+        Self {
+            rank: defaults::rank(),
+            alpha: defaults::alpha(),
+            dropout: 0.0,
+            targets: Vec::new(),
+        }
+    }
+}
+
 /// A LoRA injection target: a module-path pattern plus optional per-target
 /// `rank`/`alpha` overrides.
 ///
@@ -304,6 +369,20 @@ pub struct DatasetConfig {
     /// M14; the synthetic tasks ignore it.
     #[serde(default = "defaults::batch_size")]
     pub batch_size: u32,
+}
+
+impl Default for DatasetConfig {
+    /// Empty path (the synthetic/MNIST tasks never read it), otherwise the same
+    /// `defaults::` functions the serde attributes use. As with
+    /// [`ModelConfig`], `path` has no `#[serde(default)]`, so a YAML omitting
+    /// `dataset.path` still fails to deserialize.
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            resolution: defaults::resolution(),
+            batch_size: defaults::batch_size(),
+        }
+    }
 }
 
 /// Optimizer configuration.
@@ -791,5 +870,73 @@ mod defaults {
     }
     pub fn resolution() -> u32 {
         512
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the three fields that carry no `#[serde(default)]`. Everything
+    /// else is omitted on purpose — that is what the test is about.
+    const MINIMAL: &str = r#"{
+        "model": {"base": "synthetic"},
+        "lora": {},
+        "dataset": {"path": ""}
+    }"#;
+
+    /// The hand-written [`Default`] impls and the `#[serde(default …)]`
+    /// attributes are two independent descriptions of the same defaults, and
+    /// nothing in the type system ties them together. If they drift, a test
+    /// written as `TrainConfig { steps: 3, ..Default::default() }` silently
+    /// describes a *different run* than the YAML it is supposed to stand in
+    /// for — which is precisely the kind of divergence that makes a golden
+    /// disagree for reasons unrelated to the code under test.
+    ///
+    /// Comparing serialized values rather than the structs themselves keeps
+    /// this working without a `PartialEq` bound on every config type, and
+    /// makes a new field participate automatically.
+    #[test]
+    fn rust_defaults_match_the_serde_defaults() {
+        let from_serde: TrainConfig =
+            serde_json::from_str(MINIMAL).expect("the minimal config should deserialize");
+        let from_rust = TrainConfig::default();
+
+        assert_eq!(
+            serde_json::to_value(&from_serde).unwrap(),
+            serde_json::to_value(&from_rust).unwrap(),
+            "Default::default() and the serde defaults disagree — a new field \
+             was probably added to one but not the other"
+        );
+    }
+
+    /// Adding `Default` must NOT make the required fields optional in a
+    /// config file. Deriving `Default` is a Rust-side convenience; it does not
+    /// (and must not) imply `#[serde(default)]` on the struct, or a YAML
+    /// typo'd to omit `model:` would silently train the synthetic demo
+    /// instead of failing.
+    #[test]
+    fn required_fields_are_still_required_when_deserializing() {
+        for (missing, doc) in [
+            ("model", r#"{"lora": {}, "dataset": {"path": ""}}"#),
+            (
+                "lora",
+                r#"{"model": {"base": "synthetic"}, "dataset": {"path": ""}}"#,
+            ),
+            ("dataset", r#"{"model": {"base": "synthetic"}, "lora": {}}"#),
+            (
+                "model.base",
+                r#"{"model": {}, "lora": {}, "dataset": {"path": ""}}"#,
+            ),
+            (
+                "dataset.path",
+                r#"{"model": {"base": "synthetic"}, "lora": {}, "dataset": {}}"#,
+            ),
+        ] {
+            assert!(
+                serde_json::from_str::<TrainConfig>(doc).is_err(),
+                "omitting `{missing}` should be a deserialization error, not a default"
+            );
+        }
     }
 }

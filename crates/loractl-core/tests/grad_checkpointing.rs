@@ -13,8 +13,7 @@
 //! loud error (the M7 no-silent-fallback rule), never a quiet f32 run.
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig, OptimConfig,
-    OutputConfig, Precision, TaskKind,
+    ComputeConfig, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, Precision, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -45,16 +44,6 @@ fn config(compute: ComputeConfig, out: &TempDir) -> TrainConfig {
         steps: 8,
         seed: 42,
         task: TaskKind::Classification,
-        model: ModelConfig {
-            base: "synthetic".into(),
-            variant: Default::default(),
-            checkpoint: None,
-            denoiser: None,
-            text_encoder: None,
-            vae: None,
-            tokenizer: None,
-            training_adapter: None,
-        },
         lora: LoraConfig {
             rank: 8,
             alpha: 16.0,
@@ -77,8 +66,7 @@ fn config(compute: ComputeConfig, out: &TempDir) -> TrainConfig {
             sample_every: 0,
         },
         compute,
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        ..Default::default()
     }
 }
 

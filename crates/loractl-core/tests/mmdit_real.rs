@@ -19,8 +19,11 @@
 //! ```
 #![cfg(feature = "mmdit-real")]
 
+mod common;
+
 use burn::backend::NdArray;
 use burn::tensor::{Tensor, TensorData};
+use common::{cosine, max_abs_diff};
 use loractl_core::mmdit::{Mmdit, MmditConfig};
 use serde::Deserialize;
 use std::path::Path;
@@ -52,21 +55,6 @@ struct Golden {
     after_txtfusion: Vec<f32>,
     output: Vec<f32>,
     output_shape: Vec<usize>,
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "length mismatch");
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max)
-}
-
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-    dot / (na * nb)
 }
 
 /// Zero a flat `[1, l, d]` stage at positions whose mask entry is 0 (the

@@ -105,9 +105,9 @@ fn mnist_lora_converges() {
         },
         // Default (ndarray) backend — the opt-in MNIST proof stays on CPU.
         compute: ComputeConfig::default(),
-        // Unused by the classification task.
-        flow: FlowConfig::default(),
-        metadata: MetadataConfig::default(),
+        // Remaining defaults: the synthetic `model` base, plus `flow`/`metadata`,
+        // neither of which the classification task consults.
+        ..Default::default()
     };
 
     let mut losses = Vec::new();
