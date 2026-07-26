@@ -210,8 +210,14 @@ Open from here: step **throughput** is unmeasured on real hardware — the extra
 per-block forward costs something, and the #110 harness that can now price it
 (`just bench`, `crates/loractl-bench` + `loractl-core::bench`) has only been
 exercised on the offline fixture; the number needs a GPU dispatch. int4's
-dequant error vs adapter quality is a separate question from fit, and the
-dataset-pipeline ergonomics issues (#147–#149) are the next user-facing gap.
+dequant error vs adapter quality is a separate question from fit (now tracked
+as #159), and the dataset-pipeline ergonomics issues (#147–#149) are the next
+user-facing gap. The next *memory* lever — offloading the #134 block-boundary
+activations to host RAM (#158) — is now scoped and priced by
+[ADR-0008](adrs/0008-host-offload-mechanism-and-scope.md): explicit scheduled
+transfer rather than demand paging, worth ~1.06 GB of the 19.4 GB peak at 512px
+(~3.17 GB at 1024px; batch-1, derived), and blocked on that dispatch because it
+is the first lever that spends throughput to buy VRAM.
 
 ## A note on the text side
 
