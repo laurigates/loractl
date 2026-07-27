@@ -34,6 +34,32 @@ just fmt-check && just lint && just test
 Features are **offline by default**: `mnist`, `gpt2-real`, and `wgpu` are
 opt-in and never part of the default build or `just test`.
 
+## The docs drift gate (`just surf`)
+
+`hubs/*.md` anchor prose claims to code symbols.
+[Surface](https://github.com/Connorrmcd6/surface) fingerprints each anchored
+symbol's *logic* — ignoring comments, formatting, and consistent renames — and
+CI (`.github/workflows/docs-drift.yml`) fails when one moves.
+
+It is optional locally: install `surf` and run `just surf` to get the same
+verdict CI will. Without it installed, nothing breaks; the Action is the gate.
+
+**When it fires, do not rubber-stamp it.** The gate is a prompt to re-read, not
+a chore:
+
+1. Read the claim it printed. Decide whether the prose is *still true* — Surface
+   only knows the code moved, never whether the sentence is now wrong.
+2. If the prose is stale, fix it first.
+3. Only then `surf verify` to re-seal the hash, and commit prose + code together.
+
+`surf check --format json` emits a machine-readable verdict if you want a
+reviewer to judge the "is it still true?" half.
+
+**What it does not cover.** Anchors guard the spans they point at, so a change
+*elsewhere* can falsify a claim while this gate stays green. Empirical claims —
+VRAM numbers, throughput, upstream bug status — are not anchorable at all; those
+live in `docs/roadmap.md` and the ADRs and are maintained by hand.
+
 ## Testing conventions
 
 New ML code lands with tests, and ML correctness is verified against a
