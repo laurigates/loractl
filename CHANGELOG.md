@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/laurigates/loractl/compare/v0.16.0...v0.17.0) (2026-07-26)
+
+
+### Features
+
+* **core:** embed LoRA metadata (trigger words, training record) in exports ([bc02d60](https://github.com/laurigates/loractl/commit/bc02d60438b66307cb730bcf716156005a24638f))
+
+
+### Bug Fixes
+
+* **core:** f32 metadata precision, checkpoint semantics, consumer contract ([0b2f16c](https://github.com/laurigates/loractl/commit/0b2f16c60cd734caa7850c79ac6a454e3f30eee6))
+
 ## [0.16.0](https://github.com/laurigates/loractl/compare/v0.15.0...v0.16.0) (2026-07-24)
 
 
