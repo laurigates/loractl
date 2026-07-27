@@ -867,10 +867,9 @@ mod tests {
                 step(1, 0.9),
                 step(2, 0.8),
                 TrainEvent::Phase {
-                    name: "dataset".into(),
+                    name: crate::event::PhaseName::Dataset,
                     detail: "re-reading cache".into(),
-                    done: Some(3),
-                    total: Some(40),
+                    counters: Some(crate::event::PhaseCounters::new(3, 40)),
                 },
                 step(3, 0.7),
                 step(4, 0.6),

@@ -16,7 +16,7 @@ use loractl_core::config::{
     DatasetConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig, OutputConfig, TargetSpec,
     TaskKind,
 };
-use loractl_core::{DiffusionTrainer, TrainConfig, TrainEvent, Trainer, read_metadata};
+use loractl_core::{DiffusionTrainer, PhaseName, TrainConfig, TrainEvent, Trainer, read_metadata};
 use std::path::{Path, PathBuf};
 
 const BUNDLE: &str = "tests/fixtures/tiny-krea2";
@@ -732,7 +732,7 @@ fn setup_phases_are_reported_before_the_first_step() {
 
     // (order, name, detail, done, total) — `order` is the index in the whole
     // event stream, so "before the first Step" is checkable.
-    type Report = (usize, String, String, Option<u64>, Option<u64>);
+    type Report = (usize, PhaseName, String, Option<u64>, Option<u64>);
     let mut phases: Vec<Report> = Vec::new();
     let mut first_step: Option<usize> = None;
     let mut seen = 0usize;
@@ -744,9 +744,14 @@ fn setup_phases_are_reported_before_the_first_step() {
                 TrainEvent::Phase {
                     name,
                     detail,
-                    done,
-                    total,
-                } => phases.push((idx, name, detail, done, total)),
+                    counters,
+                } => phases.push((
+                    idx,
+                    name,
+                    detail,
+                    counters.map(|c| c.done),
+                    counters.map(|c| c.total),
+                )),
                 TrainEvent::Step { .. } => first_step = first_step.or(Some(idx)),
                 _ => {}
             }
@@ -786,7 +791,7 @@ fn setup_phases_are_reported_before_the_first_step() {
     // (cold cache) rather than a cache hit.
     let encodes: Vec<_> = phases
         .iter()
-        .filter(|p| p.1 == "encode" && p.3.is_some())
+        .filter(|p| p.1 == PhaseName::Encode && p.3.is_some())
         .collect();
     assert_eq!(
         encodes.len(),
@@ -806,7 +811,7 @@ fn setup_phases_are_reported_before_the_first_step() {
     // reports the site count the run actually adapted (7 sites × 2 blocks).
     let loads: Vec<&str> = phases
         .iter()
-        .filter(|p| p.1 == "load")
+        .filter(|p| p.1 == PhaseName::Load)
         .map(|p| p.2.as_str())
         .collect();
     for what in ["VAE", "text encoder", "MMDiT"] {
@@ -817,7 +822,7 @@ fn setup_phases_are_reported_before_the_first_step() {
     }
     let inject = phases
         .iter()
-        .find(|p| p.1 == "inject")
+        .find(|p| p.1 == PhaseName::Inject)
         .expect("checked present above");
     assert!(
         inject.2.starts_with("14 LoRA adapters"),
@@ -834,10 +839,12 @@ fn setup_phases_are_reported_before_the_first_step() {
     DiffusionTrainer
         .train(&config2, &mut |event| {
             if let TrainEvent::Phase {
-                name, detail, done, ..
+                name,
+                detail,
+                counters,
             } = event
-                && name == "encode"
-                && done.is_some()
+                && name == PhaseName::Encode
+                && counters.is_some()
             {
                 warm.push(detail);
             }

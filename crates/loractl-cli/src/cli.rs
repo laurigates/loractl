@@ -709,9 +709,12 @@ fn render_event(bar: &ProgressBar, phase_log: &mut PhaseLog, event: TrainEvent) 
         TrainEvent::Phase {
             name,
             detail,
-            done,
-            total,
+            counters,
         } => {
+            let (done, total) = match counters {
+                Some(c) => (Some(c.done), Some(c.total)),
+                None => (None, None),
+            };
             // Setup progress goes in the *message*, never the bar's
             // position/length — those belong to the step count (`Started`
             // sized the bar to `config.steps`) and re-purposing them would
@@ -720,7 +723,7 @@ fn render_event(bar: &ProgressBar, phase_log: &mut PhaseLog, event: TrainEvent) 
             // where we are.
             let message = format!("{name}: {detail}{}", phase_progress(done, total));
             bar.set_message(message.clone());
-            if phase_log.should_log(&name, &detail, done, total) {
+            if phase_log.should_log(name.as_str(), &detail, done, total) {
                 match phase_sink(
                     bar.is_hidden(),
                     tracing::enabled!(tracing::Level::INFO),
@@ -865,6 +868,7 @@ mod tests {
 
     use super::*;
     use figment::Jail;
+    use loractl_core::{PhaseCounters, PhaseName};
 
     /// A minimal-but-complete config YAML: `model`, `lora`, and `dataset` are
     /// the required keys (no serde default on `TrainConfig`), so all three must
@@ -1339,10 +1343,9 @@ mod tests {
             &bar,
             &mut log,
             TrainEvent::Phase {
-                name: "encode".into(),
+                name: PhaseName::Encode,
                 detail: "encoding a.png".into(),
-                done: Some(3),
-                total: Some(40),
+                counters: Some(PhaseCounters::new(3, 40)),
             },
         );
         assert_eq!(bar.position(), 0, "a phase must not move the step count");

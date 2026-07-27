@@ -694,17 +694,15 @@ fn select_batches<B: Backend>(
         // images before step 1. The synthetic path is milliseconds and gets
         // no phase — a `Phase` per trivially-fast setup step is noise.
         sink(TrainEvent::Phase {
-            name: "dataset".into(),
+            name: crate::event::PhaseName::Dataset,
             detail: "loading the MNIST training split (downloads on first run)".into(),
-            done: None,
-            total: None,
+            counters: None,
         });
         let batches = mnist_batches::<B>(device, 64, 6_000);
         sink(TrainEvent::Phase {
-            name: "dataset".into(),
+            name: crate::event::PhaseName::Dataset,
             detail: format!("MNIST ready — {} batches", batches.len()),
-            done: None,
-            total: None,
+            counters: None,
         });
         return batches;
     }

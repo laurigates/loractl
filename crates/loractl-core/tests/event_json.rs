@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use loractl_core::TrainEvent;
+use loractl_core::{PhaseCounters, PhaseName, TrainEvent};
 
 #[test]
 fn train_event_wire_shapes() {
@@ -18,19 +18,17 @@ fn train_event_wire_shapes() {
         ),
         (
             TrainEvent::Phase {
-                name: "load".to_string(),
+                name: PhaseName::Load,
                 detail: "MMDiT (13.1 GiB)".to_string(),
-                done: None,
-                total: None,
+                counters: None,
             },
             r#"{"type":"phase","name":"load","detail":"MMDiT (13.1 GiB)"}"#,
         ),
         (
             TrainEvent::Phase {
-                name: "encode".to_string(),
+                name: PhaseName::Encode,
                 detail: "caching latents".to_string(),
-                done: Some(3),
-                total: Some(40),
+                counters: Some(PhaseCounters::new(3, 40)),
             },
             r#"{"type":"phase","name":"encode","detail":"caching latents","done":3,"total":40}"#,
         ),
