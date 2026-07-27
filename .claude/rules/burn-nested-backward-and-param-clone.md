@@ -1,3 +1,7 @@
+---
+paths:
+  - "crates/**/*.rs"
+---
 # Two burn 0.21 Autodiff Traps: Nested `backward()` Deadlocks; `Param::clone` Drops `require_grad`
 
 Both found implementing #134 (`src/block_ckpt.rs`, PR #135); both are the

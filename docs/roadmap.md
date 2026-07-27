@@ -153,7 +153,7 @@ VAE, and text encoder were all greenfield in burn.
   Turbo is architecturally identical to Raw — the same 430 tensor keys,
   per-tensor distillation deltas of 3–11% — so the M11 port, key remap, and M8
   objective apply unchanged (amending
-  [ADR-0004](adrs/0004-krea2-image-diffusion-target.md)'s "train on Raw" 
+  [ADR-0004](adrs/0004-krea2-image-diffusion-target.md)'s "train on Raw"
   decision). `variant: krea2-turbo` defaults the denoiser filename to
   `turbo.safetensors`, and an optional `model.checkpoint` overrides it for any
   variant. The ComfyUI-style **scaled-fp8** repacks (`float8_e4m3fn` weights +
@@ -161,8 +161,18 @@ VAE, and text encoder were all greenfield in burn.
   `src/fp8.rs` lazily dequantizes `LUT[byte] · weight_scale` to f32 (exact
   256-entry e4m3fn LUT), auto-detected from the safetensors header so bf16/f32
   checkpoints keep the proven burn-store path. Out-of-contract files fail
-  loudly. Follow-up tracked separately: a Turbo training adapter
-  ([#83](https://github.com/laurigates/loractl/issues/83)). Dynamic
+  loudly. The Turbo training adapter
+  ([#83](https://github.com/laurigates/loractl/issues/83)) **landed** as
+  optional `model.training_adapter`: a LoRA `.safetensors` (diffusers/PEFT
+  `lora_A`/`lora_B` or kohya `lora_down`/`lora_up`, `diffusion_model.*`-prefixed)
+  merged into the frozen base *before* LoRA injection — `W += (alpha/rank)·B·A`
+  per targeted base-linear site, rank auto-detected (`src/training_adapter.rs`).
+  This is ai-toolkit's distillation-aware turbo recipe minus the preview
+  inversion (loractl never samples during training); the trained LoRA still
+  deploys on plain turbo. Golden-pinned merge math plus a producer-contract read
+  test that is loud on any unmatched key. Merge-at-load needs a full-precision
+  base, so it is **rejected with `compute.quant`** — merging into
+  `load_quant_module`'s f32 transient is the remaining follow-up. Dynamic
   timestep-shift parity ([#84](https://github.com/laurigates/loractl/issues/84))
   landed as `flow.shift_mode: resolution` — per-batch `exp(μ(gh·gw))` with Krea
   2's ai-toolkit-documented anchors (0.5@256 → 1.15@6400 image tokens),

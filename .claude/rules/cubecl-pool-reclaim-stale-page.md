@@ -1,3 +1,7 @@
+---
+paths:
+  - "crates/**/*.rs"
+---
 # int4 Real-Model Training Is VRAM-Bound (ADR-0005) — Spend Effort on Footprint Levers, Not cubecl Reclaim
 
 **This rule supersedes its previous version**, which blamed the #25 real-run

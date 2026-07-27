@@ -1,3 +1,7 @@
+---
+paths:
+  - "crates/**/*.rs"
+---
 # Burn's `Param<T>` Is Lazily Initialized — "Reseed Then Reconstruct" Isn't Enough Alone
 
 burn's `Param<T>` (`burn-core::module::param::base`) has a documented "Core

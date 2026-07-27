@@ -1,3 +1,7 @@
+---
+paths:
+  - "crates/**/*.rs"
+---
 # burn 0.21 wgpu/Metal Numerics Are Broken — Suspect the Backend Before Your Math
 
 On this Apple-Silicon host, burn 0.21's wgpu (Metal) backend produces **silent

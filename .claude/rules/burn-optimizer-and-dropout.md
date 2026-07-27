@@ -1,3 +1,7 @@
+---
+paths:
+  - "crates/**/*.rs"
+---
 # Burn `optim`/`nn` Semantics — Weight Decay Is Coupled by Default; Dropout Is Train-Only and Free
 
 Two burn-framework facts that bit `loractl` this session (fixing the dead-config
