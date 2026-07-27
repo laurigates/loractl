@@ -1,3 +1,7 @@
+---
+paths:
+  - "crates/**/*.rs"
+---
 # Loading a Module Tree With a `#[derive(Module)]` Enum Field Needs `skip_enum_variants(true)`
 
 When a burn module contains an **enum field** that itself derives `Module`,

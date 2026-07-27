@@ -5,228 +5,58 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `loractl` is a terminal-native LoRA trainer in Rust: a **CLI-first** tool where
-a GUI, if ever built, is just another renderer over the same core (the name is
-a deliberate `*ctl` reference, like `kubectl`). It is an early-stage learning
-project — see the roadmap in `README.md` and the tracking issues (#1–#4, #17–#25).
+a GUI, if ever built, is just another renderer over the same core (the name is a
+deliberate `*ctl` reference, like `kubectl`).
 
-**Current status:** milestones M1–M15 (#1–#4, #17–#25, #82) have landed,
-M14 (#25) included — its real-run ComfyUI interop proof closed 2026-07-23.
-The default trainer is a real, burn-backed `BurnTrainer` that trains a
-**synthetic** LoRA-MLP demo (offline, fast), pinned against a PyTorch numerics
-golden; real MNIST is behind an opt-in `mnist` feature and the dependency-free
-`MockTrainer` remains available for pipeline testing. M3 added a real GPT-2
-safetensors loader with forward-pass parity vs PyTorch; M4 added portable
-`.safetensors` adapter I/O and deterministic sampling; M5 added `loractl-api`,
-which streams the same `TrainEvent`s over HTTP/SSE (wire contract in
-`docs/api/events.md`). M6 (#17) generalized LoRA from wrapping one `Linear` to
-injecting a name-keyed set of adapters (`LoraAdapters`) across a module tree
-(config `targets` patterns → `build_adapters` over a model's `injectable_sites`;
-GPT-2's attach re-expressed through it) and added a kohya-ss `.safetensors`
-export (`export_adapters`, transposed `lora_down`/`lora_up` + `.alpha` scalar)
-so a LoRA loads in ComfyUI/Krea — proven offline against a golden, and (for the
-Krea 2 format) against ComfyUI's own LoRA key map, generated from pinned
-upstream source (`tests/krea2_lora_keys.rs`, `just krea2-lora-keys-reference`).
-That consumer-side pin is the #137 fix: a golden pins *our* convention, so it
-cannot tell you whether the real loader accepts it. ComfyUI accepts both the
-bare diffusers key we emit and the native `diffusion_model.blocks.N.*` form
-community LoRAs use. M7 (#18)
-made the training loop generic over `B: AutodiffBackend` with a runtime,
-config-selected compute backend (`compute.backend`): ndarray (CPU, always
-compiled, the offline/CI default), wgpu (Metal on Apple Silicon), and
-compile-gated cuda/tch — selecting a backend the binary wasn't built with
-fails loudly, never a silent CPU fallback. M8 (#19) added the rectified-flow
-(flow-matching) objective: `task: flow-matching` trains a LoRA velocity net
-(v-prediction `v = ε − x₀`, SD3 time convention) with logit-normal + shifted
-timestep sampling (`src/flow.rs`) on a synthetic latent toy, pinned against a
-PyTorch golden; adapter sidecars record the producing task and `loractl
-sample` refuses flow adapters. M9 (#20) landed the first Krea 2 model
-component: `QwenVae` (`src/qwen_vae.rs`) ports Krea 2's autoencoder — which is
-the **stock Qwen-Image VAE** (diffusers `AutoencoderKLQwenImage`, f8,
-16 latent channels, run image-only at `T = 1`) — with staged encode/decode
-parity vs diffusers on a checked-in tiny fixture plus an opt-in real-weights
-proof; `encode` emits the normalized latents diffusion training consumes.
-M10 (#21) landed Krea 2's caption conditioner: `Qwen3VlEncoder`
-(`src/qwen3vl.rs`), a frozen text-only Qwen3-VL trunk (GQA, per-head QK-norm
-before half-split RoPE, SwiGLU) that loads Krea-2-Raw's own `text_encoder/`
-with the vision tower filtered out and emits the 12-layer hidden-state stack
-the MMDiT cross-attends to; `Qwen3VlConditioner` wraps the chat template +
-tokenizer (captions → conditioning `[b, s, 12, 2560]` + mask). Staged parity
-vs transformers (tiny fixture incl. a right-padded row) + opt-in real-weights
-and tokenizer parity. M11 (#22) landed the core model: `Mmdit`
-(`src/mmdit.rs`) ports the ~12B single-stream `SingleStreamDiT`
-(zero-centered RMSNorm, gated-sigmoid GQA attention, rotation-matrix RoPE
-over 3 position axes, shared 6-way modulation, the 2+2-block text-fusion
-transformer, pad-to-256 semantics) with staged parity vs the official
-`mmdit.py`, an opt-in depth-truncated real-weights proof (full depth in f32
-exceeds this 48 GiB host; M13's f16 knob is the full-depth path), and the M6
-LoRA attach across every trunk projection. M12 (#23) landed the dataset pipeline (`src/dataset.rs`):
-kohya-style folder scanning, 16-px-aligned aspect-ratio buckets, cover-resize
-+ center-crop image loading, and one-time latent/conditioning caching to
-`<dataset>/.loractl-cache/` (encoders injected as closures; M14 wires the
-real frozen models). M13 (#24) landed the memory knobs:
-`compute.precision: f16` (wgpu only, fails loudly elsewhere — halves weight
-memory, fitting the ~12B base in ~24.6 GB on this 48 GiB host) and
-`compute.grad_checkpointing` (burn `BalancedCheckpointing`, proven
-bit-identical to stored activations); 8-bit Adam is a documented skip (LoRA
-optimizer state is adapter-only) and int8/NF4 is the tracked follow-up on
-#24 for ≤16 GB GPUs. M14 (#25) landed `DiffusionTrainer`
-(`src/diffusion_trainer.rs`): the whole stack as one `impl Trainer` behind
-core's `select_trainer` factory on `model.base` ("synthetic"/"mnist" →
-`BurnTrainer`, a Krea-2-Raw-layout dir → the diffusion trainer), proven
-offline on the composed tiny-krea2 bundle (`just krea2-reference`,
-`tests/diffusion_trainer.rs`); kohya-ss exports at every checkpoint.
-M15 (#82) opened direct Krea-2-Turbo training (amending ADR-0004's
-"train on Raw" decision — Turbo is architecturally identical, same 430 keys):
-`variant: krea2-turbo` (default denoiser `turbo.safetensors`), an optional
-`model.checkpoint` filename override, and auto-detected loading of
-ComfyUI-style scaled-fp8 checkpoints (`float8_e4m3fn` + `weight_scale`) via
-a lazy `LUT[byte] · scale` dequant source (`src/fp8.rs`; burn-store 0.21 has
-no fp8 dtype) — legacy/malformed fp8 files fail loudly. The Turbo training
-adapter (#83) landed as optional `model.training_adapter`: a LoRA
-`.safetensors` (`ostris/krea2_turbo_training_adapter`; diffusers/PEFT
-`lora_A`/`lora_B` or kohya `lora_down`/`lora_up`, `diffusion_model.*`-prefixed)
-merged into the frozen base before LoRA injection — `W += (alpha/rank)·B·A`
-per targeted base-linear site, rank auto-detected (`src/training_adapter.rs`) —
-ai-toolkit's distillation-aware turbo recipe, minus the preview inversion
-(loractl never samples during training); the trained LoRA still deploys on
-plain turbo. Golden-pinned merge math + a producer-contract read test (real
-`diffusion_model.*` keys → real sites, loud on any unmatched key); needs a
-full-precision base, so it is rejected with `compute.quant` (quant-path merge
-into `load_quant_module`'s f32 transient is the tracked #83 follow-up).
-Timestep-shift parity (#84) landed as `flow.shift_mode:
-resolution` — per-batch `exp(μ(gh·gw))` with Krea 2's ai-toolkit-documented
-anchors (0.5@256 → 1.15@6400 image tokens) as the `FlowConfig` defaults,
-golden-pinned; the krea2 example configs use it. LoRA metadata
-landed as `src/metadata.rs` + a `metadata:` config block: every interop
-export now writes a safetensors `__metadata__` header — kohya `ss_*` (network
-topology, optimizer, `ss_bucket_info`, `ss_tag_frequency` derived from the
-dataset's captions, `ss_trained_words`), `modelspec.*`, and the two `sshs_*`
-sd-webui hashes computed at write time in `export.rs` (`export_adapters` gained
-an `Option<&LoraMetadata>` parameter). Derived-not-configured is the rule:
-only trigger words/title/author/license/tags/comment are authored. `loractl
-inspect <file>` reads any safetensors header back (header bytes only, no
-tensors); `metadata.embed: false` / `--no-metadata` is a byte-identical
-opt-out. The header has its own **consumer-contract** pin, the #137 rule one
-layer up from tensor names: `tests/lora_metadata_keys.rs` asserts every
-metadata key a real consumer reads is written or deliberately omitted with a
-recorded reason, against a golden generated from AUTOMATIC1111's Lora
-extension at a pinned tag (`just lora-metadata-keys-reference`) — the tool
-that actually parses this header, since ComfyUI ignores `__metadata__` and
-Civitai is closed. See the roadmap in `README.md`.
+Milestones M1–M15 have landed. **[`docs/roadmap.md`](docs/roadmap.md) is the
+canonical record** of what each one delivered, where the project currently
+stands, and the measured memory/throughput findings.
 
-**M14 is complete (#25, closed 2026-07-23):** a LoRA trained on
-`krea/Krea-2-Raw` through `DiffusionTrainer` visibly conditions
-Krea-2-Turbo generation in ComfyUI — a 300-step "sks dog" DreamBooth run
-at 512px (`config/examples/krea2-dog.yaml`, evidence in
-`docs/evidence/`), whose kohya export applies with no key conversion.
-Getting there meant solving a VRAM wall: the #132 retention-ledger
-attribution ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)
-Addendum 2, PR #133) measured the monolithic step's true logical demand at
-**67.9 GiB pinned per forward** (~3× the RTX 4090) — burn-autodiff eagerly
-pins the whole tracked trunk interior (attention-score trio 35.4 GiB,
-SwiGLU outputs, quant-site outputs), topology-driven and independent of
-resolution/site-count/reclaim/chunking (all measured dead). The measured
-fix is **#134 — block-level gradient checkpointing**
-(`src/block_ckpt.rs::checkpointed_step`): `compute.grad_checkpointing:
-true` on the diffusion path now runs the trunk forward graph-free storing
-only block inputs, then replays each block on its own standalone graph in
-backward (grads bit-identical to the monolithic path on the tiny fixture;
-incompatible with `lora.dropout > 0`; a nested-backward custom op is
-impossible on burn 0.21 — verified deadlock). The quant knobs are
-unchanged and correct: `compute.quant: int8` (#96) / `int4` (Q4S, #119)
-load the frozen ~12.8B base per-block quantized while adapters train in
-f32 (QLoRA); restricted to `(ndarray|cuda, f32)` by the trainer guard.
-**int4 (~10.1 GB reclaimed resident base) + block checkpointing is the
-24 GB training route**, and it is **measured, not estimated**: a
-zero-panic `just step-probe` (#126) at 512px int4 peaks at **19.4 GB** —
-3/3 steps, 196/196 sites, ~4 GB headroom ([ADR-0005](docs/adrs/0005-int4-training-vram-bound.md)
-Addendum 3). The gate is always a **zero-panic** run, never a survived
-OOM storm (a ceiling-riding run silently corrupts the forward — a
-negative MSE was observed). Still open on this route: step
-**throughput** is unmeasured *on real hardware* — #110's harness is now
-wired end to end (`just bench`; see Commands), but it has only run on the
-offline fixture, so the real number still needs a GPU dispatch — and int4's
-dequant error vs adapter quality is a separate question from fit (tracked
-as #159). The next memory lever, block-boundary host offload, is scoped and
-priced by [ADR-0008](docs/adrs/0008-host-offload-mechanism-and-scope.md)
-(#158), and is blocked on that dispatch: it is the first lever that spends
-throughput to buy VRAM. The wgpu f16 route
-(`config/examples/krea2-lora.yaml`, the 48 GiB Metal host) stays blocked
-by burn's GPU autodiff bug (burn#5162, unchanged). Strategy and gap
-analysis: [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md).
+**Do not restate roadmap or ADR content here.** Status, VRAM numbers, benchmark
+results, and upstream bug status all drift; this file is loaded on every turn,
+so a stale copy here is worse than a lookup. Read the roadmap when you need the
+current state.
+
+Strategy and the open questions live in the ADRs — most load-bearing:
+[ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md) (the Krea 2 target),
+[ADR-0005](docs/adrs/0005-int4-training-vram-bound.md) (why training is
+VRAM-bound and which levers are measured dead),
+[ADR-0008](docs/adrs/0008-host-offload-mechanism-and-scope.md) (host offload).
 
 ## Commands
 
-Recipes live in the `justfile` (`just` to list). Cargo directly also works.
+Recipes live in the `justfile` — run `just` to list them, or `just --list` for
+the full set with descriptions. Cargo directly also works.
 
-| Task | Command |
+**The gate before committing:**
+
+```
+just fmt-check && just lint
+```
+
+CI additionally runs `feature-lints` (clippy over the opt-in
+mnist/gpt2-real/qwen-vae-real/qwen3vl-real/mmdit-real/wgpu paths) and `deny`
+(`cargo deny check`). Run the matching `just lint-<feature>` / `just deny`
+locally when a change touches a feature-gated path or the dependency graph.
+
+**The few commands with judgment attached** — the rest are self-explanatory
+from `just --list`:
+
+| Command | What to know |
 |---|---|
-| Build the workspace | `just build` (`cargo build`) |
-| Install the `loractl` binary | `just install` — GPU feature auto-detected per host (macOS → `wgpu`; Linux+nvcc → `cuda,wgpu`; else `wgpu`); override: `just install <features>` / `just install cpu` |
-| Install the CUDA toolkit (on the GPU host) | `just install-cuda` — NVIDIA apt repo, toolkit-only (never the driver), version matched to the driver's ceiling; override: `just install-cuda <version>` |
-| Run the CLI | `just run <args>` (`cargo run -p loractl-cli -- <args>`) |
-| Scaffold a config from a template | `just init [preset]` → stdout (`synthetic`/`wgpu`/`flow`/`krea2`/`krea2-comfyui`); or `loractl init --preset <p> -o <path>` to write a file (overwrite-guarded). Templates are the `config/examples/*.yaml`, embedded via `include_str!` |
-| Run on the GPU (M7, Metal) | `just run-wgpu [config]` — end-to-end train through the CLI, backend selected from `compute.backend: wgpu`; defaults to `config/examples/lora-wgpu.yaml` |
-| Train from a config (synthetic demo) | `just train [config]` — defaults to `config/examples/lora.yaml` |
-| Serve the HTTP/SSE API | `just serve` (`cargo run -p loractl-api`; bind addr via `LORACTL_API_ADDR`, default `127.0.0.1:3000`) |
-| Generate shell completions | `just completions [shell]` (e.g. `just completions fish`) |
-| Lint (warnings-as-errors) | `just lint` (`cargo clippy --all-targets -- -D warnings`, default/offline features) |
-| Lint the opt-in mnist path | `just lint-mnist` (compiles the networked dataset deps) |
-| Lint the opt-in gpt2-real path | `just lint-gpt2-real` (compiles the real-gpt2 parity test path) |
-| Lint the opt-in qwen-vae-real path | `just lint-vae-real` (compiles the real-VAE parity test path) |
-| Lint the opt-in qwen3vl-real path | `just lint-qwen3vl-real` (compiles the real-encoder parity test path) |
-| Lint the opt-in mmdit-real path | `just lint-mmdit-real` (compiles the real-MMDiT parity test path) |
-| Lint the opt-in wgpu path | `just lint-wgpu` (compiles the wgpu GPU backend; no GPU needed to build) |
-| Format / check format | `just fmt` / `just fmt-check` |
-| RustSec advisory scan | `just audit` (`cargo audit` over `Cargo.lock`; accepted advisories in `.cargo/audit.toml`) |
-| Supply-chain gate (licenses/bans/sources) | `just deny` (`cargo deny check licenses bans sources`, per `deny.toml`) |
-| Coverage summary | `just coverage` (`cargo llvm-cov` — per-file table; local, no thresholds) |
-| Tests (offline) | `just test` (`cargo test`) — numerics vs PyTorch golden + synthetic convergence |
-| Time real training steps (#110) | `just bench <config> [--steps N] [--seq-len N]` — drives a REAL run on cuda and prints `RESULT`/`SANITY`/`MODEL` lines (median ms/step, tok/s, effective TFLOP/s, peak VRAM). The throughput sibling of `just step-probe`'s VRAM answer |
-| Bench harness smoke (offline) | `just bench-offline` — the same driver over the tiny-krea2 fixture on ndarray. Keeps the harness runnable without a GPU; its *numbers* are meaningless (a 2-block toy at 32px) |
-| Real-MNIST convergence proof | `just test-mnist` (opt-in, downloads MNIST) |
-| Real-GPT-2 forward-parity proof | `just test-gpt2-real` (opt-in; run `just gpt2-reference` first) |
-| Real Qwen-Image VAE parity proof (M9) | `just test-vae-real` (opt-in; run `just vae-real-reference` first) |
-| Real Krea text-encoder parity proof (M10) | `just test-qwen3vl-real` (opt-in; run `just qwen3vl-real-reference` first) |
-| Real Krea MMDiT staged-parity proof (M11) | `just test-mmdit-real` (opt-in; run `just mmdit-real-reference` first — 26 GB download) |
-| GPU smokes (M7 + M13 f16/ckpt, Metal) | `just test-wgpu` (opt-in; runs both wgpu smokes on a real GPU) |
-| GPU smokes (cuda, Linux+NVIDIA host) | `just test-cuda` (opt-in; the synthetic f32+ckpt smoke and the tiny-krea2 diffusion e2e — needs the CUDA toolkit at build time) |
-| Train on cuda through the CLI | `just run-cuda [config]` — f32-only (burn#5162); defaults to `config/examples/lora.yaml` with `--backend cuda` |
-| Regenerate the numerics golden | `just reference` (needs `torch` via `uv`) |
-| Regenerate the BurnTrainer step-loss golden | `just burn-trainer-reference` (dumps burn's real init + batches, replays the loop in `torch` via `uv`; needs `torch`) |
-| Regenerate the kohya-ss export golden | `just export-reference` (numpy only, no torch/network) |
-| Regenerate the flow-matching golden | `just flow-reference` (needs `torch` via `uv`) |
-| Regenerate the tiny-GPT-2 fixture | `just gpt2-tiny-reference` (weights + golden; `torch` via `uv`) |
-| Regenerate the real-gpt2 golden | `just gpt2-reference` (downloads `openai-community/gpt2`; `torch`/`transformers` via `uv`) |
-| Regenerate the tiny Qwen-VAE fixture (M9) | `just vae-reference` (weights + golden; `torch`/`diffusers` via `uv`, no network) |
-| Regenerate the real Qwen-VAE golden (M9) | `just vae-real-reference` (downloads `Qwen/Qwen-Image`'s vae; `torch`/`diffusers` via `uv`) |
-| Regenerate the tiny Qwen3-VL fixture (M10) | `just qwen3vl-reference` (weights + golden; `torch`/`transformers` via `uv`, no network) |
-| Regenerate the real Krea text-encoder golden (M10) | `just qwen3vl-real-reference` (downloads `krea/Krea-2-Raw`'s text_encoder; `torch`/`transformers` via `uv`) |
-| Regenerate the tiny-krea2 bundle + dataset (M14) | `just krea2-reference` (composed fixture; `torch`/`diffusers`/`transformers` via `uv`, no network) |
-| Regenerate the tiny MMDiT fixture (M11) | `just mmdit-reference` (downloads `krea-ai/krea-2`'s `mmdit.py` at a pinned commit; `torch` via `uv`) |
-| Regenerate the real MMDiT golden (M11) | `just mmdit-real-reference` (downloads `raw.safetensors`, 26.3 GB; kept for M14) |
-| One test by name | `cargo test -p loractl-core <test_name>` |
+| `just step-probe` | The VRAM answer. The gate is a **zero-panic** run — a run that survived an OOM storm silently corrupts the forward (a negative MSE was observed once). |
+| `just bench` | The throughput answer (#110). Never quote `tok_s=`/`tflops=` without the `MODEL` line they are a quotient of, or any timing from a run reading `sanity=SUSPECT` / `plausible=false`. |
+| `just bench-offline` | Keeps the harness runnable without a GPU. Its *numbers are meaningless* (a 2-block toy at 32px) — smoke only. |
+| `just test-cuda` / `just test-wgpu` | Real-GPU smokes, opt-in. Hosted CI is GPU-free (ndarray default). |
+| `just quant-probe` | On-box int8/int4 VRAM + dequant-error proof. |
 
-Before committing, the meaningful gate is `just fmt-check && just lint` — CI
-parity is intended (the `justfile` mirrors what CI should run). CI additionally
-runs the blocking `feature-lints` job (clippy over the opt-in
-mnist/gpt2-real/qwen-vae-real/qwen3vl-real/mmdit-real/wgpu paths, mirroring
-`just lint-mnist` / `lint-gpt2-real` / `lint-vae-real` /
-`lint-qwen3vl-real` / `lint-mmdit-real` / `lint-wgpu`) and the `deny` job
-(`cargo deny check`, mirroring `just deny`) —
-run those locally too when a change touches a feature-gated path or the
-dependency graph. rustfmt is default style; expect it to reflow multi-line
-signatures onto one line.
+Real GPU proofs run on the self-hosted RTX 4090 via a **dispatchable**
+workflow: `gh workflow run gpu.yml` (`-f suite=all` adds the wgpu smokes,
+`-f int8_probe=true` adds the quant probe). See the `gpu.yml` header for the
+runner-registration prerequisite.
 
-Hosted CI is GPU-free (the `ndarray` default). The real GPU proofs live in a
-**dispatchable** `.github/workflows/gpu.yml` (#113) that runs on the
-self-hosted RTX 4090 (`popos`): `gh workflow run gpu.yml` (cuda smokes,
-`just test-cuda`), `-f suite=all` (adds the wgpu smokes, likely red on the
-Vulkan path until burn#5162), and `-f int8_probe=true` (the #96 on-box int8
-VRAM/dequant proof, `just quant-probe`). It mirrors CAEF's bench.yml/ci.yml
-template — including the `Swatinem/rust-cache` `cache-bin: false` gotcha for
-the persistent runner. Needs the popos runner registered to this repo (see the
-gpu.yml header).
+rustfmt is default style; expect it to reflow multi-line signatures onto one
+line.
 
 ## Architecture — the one rule that matters
 
@@ -281,5 +111,16 @@ this pattern when adding new overridable flags.
   workspace `Cargo.toml` (bumped from 1.85 to satisfy burn 0.21's MSRV). Shared
   deps go in `[workspace.dependencies]`.
 - `Cargo.lock` **is committed** (this workspace produces a binary).
-- Roadmap milestones are tracked as issues #1–#4 and #17–#25 and linked from
-  the README; keep the two in sync when a milestone lands.
+- Roadmap milestones are tracked as issues #1–#4, #17–#25 and #82 — keep
+  [`docs/roadmap.md`](docs/roadmap.md), the README checklist, and the issues in
+  sync when a milestone lands.
+
+## Where the detail lives
+
+| You need | Read |
+|---|---|
+| Current status, milestone history, measured findings | [`docs/roadmap.md`](docs/roadmap.md) |
+| Why a design decision was made | [`docs/adrs/`](docs/adrs/) |
+| The HTTP/SSE wire contract | [`docs/api/events.md`](docs/api/events.md) |
+| How to run the gate, test conventions, PR flow | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| burn/cubecl-specific traps (loaded when editing Rust) | [`.claude/rules/`](.claude/rules/) |
