@@ -24,7 +24,8 @@ use loractl_core::config::{
     TargetSpec, TaskKind,
 };
 use loractl_core::{
-    BackendKind, BurnTrainer, DiffusionTrainer, Precision, Quant, TrainConfig, TrainEvent, Trainer,
+    BackendKind, BurnTrainer, DiffusionTrainer, PhaseName, Precision, Quant, TrainConfig,
+    TrainEvent, Trainer,
 };
 use std::path::{Path, PathBuf};
 
@@ -691,14 +692,13 @@ fn quantized_load_reports_per_site_progress() {
             if let TrainEvent::Phase {
                 name,
                 detail,
-                done,
-                total,
+                counters,
             } = event
-                && name == "quantize"
+                && name == PhaseName::Quantize
             {
-                match (done, total) {
-                    (Some(d), Some(t)) => sites.push((d, t)),
-                    _ => skeleton = Some(detail),
+                match counters {
+                    Some(c) => sites.push((c.done, c.total)),
+                    None => skeleton = Some(detail),
                 }
             }
         })

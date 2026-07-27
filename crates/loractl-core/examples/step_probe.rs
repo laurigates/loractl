@@ -186,12 +186,10 @@ fn main() -> Result<()> {
             TrainEvent::Phase {
                 name,
                 detail,
-                done,
-                total,
-            } => match (done, total) {
-                (Some(done), Some(total)) => println!("  {name}: {detail} {done}/{total}"),
-                (Some(done), None) => println!("  {name}: {detail} {done}"),
-                _ => println!("  {name}: {detail}"),
+                counters,
+            } => match counters {
+                Some(c) => println!("  {name}: {detail} {}/{}", c.done, c.total),
+                None => println!("  {name}: {detail}"),
             },
             TrainEvent::Warning { message } => println!("  warning: {message}"),
             TrainEvent::Checkpoint { step, path } => {

@@ -75,7 +75,7 @@ use crate::config::{
     BackendKind, ModelConfig, ModelVariant, Precision, Quant, TaskKind, TrainConfig,
 };
 use crate::dataset::prepare_dataset;
-use crate::event::TrainEvent;
+use crate::event::{PhaseCounters, PhaseName, TrainEvent};
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
 use crate::mmdit::{BaseLinear, Mmdit, MmditConfig, krea2_positions, patchify};
@@ -511,18 +511,16 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     // sequentially (progress, then the encoders), never re-entrantly, so no
     // borrow overlaps.
     let sink = RefCell::new(sink);
-    let emit = |name: &str, detail: String, done: Option<u64>, total: Option<u64>| {
+    let emit = |name: PhaseName, detail: String, counters: Option<PhaseCounters>| {
         (sink.borrow_mut())(TrainEvent::Phase {
-            name: name.to_string(),
+            name,
             detail,
-            done,
-            total,
+            counters,
         });
     };
     emit(
-        PHASE_ENCODE,
+        PhaseName::Encode,
         format!("scanning {}", config.dataset.path.display()),
-        None,
         None,
     );
 
@@ -544,7 +542,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 // `convert_wan_vae_to_diffusers` then flattens `resample.1`),
                 // diffusers → the existing `key_remap`.
                 let path = vae_path(&config.model, &base);
-                emit(PHASE_LOAD, describe_checkpoint("VAE", &path), None, None);
+                emit(PhaseName::Load, describe_checkpoint("VAE", &path), None);
                 let remap: Vec<(&str, &str)> = if vae_is_native_keyed(&path)? {
                     QwenVae::<B>::native_key_remap()
                 } else {
@@ -574,9 +572,8 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 // keys) still takes the unchanged burn-store path.
                 let enc_path = text_encoder_path(&config.model, &base);
                 emit(
-                    PHASE_LOAD,
+                    PhaseName::Load,
                     describe_checkpoint("text encoder", &enc_path),
-                    None,
                     None,
                 );
                 let encoder = if crate::fp8::is_fp8_checkpoint(&enc_path)? {
@@ -617,35 +614,24 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
             }
             if !p.cached || emit_every(p.done, p.total) {
                 emit(
-                    PHASE_ENCODE,
+                    PhaseName::Encode,
                     format!(
                         "{} {}",
                         if p.cached { "cached" } else { "encoding" },
                         p.name
                     ),
-                    Some(p.done as u64),
-                    Some(p.total as u64),
+                    Some(PhaseCounters::new(p.done as u64, p.total as u64)),
                 );
             }
         },
     )?;
     emit(
-        PHASE_ENCODE,
+        PhaseName::Encode,
         format!("cache ready — {seen} examples ({encoded} encoded this pass)"),
-        Some(seen),
-        Some(seen),
+        Some(PhaseCounters::new(seen, seen)),
     );
     Ok(())
 }
-
-/// Phase ids — the stable vocabulary [`TrainEvent::Phase`] documents. Kept as
-/// constants so a typo cannot silently mint a new phase name.
-const PHASE_ENCODE: &str = "encode";
-const PHASE_DATASET: &str = "dataset";
-const PHASE_LOAD: &str = "load";
-const PHASE_QUANTIZE: &str = "quantize";
-const PHASE_MERGE: &str = "merge";
-const PHASE_INJECT: &str = "inject";
 
 /// Should item `done` of `total` report? Caps a countable phase at ~100
 /// updates regardless of size (plus the last item), so a 261-site quantize or
@@ -693,12 +679,26 @@ fn describe_checkpoint(what: &str, path: &Path) -> String {
 }
 
 /// Emit a [`TrainEvent::Phase`] with no counters — the common shape.
-fn emit_phase(sink: &mut dyn FnMut(TrainEvent), name: &str, detail: String) {
+fn emit_phase(sink: &mut dyn FnMut(TrainEvent), name: PhaseName, detail: String) {
     sink(TrainEvent::Phase {
-        name: name.to_string(),
+        name,
         detail,
-        done: None,
-        total: None,
+        counters: None,
+    });
+}
+
+/// Emit a countable [`TrainEvent::Phase`].
+fn emit_counted(
+    sink: &mut dyn FnMut(TrainEvent),
+    name: PhaseName,
+    detail: String,
+    done: u64,
+    total: u64,
+) {
+    sink(TrainEvent::Phase {
+        name,
+        detail,
+        counters: Some(PhaseCounters::new(done, total)),
     });
 }
 
@@ -1076,12 +1076,13 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
         // quantizes and stores 261 multi-hundred-MiB tensors over minutes, so
         // it is the phase most worth reporting — but not 261 times over.
         if emit_every(site, site_count) {
-            sink(TrainEvent::Phase {
-                name: PHASE_QUANTIZE.to_string(),
-                detail: format!("{what} {path_key}"),
-                done: Some(site as u64),
-                total: Some(site_count as u64),
-            });
+            emit_counted(
+                sink,
+                PhaseName::Quantize,
+                format!("{what} {path_key}"),
+                site as u64,
+                site_count as u64,
+            );
         }
         let weight_key = format!("{path_key}.weight");
         match base {
@@ -1122,12 +1123,13 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     // consumer needs to retire the phase (and the CLI's decile throttle keys
     // its final line on `done == total`).
     if site_count > 0 {
-        sink(TrainEvent::Phase {
-            name: PHASE_QUANTIZE.to_string(),
-            detail: format!("{what} {site_count} base linear sites"),
-            done: Some(site_count as u64),
-            total: Some(site_count as u64),
-        });
+        emit_counted(
+            sink,
+            PhaseName::Quantize,
+            format!("{what} {site_count} base linear sites"),
+            site_count as u64,
+            site_count as u64,
+        );
     }
 
     // 3. Loud accounting (review): a surprise misalignment on the real model —
@@ -1255,10 +1257,9 @@ where
                 // moving through a large dataset, not to narrate every file.
                 if emit_every(p.done, p.total) {
                     (sink.borrow_mut())(TrainEvent::Phase {
-                        name: PHASE_DATASET.to_string(),
+                        name: PhaseName::Dataset,
                         detail: format!("reading cached {}", p.name),
-                        done: Some(p.done as u64),
-                        total: Some(p.total as u64),
+                        counters: Some(PhaseCounters::new(p.done as u64, p.total as u64)),
                     });
                 }
             },
@@ -1270,7 +1271,7 @@ where
     }
     emit_phase(
         sink,
-        PHASE_DATASET,
+        PhaseName::Dataset,
         format!(
             "{} examples, {} buckets, {} batches per epoch",
             prepared.entries.len(),
@@ -1281,7 +1282,11 @@ where
 
     // ---- Phase 2: the denoiser + adapters. ----
     let denoiser = denoiser_path(&config.model, &base);
-    emit_phase(sink, PHASE_LOAD, describe_checkpoint("MMDiT", &denoiser));
+    emit_phase(
+        sink,
+        PhaseName::Load,
+        describe_checkpoint("MMDiT", &denoiser),
+    );
     let mut mmdit = if let Some(value) = quant_value(config.compute.quant) {
         // Quantized frozen base (int8/int4, #96). Build + load + quantize on the
         // NON-autodiff INNER backend, at the TARGET device directly — NOT
@@ -1299,7 +1304,7 @@ where
         let chunk_bytes = u64::from(config.compute.dequant_chunk_mib) << 20;
         emit_phase(
             sink,
-            PHASE_QUANTIZE,
+            PhaseName::Quantize,
             format!("building the int{} frozen-base skeleton", value.size_bits()),
         );
         let inner = Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized_chunked(
@@ -1353,7 +1358,7 @@ where
     if let Some(ta_path) = training_adapter_path(&config.model, &base) {
         emit_phase(
             sink,
-            PHASE_MERGE,
+            PhaseName::Merge,
             describe_checkpoint("training adapter", &ta_path),
         );
         crate::training_adapter::merge_training_adapter(&mut mmdit, &ta_path, &device, sink)
@@ -1364,7 +1369,7 @@ where
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);
     emit_phase(
         sink,
-        PHASE_INJECT,
+        PhaseName::Inject,
         format!(
             "{} LoRA adapters across {} injectable sites (rank {})",
             set.deltas.len(),

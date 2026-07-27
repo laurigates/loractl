@@ -101,7 +101,7 @@ pub use config::{
     ShiftMode, TaskKind, TrainConfig,
 };
 pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
-pub use event::TrainEvent;
+pub use event::{PhaseCounters, PhaseName, TrainEvent};
 pub use export::{ExportFormat, export_adapters, import_adapters};
 pub use gpt2::{Gpt2, Gpt2Config, Gpt2Trace};
 pub use lora::{LoraDelta, LoraLinear};

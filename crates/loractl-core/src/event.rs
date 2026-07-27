@@ -32,17 +32,7 @@ pub enum TrainEvent {
     /// checkpoint load, LoRA injection. Emitted zero or more times per phase;
     /// consumers that only track steps may ignore it entirely.
     ///
-    /// `name` is drawn from a small **stable vocabulary** — a consumer may key
-    /// on these, so they change only deliberately:
-    ///
-    /// | `name` | The phase it reports |
-    /// |---|---|
-    /// | `encode` | The one-time dataset encode (VAE latents + caption conditioning into the cache). Countable, one report per example. |
-    /// | `dataset` | Reading the prepared cache back, plus the resulting example/bucket/batch summary. |
-    /// | `load` | A checkpoint load — the VAE, the text encoder, the MMDiT. |
-    /// | `quantize` | Building and streaming the int8/int4 frozen-base skeleton. Countable, one report per base-linear site. |
-    /// | `merge` | Folding an optional training adapter into the frozen base. |
-    /// | `inject` | Building the LoRA adapter set across the matched sites. |
+    /// `name` is a closed vocabulary ([`PhaseName`]) a consumer may key on.
     ///
     /// Countable phases are throttled to roughly 100 reports each — with one
     /// deliberate exception: an `encode` **cache miss** reports every example,
@@ -56,17 +46,18 @@ pub enum TrainEvent {
     /// Phases report *setup*: they are emitted before the first
     /// [`Step`](TrainEvent::Step), never between steps.
     Phase {
-        /// Stable machine-readable phase id — one of `"encode"`, `"dataset"`,
-        /// `"load"`, `"quantize"`, `"merge"`, `"inject"` (see the table above).
-        name: String,
+        /// Which phase this reports — a closed set, not a free string.
+        name: PhaseName,
         /// Human-readable detail for this update, e.g. `"MMDiT (13.1 GiB)"`.
         detail: String,
-        /// Completed units within this phase, when the phase is countable.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        done: Option<u64>,
-        /// Total units within this phase, when known.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        total: Option<u64>,
+        /// Progress within the phase, when it is countable at all.
+        ///
+        /// Flattened, so the wire carries `done`/`total` as plain sibling
+        /// fields of `name`/`detail` (and omits both when `None`) — the pair
+        /// is bundled in the *type* only, to make "a `total` with no `done`"
+        /// unrepresentable rather than merely undocumented.
+        #[serde(flatten)]
+        counters: Option<PhaseCounters>,
     },
 
     /// Emitted once per optimization step.
@@ -110,4 +101,77 @@ pub enum TrainEvent {
         /// Path of the final trained adapter written to disk.
         adapter_path: PathBuf,
     },
+}
+
+/// Which setup phase a [`TrainEvent::Phase`] reports.
+///
+/// A closed set rather than a `String`: the vocabulary is part of the wire
+/// contract a consumer keys on, so the compiler — not a test that happens to
+/// execute the right path — is what keeps a new trainer from inventing
+/// `"encodee"`. Serializes as the same snake_case strings it always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseName {
+    /// The one-time dataset encode: VAE latents + caption conditioning into
+    /// the cache. Countable. A cache *miss* reports every example (each is
+    /// minutes of encoder work); hits are throttled.
+    Encode,
+    /// Reading the prepared cache back, plus the resulting example/bucket/batch
+    /// summary.
+    Dataset,
+    /// A checkpoint load — the VAE, the text encoder, the MMDiT.
+    Load,
+    /// Building and streaming the int8/int4 frozen-base skeleton. Countable,
+    /// one report per base-linear site.
+    Quantize,
+    /// Folding an optional training adapter into the frozen base.
+    Merge,
+    /// Building the LoRA adapter set across the matched sites.
+    Inject,
+}
+
+impl PhaseName {
+    /// The canonical wire token — the same string this serializes to.
+    ///
+    /// Not a rendering choice (that would belong in a front-end): it is the
+    /// identifier itself, exposed so a consumer can label or key on it without
+    /// round-tripping through serde.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Encode => "encode",
+            Self::Dataset => "dataset",
+            Self::Load => "load",
+            Self::Quantize => "quantize",
+            Self::Merge => "merge",
+            Self::Inject => "inject",
+        }
+    }
+}
+
+impl std::fmt::Display for PhaseName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Progress within a countable [`TrainEvent::Phase`].
+///
+/// Both fields are required: bundling them is the whole point, since two
+/// independent `Option`s permit a `total` with no `done` — a state no emitter
+/// produces and no consumer knows how to render. Flattened onto the event, so
+/// this changes the Rust type without changing the JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PhaseCounters {
+    /// Units completed so far — an **absolute snapshot**, monotonic but sparse
+    /// and irregular. Never treat it as +1 per event.
+    pub done: u64,
+    /// Total units in this phase. A countable phase closes at `done == total`.
+    pub total: u64,
+}
+
+impl PhaseCounters {
+    /// Counters for a phase of `total` units with `done` complete.
+    pub fn new(done: u64, total: u64) -> Self {
+        Self { done, total }
+    }
 }

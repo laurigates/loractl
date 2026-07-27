@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use loractl_api::{ApiConfig, TrainerFactory};
-use loractl_core::{MockTrainer, TrainConfig, TrainEvent, Trainer};
+use loractl_core::{MockTrainer, PhaseCounters, PhaseName, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -775,10 +775,9 @@ async fn phase_events_stream_under_their_own_sse_event_name() {
                 total_steps: config.steps,
             });
             sink(TrainEvent::Phase {
-                name: "load".into(),
+                name: PhaseName::Load,
                 detail: "MMDiT (13.1 GiB)".into(),
-                done: Some(1),
-                total: Some(2),
+                counters: Some(PhaseCounters::new(1, 2)),
             });
             sink(TrainEvent::Step {
                 step: 1,
