@@ -206,6 +206,15 @@ audit:
 deny:
     cargo deny check licenses bans sources
 
+# Anchors in hubs/*.md pin prose claims to code symbols; this fails when an
+# anchored symbol's logic fingerprint moves. Cosmetic edits do not fire.
+# Needs `surf` on PATH: https://github.com/Connorrmcd6/surface (see CONTRIBUTING).
+# On a divergence, re-read the printed claim and fix the prose, THEN `surf verify`.
+# Docs↔code drift gate (CI parity with .github/workflows/docs-drift.yml).
+surf:
+    surf lint
+    surf check
+
 # Run the (network + heavy) MNIST LoRA convergence proof — not part of `just test`.
 test-mnist:
     cargo test -p loractl-core --features mnist -- --ignored mnist_lora_converges
