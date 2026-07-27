@@ -713,3 +713,138 @@ fn tiny_krea2_trains_with_block_checkpointing() {
         );
     }
 }
+
+/// The setup phases are actually reported (`TrainEvent::Phase`).
+///
+/// This is the deterministic proof for the thing that made a real run look
+/// hung: everything before step 1 — the one-time dataset encode (minutes per
+/// sample on the real 4B text encoder), the multi-gigabyte checkpoint loads,
+/// the cache re-read, LoRA injection — used to emit nothing at all. Asserting
+/// only "some Phase arrived" would pass on a single stray event, so this pins
+/// the vocabulary, the counters, the ordering, and the cold/warm distinction.
+#[test]
+fn setup_phases_are_reported_before_the_first_step() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("diffusion-phases");
+    let dataset = staged_dataset(&out);
+
+    // (order, name, detail, done, total) — `order` is the index in the whole
+    // event stream, so "before the first Step" is checkable.
+    type Report = (usize, String, String, Option<u64>, Option<u64>);
+    let mut phases: Vec<Report> = Vec::new();
+    let mut first_step: Option<usize> = None;
+    let mut seen = 0usize;
+    DiffusionTrainer
+        .train(&config(&out, dataset.clone()), &mut |event| {
+            let idx = seen;
+            seen += 1;
+            match event {
+                TrainEvent::Phase {
+                    name,
+                    detail,
+                    done,
+                    total,
+                } => phases.push((idx, name, detail, done, total)),
+                TrainEvent::Step { .. } => first_step = first_step.or(Some(idx)),
+                _ => {}
+            }
+        })
+        .expect("the cold run completes");
+
+    let names: Vec<&str> = phases.iter().map(|p| p.1.as_str()).collect();
+    for expected in ["encode", "load", "dataset", "inject"] {
+        assert!(
+            names.contains(&expected),
+            "no `{expected}` phase in {names:?}"
+        );
+    }
+    // The vocabulary is closed: a typo'd or ad-hoc phase name must fail here
+    // rather than reach consumers keying on it.
+    for (_, name, ..) in &phases {
+        assert!(
+            matches!(
+                name.as_str(),
+                "encode" | "dataset" | "load" | "quantize" | "merge" | "inject"
+            ),
+            "phase name outside the documented vocabulary: {name}"
+        );
+    }
+
+    // Every phase precedes the first optimization step — these report SETUP,
+    // and a Phase leaking into the step loop would be a different (and
+    // bench-contaminating) thing.
+    let first_step = first_step.expect("the run stepped");
+    assert!(
+        phases.iter().all(|p| p.0 < first_step),
+        "a Phase arrived at or after the first Step: {phases:?}"
+    );
+
+    // The encode phase counts entries: 5 staged examples, `done` strictly
+    // increasing from 0, `total` always 5, and each one named as an encode
+    // (cold cache) rather than a cache hit.
+    let encodes: Vec<_> = phases
+        .iter()
+        .filter(|p| p.1 == "encode" && p.3.is_some())
+        .collect();
+    assert_eq!(
+        encodes.len(),
+        6,
+        "5 per-entry reports + the closing summary: {encodes:?}"
+    );
+    for (i, p) in encodes.iter().enumerate() {
+        assert_eq!(p.4, Some(5), "total must be the entry count");
+        assert_eq!(p.3, Some(i.min(5) as u64), "done must count up from 0");
+    }
+    assert!(
+        encodes[..5].iter().all(|p| p.2.starts_with("encoding ")),
+        "a cold pass must report encodes, not cache hits: {encodes:?}"
+    );
+
+    // The checkpoint loads name what they are loading, and the injection
+    // reports the site count the run actually adapted (7 sites × 2 blocks).
+    let loads: Vec<&str> = phases
+        .iter()
+        .filter(|p| p.1 == "load")
+        .map(|p| p.2.as_str())
+        .collect();
+    for what in ["VAE", "text encoder", "MMDiT"] {
+        assert!(
+            loads.iter().any(|d| d.starts_with(what)),
+            "no `{what}` load phase in {loads:?}"
+        );
+    }
+    let inject = phases
+        .iter()
+        .find(|p| p.1 == "inject")
+        .expect("checked present above");
+    assert!(
+        inject.2.starts_with("14 LoRA adapters"),
+        "inject must report the matched adapter count: {}",
+        inject.2
+    );
+
+    // A warm rerun flips the encode reports to cache hits — the flag tracks
+    // the cache rather than being hardcoded, and a run whose per-file encode
+    // reports say "encoding" on a warm cache is reporting a lie.
+    let mut config2 = config(&out, dataset);
+    config2.output.dir = out.0.join("out2");
+    let mut warm: Vec<String> = Vec::new();
+    DiffusionTrainer
+        .train(&config2, &mut |event| {
+            if let TrainEvent::Phase {
+                name, detail, done, ..
+            } = event
+                && name == "encode"
+                && done.is_some()
+            {
+                warm.push(detail);
+            }
+        })
+        .expect("the warm rerun completes");
+    assert!(
+        warm[..5].iter().all(|d| d.starts_with("cached ")),
+        "a warm pass must report cache hits: {warm:?}"
+    );
+}

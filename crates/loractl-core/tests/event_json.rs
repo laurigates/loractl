@@ -17,6 +17,24 @@ fn train_event_wire_shapes() {
             r#"{"type":"started","total_steps":1000}"#,
         ),
         (
+            TrainEvent::Phase {
+                name: "load".to_string(),
+                detail: "MMDiT (13.1 GiB)".to_string(),
+                done: None,
+                total: None,
+            },
+            r#"{"type":"phase","name":"load","detail":"MMDiT (13.1 GiB)"}"#,
+        ),
+        (
+            TrainEvent::Phase {
+                name: "encode".to_string(),
+                detail: "caching latents".to_string(),
+                done: Some(3),
+                total: Some(40),
+            },
+            r#"{"type":"phase","name":"encode","detail":"caching latents","done":3,"total":40}"#,
+        ),
+        (
             TrainEvent::Step {
                 step: 42,
                 loss: 1.2345,

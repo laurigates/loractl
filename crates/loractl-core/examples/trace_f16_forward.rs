@@ -63,6 +63,7 @@ mod wgpu_main {
             &device,
             |_| bail!("cold latent cache — run the trainer's encode phase first"),
             |_| bail!("cold cond cache — run the trainer's encode phase first"),
+            |_| {},
         )?;
         let batches = prepared.batches(1);
         let batch = &batches[0];

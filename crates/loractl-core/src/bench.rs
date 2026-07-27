@@ -511,7 +511,10 @@ impl StepBench {
             // Disk I/O inside the window — the export is real work, but it is
             // not the step time anyone is asking about.
             TrainEvent::Checkpoint { .. } | TrainEvent::Sample { .. } => self.contaminated = true,
-            TrainEvent::Warning { .. } | TrainEvent::Finished { .. } => {}
+            // Setup/background progress, never mid-step work: it must NOT
+            // contaminate the window it lands in.
+            TrainEvent::Phase { .. } | TrainEvent::Warning { .. } | TrainEvent::Finished { .. } => {
+            }
         }
     }
 
@@ -844,6 +847,48 @@ mod tests {
         // The read still happened — this fixes where its cost is accounted,
         // not whether the telemetry is collected.
         assert_eq!(bench.peak_vram_mib(), Some(4096));
+    }
+
+    /// The mirror of [`checkpoint_windows_are_marked_and_excluded`]: a `Phase`
+    /// is setup/background progress, never mid-step disk I/O, so the window it
+    /// lands in stays clean. Without this, folding `Phase` into the
+    /// `Checkpoint | Sample` arm is invisible to every gate — and the wire
+    /// contract permits a phase to arrive between steps, which is exactly when
+    /// the arm's placement starts to matter.
+    ///
+    /// The `Phase` must sit *between* two steps: `contaminated` resets on every
+    /// `Step` and the first `Step` builds no sample, so a phase emitted before
+    /// step 1 would pass under either arm placement.
+    #[test]
+    fn a_phase_never_contaminates_the_window_it_lands_in() {
+        let bench = run_scripted(
+            &[
+                TrainEvent::Started { total_steps: 4 },
+                step(1, 0.9),
+                step(2, 0.8),
+                TrainEvent::Phase {
+                    name: "dataset".into(),
+                    detail: "re-reading cache".into(),
+                    done: Some(3),
+                    total: Some(40),
+                },
+                step(3, 0.7),
+                step(4, 0.6),
+            ],
+            Duration::from_millis(2),
+        );
+        let contaminated: Vec<u64> = bench
+            .samples()
+            .iter()
+            .filter(|s| s.contaminated)
+            .map(|s| s.step)
+            .collect();
+        assert!(
+            contaminated.is_empty(),
+            "a Phase must not contaminate the window it lands in: {contaminated:?}"
+        );
+        assert_eq!(bench.counted().len(), 3, "no window may be dropped");
+        assert_counted_terms_agree(&bench);
     }
 
     #[test]

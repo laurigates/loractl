@@ -183,6 +183,16 @@ fn main() -> Result<()> {
                     None => println!("step {step} loss {loss:.6}"),
                 }
             }
+            TrainEvent::Phase {
+                name,
+                detail,
+                done,
+                total,
+            } => match (done, total) {
+                (Some(done), Some(total)) => println!("  {name}: {detail} {done}/{total}"),
+                (Some(done), None) => println!("  {name}: {detail} {done}"),
+                _ => println!("  {name}: {detail}"),
+            },
             TrainEvent::Warning { message } => println!("  warning: {message}"),
             TrainEvent::Checkpoint { step, path } => {
                 println!("checkpoint at step {step}: {}", path.display());
