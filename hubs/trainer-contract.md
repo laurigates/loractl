@@ -18,15 +18,20 @@ anchors:
       `TrainEvent` is the whole progress vocabulary and is the serialized wire contract:
       it is an internally-tagged serde enum (`tag = "type"`, snake_case variant names), so
       adding, renaming, or re-shaping a variant changes the HTTP/SSE payload that
-      docs/api/events.md pins. Trainers report by calling a sink with these values and
-      must not render or write to stdout/stderr themselves.
+      docs/api/events.md pins. Its payload types are part of that contract too:
+      `PhaseName` is a closed enum serialized as snake_case tokens a consumer may key on,
+      and `PhaseCounters` is `#[serde(flatten)]`ed onto `Phase`, so its counters ride the
+      wire as sibling fields rather than a nested object — the bundling exists to make a
+      `total` without a `done` unrepresentable in Rust, not to change the JSON. Trainers
+      report by calling a sink with these values and must not render or write to
+      stdout/stderr themselves.
     at:
       - crates/loractl-core/src/event.rs > TrainEvent
       - crates/loractl-core/src/train.rs > Trainer
-    hash: 2:36dd0f90c22b
+    hash: 2:28ca2950a289
     id: c_18c63b4af5b5f2480007
-    verified_at: 2026-07-27T19:11:35Z
-    verified_commit: 069d768374f09c4a8bfe9a8bcbb75ee863132a88
+    verified_at: 2026-07-27T20:26:18Z
+    verified_commit: 86711000dea743caf8ccb60bf669fc129ea4530a
 refs: []
 ---
 
