@@ -54,6 +54,7 @@
 /worktrees/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+.claude/workflows/
 
 # Blueprint: work-orders are task-specific and may hold sensitive detail
 docs/blueprint/work-orders/
