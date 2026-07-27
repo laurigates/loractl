@@ -1,0 +1,46 @@
+name: Docs drift
+
+# Surface (https://github.com/Connorrmcd6/surface) anchors prose claims in hubs/
+# to code symbols and fails when the anchored symbol's *logic* fingerprint moves.
+# Cosmetic edits (renames, comments, reformatting) do not fire.
+#
+# Mirrors the local justfile gate: `just surf`.
+#
+# EXPERIMENTAL — Surface is a young, single-maintainer project. It is pinned by
+# commit SHA (a tag can be re-pointed after release, so the SHA is the real
+# anchor) and is deliberately a standalone workflow: deleting this one file and
+# hubs/ removes the gate completely.
+#
+# When this fails, the fix is NOT to re-run it. Read the claim it printed, decide
+# whether the prose is still true, edit it if not, then re-seal with `surf verify`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  surface:
+    name: surf lint + check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: surf lint (every anchor resolves)
+        uses: Connorrmcd6/surface@091b937ae34ac81a02386604fed977dd24f1f0cf # v0.8.0
+        with:
+          # `version` defaults to "latest" — without it the SHA-pinned action
+          # still installs a floating binary, defeating the pin.
+          version: v0.8.0
+          args: lint
+      - name: surf check (the gate — blocks on logic drift)
+        uses: Connorrmcd6/surface@091b937ae34ac81a02386604fed977dd24f1f0cf # v0.8.0
+        with:
+          version: v0.8.0
+          args: check
