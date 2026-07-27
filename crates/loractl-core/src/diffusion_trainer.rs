@@ -95,6 +95,7 @@ use burn_store::{
     TensorSnapshot,
 };
 use regex::Regex;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -437,7 +438,7 @@ impl Trainer for DiffusionTrainer {
         // kernels corrupted sequential encoder outputs progressively (clean
         // → ~1e32 magnitudes → NaN across identical calls). The cache makes
         // this a one-time cost per dataset.
-        encode_phase::<NdArray>(config, Default::default())?;
+        encode_phase::<NdArray>(config, Default::default(), sink)?;
 
         match config.compute.backend {
             BackendKind::Ndarray => {
@@ -498,11 +499,35 @@ impl Trainer for DiffusionTrainer {
 fn encode_phase<B: burn::tensor::backend::Backend>(
     config: &TrainConfig,
     device: B::Device,
+    sink: &mut dyn FnMut(TrainEvent),
 ) -> Result<()> {
     let base = PathBuf::from(&config.model.base);
     let (_, enc_cfg, vae_cfg, max_length) = variant_configs(config.model.variant);
     let fingerprint = encoder_fingerprint(config.model.variant, max_length);
 
+    // Three of the four closures below want the sink, and `prepare_dataset`
+    // holds them all at once — so they share it through a `RefCell` rather
+    // than four mutable borrows. `prepare_dataset` calls them strictly
+    // sequentially (progress, then the encoders), never re-entrantly, so no
+    // borrow overlaps.
+    let sink = RefCell::new(sink);
+    let emit = |name: &str, detail: String, done: Option<u64>, total: Option<u64>| {
+        (sink.borrow_mut())(TrainEvent::Phase {
+            name: name.to_string(),
+            detail,
+            done,
+            total,
+        });
+    };
+    emit(
+        PHASE_ENCODE,
+        format!("scanning {}", config.dataset.path.display()),
+        None,
+        None,
+    );
+
+    let mut seen = 0u64;
+    let mut encoded = 0u64;
     let mut vae: Option<QwenVae<B>> = None;
     let mut conditioner: Option<Qwen3VlConditioner<B>> = None;
     prepare_dataset::<B>(
@@ -519,6 +544,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 // `convert_wan_vae_to_diffusers` then flattens `resample.1`),
                 // diffusers → the existing `key_remap`.
                 let path = vae_path(&config.model, &base);
+                emit(PHASE_LOAD, describe_checkpoint("VAE", &path), None, None);
                 let remap: Vec<(&str, &str)> = if vae_is_native_keyed(&path)? {
                     QwenVae::<B>::native_key_remap()
                 } else {
@@ -547,6 +573,12 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 // `text_encoder/model.safetensors` (bf16/f32, `language_model.*`
                 // keys) still takes the unchanged burn-store path.
                 let enc_path = text_encoder_path(&config.model, &base);
+                emit(
+                    PHASE_LOAD,
+                    describe_checkpoint("text encoder", &enc_path),
+                    None,
+                    None,
+                );
                 let encoder = if crate::fp8::is_fp8_checkpoint(&enc_path)? {
                     load_fp8_encoder(
                         Qwen3VlEncoder::<B>::init(enc_cfg.clone(), &device),
@@ -575,8 +607,99 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 .expect("just initialized")
                 .encode_captions(&[caption], &device)
         },
+        |p| {
+            seen = p.total as u64;
+            // A miss is the expensive case (minutes on the real encoders), so
+            // it always reports; hits are throttled — a warm 5000-image pass
+            // must not emit 5000 events.
+            if !p.cached {
+                encoded += 1;
+            }
+            if !p.cached || emit_every(p.done, p.total) {
+                emit(
+                    PHASE_ENCODE,
+                    format!(
+                        "{} {}",
+                        if p.cached { "cached" } else { "encoding" },
+                        p.name
+                    ),
+                    Some(p.done as u64),
+                    Some(p.total as u64),
+                );
+            }
+        },
     )?;
+    emit(
+        PHASE_ENCODE,
+        format!("cache ready — {seen} examples ({encoded} encoded this pass)"),
+        Some(seen),
+        Some(seen),
+    );
     Ok(())
+}
+
+/// Phase ids — the stable vocabulary [`TrainEvent::Phase`] documents. Kept as
+/// constants so a typo cannot silently mint a new phase name.
+const PHASE_ENCODE: &str = "encode";
+const PHASE_DATASET: &str = "dataset";
+const PHASE_LOAD: &str = "load";
+const PHASE_QUANTIZE: &str = "quantize";
+const PHASE_MERGE: &str = "merge";
+const PHASE_INJECT: &str = "inject";
+
+/// Should item `done` of `total` report? Caps a countable phase at ~100
+/// updates regardless of size (plus the last item), so a 261-site quantize or
+/// a 5000-image warm pass stays a handful of events instead of a flood.
+fn emit_every(done: usize, total: usize) -> bool {
+    // Ceiling division, not truncating: at total = 261 a stride of 2 would
+    // still emit 131 reports.
+    let stride = total.div_ceil(100).max(1);
+    done.is_multiple_of(stride) || done + 1 >= total
+}
+
+/// A byte count in the largest unit that still carries a significant digit —
+/// `13.1 GiB`, `247.3 MiB`, `882 KiB`, `413 B`.
+///
+/// A fixed `{:.1} GiB` renders every fixture bundle, the ComfyUI VAE, and any
+/// tokenizer-scale file as `0.0 GiB`, which reads as an *empty* file — the very
+/// misreport [`describe_checkpoint`]'s `bytes > 0` guard exists to prevent.
+fn human_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= KIB * KIB * KIB {
+        format!("{:.1} GiB", b / (KIB * KIB * KIB))
+    } else if b >= KIB * KIB {
+        format!("{:.1} MiB", b / (KIB * KIB))
+    } else if b >= KIB {
+        format!("{:.0} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// `"MMDiT (13.1 GiB) from raw.safetensors"` — the detail string for a
+/// checkpoint load. The size comes from one `stat`; an unreadable size is
+/// omitted rather than guessed (the file's absence is the loader's error to
+/// report, not this label's).
+fn describe_checkpoint(what: &str, path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    match std::fs::metadata(path).map(|m| m.len()) {
+        Ok(bytes) if bytes > 0 => format!("{what} ({}) from {name}", human_bytes(bytes)),
+        _ => format!("{what} from {name}"),
+    }
+}
+
+/// Emit a [`TrainEvent::Phase`] with no counters — the common shape.
+fn emit_phase(sink: &mut dyn FnMut(TrainEvent), name: &str, detail: String) {
+    sink(TrainEvent::Phase {
+        name: name.to_string(),
+        detail,
+        done: None,
+        total: None,
+    });
 }
 
 /// The checkpointing split. Since #134 the diffusion path's
@@ -946,7 +1069,20 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     let mut chunked_sites = 0usize;
     let mut total_chunks = 0usize;
     let mut covered: HashSet<String> = HashSet::new();
-    for (path_key, base) in module.all_base_linears_mut() {
+    let bases = module.all_base_linears_mut();
+    let site_count = bases.len();
+    for (site, (path_key, base)) in bases.into_iter().enumerate() {
+        // Throttled to ~100 updates: on the real model this loop dequantizes,
+        // quantizes and stores 261 multi-hundred-MiB tensors over minutes, so
+        // it is the phase most worth reporting — but not 261 times over.
+        if emit_every(site, site_count) {
+            sink(TrainEvent::Phase {
+                name: PHASE_QUANTIZE.to_string(),
+                detail: format!("{what} {path_key}"),
+                done: Some(site as u64),
+                total: Some(site_count as u64),
+            });
+        }
         let weight_key = format!("{path_key}.weight");
         match base {
             BaseLinear::Quant(q) => {
@@ -1088,24 +1224,51 @@ where
     // training precision (f16 encoders are exactly the bug this split
     // exists to prevent).
     let fingerprint = encoder_fingerprint(variant, max_length);
-    let prepared = prepare_dataset::<AB>(
-        &config.dataset,
-        &fingerprint,
-        &device,
-        |_| bail!("latent cache miss after the encode phase — did the dataset change mid-run?"),
-        |_| {
-            bail!(
-                "conditioning cache miss after the encode phase — did the dataset change mid-run?"
-            )
-        },
-    )?;
+    let prepared = {
+        let sink = RefCell::new(&mut *sink);
+        prepare_dataset::<AB>(
+            &config.dataset,
+            &fingerprint,
+            &device,
+            |_| bail!("latent cache miss after the encode phase — did the dataset change mid-run?"),
+            |_| {
+                bail!(
+                    "conditioning cache miss after the encode phase — did the dataset change mid-run?"
+                )
+            },
+            |p| {
+                // Pure disk reads here (the encode phase already ran), so this
+                // is throttled unconditionally — it exists to prove the run is
+                // moving through a large dataset, not to narrate every file.
+                if emit_every(p.done, p.total) {
+                    (sink.borrow_mut())(TrainEvent::Phase {
+                        name: PHASE_DATASET.to_string(),
+                        detail: format!("reading cached {}", p.name),
+                        done: Some(p.done as u64),
+                        total: Some(p.total as u64),
+                    });
+                }
+            },
+        )?
+    };
     let batches = prepared.batches(config.dataset.batch_size.max(1) as usize);
     if batches.is_empty() {
         bail!("the dataset produced no batches");
     }
+    emit_phase(
+        sink,
+        PHASE_DATASET,
+        format!(
+            "{} examples, {} buckets, {} batches per epoch",
+            prepared.entries.len(),
+            prepared.buckets.len(),
+            batches.len()
+        ),
+    );
 
     // ---- Phase 2: the denoiser + adapters. ----
     let denoiser = denoiser_path(&config.model, &base);
+    emit_phase(sink, PHASE_LOAD, describe_checkpoint("MMDiT", &denoiser));
     let mut mmdit = if let Some(value) = quant_value(config.compute.quant) {
         // Quantized frozen base (int8/int4, #96). Build + load + quantize on the
         // NON-autodiff INNER backend, at the TARGET device directly — NOT
@@ -1121,6 +1284,11 @@ where
         // threshold both produce the same layout under (a pure function of
         // shape + threshold).
         let chunk_bytes = u64::from(config.compute.dequant_chunk_mib) << 20;
+        emit_phase(
+            sink,
+            PHASE_QUANTIZE,
+            format!("building the int{} frozen-base skeleton", value.size_bits()),
+        );
         let inner = Mmdit::<AB::InnerBackend>::init(mmdit_cfg, &device).into_quantized_chunked(
             value,
             chunk_bytes,
@@ -1170,12 +1338,27 @@ where
     // into the frozen base *before* LoRA injection. Guarded above to be
     // incompatible with quant, so every site here is full-precision (`Plain`).
     if let Some(ta_path) = training_adapter_path(&config.model, &base) {
+        emit_phase(
+            sink,
+            PHASE_MERGE,
+            describe_checkpoint("training adapter", &ta_path),
+        );
         crate::training_adapter::merge_training_adapter(&mut mmdit, &ta_path, &device, sink)
             .with_context(|| format!("merging training adapter {}", ta_path.display()))?;
     }
 
     let sites = mmdit.injectable_sites();
     let mut set = build_adapters::<AB>(&sites, &config.lora, &device);
+    emit_phase(
+        sink,
+        PHASE_INJECT,
+        format!(
+            "{} LoRA adapters across {} injectable sites (rank {})",
+            set.deltas.len(),
+            sites.len(),
+            config.lora.rank
+        ),
+    );
     if set.deltas.is_empty() {
         bail!(
             "no injectable site matched lora.targets — the MMDiT advertises \
@@ -1611,5 +1794,55 @@ mod tests {
             .expect("probe native fixture"),
             "the ComfyUI-native-keyed fixture must be detected as native"
         );
+    }
+}
+
+#[cfg(test)]
+mod phase_cadence_tests {
+    use super::{emit_every, human_bytes};
+
+    /// The size in a load phase's detail is the informative half of the line,
+    /// so it must stay honest at every scale the trainer meets: the ~900 KB
+    /// tiny-krea2 fixtures, the ~250 MB ComfyUI VAE, the 13 GB real denoiser.
+    #[test]
+    fn human_bytes_keeps_a_significant_digit_at_every_scale() {
+        assert_eq!(human_bytes(902_660), "882 KiB"); // the tiny-krea2 VAE
+        assert_eq!(human_bytes(262_144_000), "250.0 MiB"); // the ComfyUI VAE
+        assert_eq!(human_bytes(14_066_212_045), "13.1 GiB"); // the real denoiser
+        assert_eq!(human_bytes(413), "413 B");
+        // The kill-test: nothing non-empty may render as a bare zero — a fixed
+        // `{:.1} GiB` printed `0.0 GiB` for every one of these.
+        for n in [1u64, 1024, 1_048_576, 50_000_000] {
+            assert!(
+                !human_bytes(n).starts_with("0.0"),
+                "{n} bytes rendered as zero: {}",
+                human_bytes(n)
+            );
+        }
+    }
+
+    /// The cadence claim the real-model phases rest on: a countable phase is
+    /// capped at ~100 reports however large it gets. Asserted at the sizes the
+    /// trainer actually hits — 53 tiny base linears (nothing dropped), 261 real
+    /// ones, and a 5000-image warm dataset pass.
+    #[test]
+    fn countable_phases_are_capped_at_about_a_hundred_reports() {
+        for total in [1usize, 53, 100, 261, 5_000, 100_000] {
+            let reports = (0..total).filter(|&i| emit_every(i, total)).count();
+            assert!(
+                reports <= 101,
+                "{total} items produced {reports} reports — the cadence must stay bounded"
+            );
+            // Small phases lose nothing: under the cap every item reports.
+            if total <= 100 {
+                assert_eq!(reports, total, "nothing may be dropped below the cap");
+            }
+            // The last item ALWAYS reports, so a phase never appears to stall
+            // short of its total.
+            assert!(
+                emit_every(total - 1, total),
+                "the final item of a {total}-item phase must report"
+            );
+        }
     }
 }

@@ -689,8 +689,24 @@ fn select_batches<B: Backend>(
 ) -> Vec<Batch<B>> {
     #[cfg(feature = "mnist")]
     if config.model.base == "mnist" {
-        // Cap the sample count so an opt-in run stays reasonably short.
-        return mnist_batches::<B>(device, 64, 6_000);
+        // The one genuinely slow stretch on this trainer: the first run
+        // downloads the MNIST archives, and even a warm run decodes 6k
+        // images before step 1. The synthetic path is milliseconds and gets
+        // no phase — a `Phase` per trivially-fast setup step is noise.
+        sink(TrainEvent::Phase {
+            name: "dataset".into(),
+            detail: "loading the MNIST training split (downloads on first run)".into(),
+            done: None,
+            total: None,
+        });
+        let batches = mnist_batches::<B>(device, 64, 6_000);
+        sink(TrainEvent::Phase {
+            name: "dataset".into(),
+            detail: format!("MNIST ready — {} batches", batches.len()),
+            done: None,
+            total: None,
+        });
+        return batches;
     }
 
     #[cfg(not(feature = "mnist"))]

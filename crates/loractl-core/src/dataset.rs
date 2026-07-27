@@ -382,6 +382,30 @@ impl<B: Backend> PreparedDataset<B> {
     }
 }
 
+/// One progress report from [`prepare_dataset`], emitted **before** each
+/// entry is processed.
+///
+/// Deliberately not a [`TrainEvent`](crate::TrainEvent): this module's job is
+/// files → buckets → cache → batches, and it stays decoupled from the event
+/// stream (see the module docs). The trainer maps these to
+/// [`TrainEvent::Phase`](crate::TrainEvent::Phase).
+///
+/// It is emitted *before* the work because the work is the slow part: on the
+/// real 4B text encoder a single cache miss costs minutes, so a report that
+/// arrived afterwards would name the entry the operator already waited for.
+#[derive(Debug, Clone, Copy)]
+pub struct DatasetProgress<'a> {
+    /// Entries fully processed before this one (0-based index of this entry).
+    pub done: usize,
+    /// Total entries in the dataset scan.
+    pub total: usize,
+    /// File name of the entry about to be processed.
+    pub name: &'a str,
+    /// `true` when both this entry's latent and conditioning are already
+    /// cached, so processing it is a pair of disk reads rather than an encode.
+    pub cached: bool,
+}
+
 /// Scan, bucket, encode-or-load-from-cache every example of the dataset at
 /// `config.path` (see the module docs).
 ///
@@ -390,6 +414,8 @@ impl<B: Backend> PreparedDataset<B> {
 ///   `[1, z, h', w']` (M14 wires [`QwenVae::encode`](crate::QwenVae::encode)).
 /// - `encode_caption` maps a caption to its conditioning stack + mask (M14
 ///   wires [`Qwen3VlConditioner::encode_captions`](crate::Qwen3VlConditioner::encode_captions)).
+/// - `progress` is called once per entry, before that entry is processed —
+///   see [`DatasetProgress`]. Pass `|_| {}` when nothing surfaces it.
 ///
 /// Both closures run **once per example on a cache miss and never on a
 /// hit** — after the first pass, epochs re-read pure tensor files.
@@ -399,13 +425,15 @@ pub fn prepare_dataset<B: Backend>(
     device: &B::Device,
     mut encode_image: impl FnMut(Tensor<B, 4>) -> Result<Tensor<B, 4>>,
     mut encode_caption: impl FnMut(&str) -> Result<(Tensor<B, 4>, Tensor<B, 2, Int>)>,
+    mut progress: impl FnMut(DatasetProgress<'_>),
 ) -> Result<PreparedDataset<B>> {
     let buckets = generate_buckets(config.resolution)?;
     let entries = scan_dataset(&config.path, &buckets)?;
     let cache = DatasetCache::new(&config.path, fingerprint)?;
 
+    let total = entries.len();
     let mut items = Vec::with_capacity(entries.len());
-    for entry in &entries {
+    for (done, entry) in entries.iter().enumerate() {
         // The latent cache keys on the FULL file name: `a.png` and `a.jpg`
         // share a stem (and thus a caption — the kohya convention keys
         // captions by stem, so the conditioning cache below sharing is
@@ -423,8 +451,20 @@ pub fn prepare_dataset<B: Backend>(
             .with_context(|| format!("non-UTF-8 image name {}", entry.image_path.display()))?;
         let bucket = buckets[entry.bucket];
 
-        // Latent: cache hit → rebuild the tensor; miss → decode/encode/store.
         let latent_path = cache.latent_path(file_name, bucket);
+        let cond_path = cache.cond_path(stem);
+        // Reported BEFORE the work, so a consumer names the entry it is
+        // waiting on. Two `stat`s decide hit-vs-miss up front; the authority
+        // is still `cache.read` below (a truncated file reads as a miss), so
+        // this flag is advisory display detail, never control flow.
+        progress(DatasetProgress {
+            done,
+            total,
+            name: file_name,
+            cached: latent_path.is_file() && cond_path.is_file(),
+        });
+
+        // Latent: cache hit → rebuild the tensor; miss → decode/encode/store.
         let latent = match cache.read(&latent_path, &["latent"])? {
             Some(mut tensors) => {
                 let (values, shape) = tensors.remove(0);
@@ -445,7 +485,6 @@ pub fn prepare_dataset<B: Backend>(
         // Conditioning: same shape of hit/miss, two tensors per file. The
         // mask is stored as f32 0/1 (the cache is a single-dtype format
         // here) and converted back to Int on load.
-        let cond_path = cache.cond_path(stem);
         let (conditioning, mask) = match cache.read(&cond_path, &["conditioning", "mask"])? {
             Some(mut tensors) => {
                 let (mask_values, mask_shape) = tensors.remove(1);

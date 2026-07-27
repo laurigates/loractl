@@ -172,6 +172,8 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
     let img_calls = Cell::new(0usize);
     let cap_calls = Cell::new(0usize);
     let captions_seen = std::cell::RefCell::new(Vec::<String>::new());
+    type Report = (usize, usize, String, bool);
+    let progress = std::cell::RefCell::new(Vec::<Report>::new());
     let prepared = prepare_dataset::<B>(
         &config,
         "mock-v1",
@@ -185,11 +187,29 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
             captions_seen.borrow_mut().push(c.to_string());
             mock_encode_caption(c)
         },
+        |p| {
+            progress
+                .borrow_mut()
+                .push((p.done, p.total, p.name.to_string(), p.cached))
+        },
     )
     .expect("cold prepare");
 
     assert_eq!(img_calls.get(), 4, "one image encode per example");
     assert_eq!(cap_calls.get(), 4, "one caption encode per example");
+    // Progress: one report per entry, in scan order, counting up from 0, and
+    // every cold entry reported as a MISS — the flag must track the cache,
+    // not be hardcoded (the warm pass below asserts the other polarity).
+    assert_eq!(
+        *progress.borrow(),
+        vec![
+            (0, 4, "a.png".to_string(), false),
+            (1, 4, "b.png".to_string(), false),
+            (2, 4, "c.png".to_string(), false),
+            (3, 4, "d.JPG".to_string(), false),
+        ],
+        "cold pass must report each entry once, uncached"
+    );
     // Scan order is filename order; missing captions arrive as "".
     assert_eq!(
         *captions_seen.borrow(),
@@ -266,14 +286,26 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
     assert_eq!(cold_masks[0], vec![1, 1, 1, 0]);
 
     // --- Warm pass: the cache serves everything; encoders must NOT run. ---
+    let warm_progress = std::cell::RefCell::new(Vec::<Report>::new());
     let warm = prepare_dataset::<B>(
         &config,
         "mock-v1",
         &device,
         |_| panic!("image encoder must not run on a warm cache"),
         |_| panic!("caption encoder must not run on a warm cache"),
+        |p| {
+            warm_progress
+                .borrow_mut()
+                .push((p.done, p.total, p.name.to_string(), p.cached))
+        },
     )
     .expect("warm prepare");
+    assert!(
+        warm_progress.borrow().iter().all(|r| r.3),
+        "a warm pass must report every entry as cached: {:?}",
+        warm_progress.borrow()
+    );
+    assert_eq!(warm_progress.borrow().len(), 4);
     for (i, item) in warm.items.iter().enumerate() {
         assert_eq!(
             flat(&item.latent),
@@ -303,6 +335,7 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
             mock_encode_image(x)
         },
         mock_encode_caption,
+        |_| {},
     )
     .expect("fingerprint-miss prepare");
     assert_eq!(img_calls2.get(), 4, "a new fingerprint re-encodes");
@@ -314,6 +347,7 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
         &device,
         |_| panic!("v1 cache must have survived the v2 pass"),
         |_| panic!("v1 cache must have survived the v2 pass"),
+        |_| {},
     )
     .expect("v1 still warm after v2");
 
@@ -389,9 +423,14 @@ fn corrupted_cache_file_is_an_error_not_a_panic() {
     };
     let device = Default::default();
 
-    prepare_dataset::<B>(&config, "mock-v1", &device, mock_encode_image, |c| {
-        mock_encode_caption(c)
-    })
+    prepare_dataset::<B>(
+        &config,
+        "mock-v1",
+        &device,
+        mock_encode_image,
+        mock_encode_caption,
+        |_| {},
+    )
     .expect("cold prepare");
 
     // Garbage every cache file, then re-prepare: the pipeline must surface a
@@ -400,9 +439,14 @@ fn corrupted_cache_file_is_an_error_not_a_panic() {
     for entry in std::fs::read_dir(&cache_dir).unwrap() {
         std::fs::write(entry.unwrap().path(), b"not a safetensors file").unwrap();
     }
-    let result = prepare_dataset::<B>(&config, "mock-v1", &device, mock_encode_image, |c| {
-        mock_encode_caption(c)
-    });
+    let result = prepare_dataset::<B>(
+        &config,
+        "mock-v1",
+        &device,
+        mock_encode_image,
+        mock_encode_caption,
+        |_| {},
+    );
     let err = format!("{:#}", result.err().expect("corrupted cache must error"));
     assert!(
         err.contains("parsing cache file"),
@@ -421,7 +465,7 @@ fn empty_dataset_folder_fails_fast() {
         batch_size: 1,
     };
     let device = Default::default();
-    let result = prepare_dataset::<B>(&config, "mock-v1", &device, Ok, mock_encode_caption);
+    let result = prepare_dataset::<B>(&config, "mock-v1", &device, Ok, mock_encode_caption, |_| {});
     assert!(result.is_err(), "an imageless dataset dir must error");
     std::fs::remove_dir_all(&dir).ok();
 }

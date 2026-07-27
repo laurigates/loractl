@@ -27,6 +27,41 @@ pub enum TrainEvent {
         total_steps: u64,
     },
 
+    /// Progress through a long setup or background phase that is not an
+    /// optimization step — the one-time dataset encode, a multi-gigabyte
+    /// checkpoint load, LoRA injection. Emitted zero or more times per phase;
+    /// consumers that only track steps may ignore it entirely.
+    ///
+    /// `name` is drawn from a small **stable vocabulary** — a consumer may key
+    /// on these, so they change only deliberately:
+    ///
+    /// | `name` | The phase it reports |
+    /// |---|---|
+    /// | `encode` | The one-time dataset encode (VAE latents + caption conditioning into the cache). Countable, one report per example. |
+    /// | `dataset` | Reading the prepared cache back, plus the resulting example/bucket/batch summary. |
+    /// | `load` | A checkpoint load — the VAE, the text encoder, the MMDiT. |
+    /// | `quantize` | Building and streaming the int8/int4 frozen-base skeleton. Countable, one report per base-linear site. |
+    /// | `merge` | Folding an optional training adapter into the frozen base. |
+    /// | `inject` | Building the LoRA adapter set across the matched sites. |
+    ///
+    /// Countable phases are throttled to roughly 100 reports each, so a
+    /// consumer must treat `done` as monotonic-but-sparse, never as +1 per
+    /// event. Phases report *setup*: they are emitted before the first
+    /// [`Step`](TrainEvent::Step), never between steps.
+    Phase {
+        /// Stable machine-readable phase id — one of `"encode"`, `"dataset"`,
+        /// `"load"`, `"quantize"`, `"merge"`, `"inject"` (see the table above).
+        name: String,
+        /// Human-readable detail for this update, e.g. `"MMDiT (13.1 GiB)"`.
+        detail: String,
+        /// Completed units within this phase, when the phase is countable.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        done: Option<u64>,
+        /// Total units within this phase, when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
+
     /// Emitted once per optimization step.
     Step {
         /// 1-based index of the step that just completed.

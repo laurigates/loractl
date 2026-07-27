@@ -174,6 +174,7 @@ fn failed_event(error: String) -> StoredEvent {
 fn kind_of(event: &TrainEvent) -> &'static str {
     match event {
         TrainEvent::Started { .. } => "started",
+        TrainEvent::Phase { .. } => "phase",
         TrainEvent::Step { .. } => "step",
         TrainEvent::Checkpoint { .. } => "checkpoint",
         TrainEvent::Sample { .. } => "sample",

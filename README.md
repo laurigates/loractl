@@ -68,6 +68,10 @@ cargo run -p loractl-cli -- train config/examples/lora.yaml --lr 5e-5 --steps 20
 # ...or from the environment
 LORACTL_OPTIM__LR=5e-5 cargo run -p loractl-cli -- train config/examples/lora.yaml
 
+# Say more (or less): -v info, -vv debug, -vvv trace; -q errors only.
+# Warnings print by default; RUST_LOG, when set, overrides these flags.
+cargo run -p loractl-cli -- -v train config/examples/lora.yaml
+
 # Generate shell completions
 cargo run -p loractl-cli -- completions zsh > ~/.zfunc/_loractl
 ```
@@ -264,8 +268,24 @@ loractl train config/examples/lora.yaml
 ```
 
 Panics and fatal command errors become issues; `tracing::error!` events become
-issues and `warn!`/`info!` become breadcrumbs. Delivery is independent of
-`RUST_LOG` (which only controls console output).
+issues and `warn!`/`info!` become breadcrumbs. Delivery is independent of the
+console log level (`-v`/`-q`/`RUST_LOG`), so telemetry never hinges on how
+verbose the terminal output is.
+
+Console verbosity itself: warnings and errors print by default, `-v`/`-vv`/`-vvv`
+add info/debug/trace, and `-q` drops to errors only. The flags raise the level
+for **loractl's own logs only** — third-party crates stay at `warn`, so `-vv` on
+a GPU build does not bury the run under wgpu/naga chatter. A non-empty
+`RUST_LOG` overrides the flags entirely and is the escape hatch for everything
+else (`RUST_LOG=wgpu_core=debug,warn`).
+
+At `-v` and above, each setup phase — the one-time dataset encode, the
+multi-gigabyte checkpoint loads, quantization, LoRA injection — also leaves a
+scrollback line, throttled to roughly one per 10% of a countable phase. When
+output is **not** a terminal (`ssh … > train.log`, a dispatched `gpu.yml`) the
+progress bar draws nothing, so those phase lines print at the default level too
+— a redirected log should never sit empty through a 40-minute setup. `-q` still
+silences them.
 
 ## Roadmap
 

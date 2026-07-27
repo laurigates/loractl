@@ -7,18 +7,19 @@
 //! only the one line that constructs it.
 
 use anyhow::{Context, Result};
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use figment::{
     Figment,
     providers::{Env, Format, Yaml},
 };
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use loractl_core::{
     BackendKind, Device, NdArray, Precision, Quant, TaskKind, TrainConfig, TrainEvent,
     select_trainer,
 };
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
 
@@ -28,9 +29,97 @@ use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt};
     version,
     about = "Terminal-native LoRA trainer — config-driven, completion-friendly, GUI-optional."
 )]
-struct Cli {
+pub struct Cli {
+    /// Increase verbosity of loractl's own logs: `-v` info, `-vv` debug,
+    /// `-vvv` trace. Without it only warnings and errors are printed.
+    /// Third-party crates stay at warn — use `RUST_LOG` for those (e.g.
+    /// `RUST_LOG=wgpu_core=debug,warn`); a non-empty `RUST_LOG` overrides
+    /// this flag entirely.
+    #[arg(short, long, action = ArgAction::Count, global = true, conflicts_with = "quiet")]
+    verbose: u8,
+
+    /// Print errors only — suppress the warnings shown by default. Mutually
+    /// exclusive with `-v`; `RUST_LOG` still overrides it.
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    /// The log filter this invocation asks for, resolving `RUST_LOG` over the
+    /// `-v`/`-q` flags. Reading the environment is confined here so the
+    /// precedence itself stays a pure, tested function ([`resolve_verbosity`]).
+    pub fn verbosity(&self) -> Verbosity {
+        resolve_verbosity(
+            self.verbose,
+            self.quiet,
+            std::env::var("RUST_LOG").ok().as_deref(),
+        )
+    }
+}
+
+/// The resolved log filter for a run.
+///
+/// Two cases rather than one level, because `RUST_LOG` carries per-target
+/// directives (`loractl_core=debug,warn`) that cannot be flattened into a
+/// single [`LevelFilter`] without losing information.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verbosity {
+    /// `RUST_LOG` was set and non-empty; its directives are used verbatim.
+    Env(String),
+    /// Derived from `-v`/`-q`, or the WARN default when neither was passed.
+    Level(LevelFilter),
+}
+
+/// Map the verbosity flags to a level, ignoring the environment.
+///
+/// The default is **WARN**, not "nothing": a run with no flags must still
+/// surface the honest warnings a trainer emits as `TrainEvent::Warning`.
+fn level_for(verbose: u8, quiet: bool) -> LevelFilter {
+    if quiet {
+        return LevelFilter::ERROR;
+    }
+    match verbose {
+        0 => LevelFilter::WARN,
+        1 => LevelFilter::INFO,
+        2 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
+    }
+}
+
+/// The env-filter directives a flag-derived `level` expands to.
+///
+/// **Scoped to loractl's own target on purpose.** A bare level is a *global*
+/// default directive, and `tracing-subscriber`'s default `tracing-log` feature
+/// bridges every `log::debug!`/`log::trace!` from wgpu, naga, cubecl, hyper and
+/// friends into it — measured on a `--features wgpu` build, `-vv` over a
+/// two-step run is tens of thousands of lines of naga type tables with the
+/// handful of loractl phase lines lost inside. Third-party crates keep a `warn`
+/// floor so a genuine upstream warning still reaches the operator; `-q` drops
+/// that floor too.
+///
+/// The target is `loractl` (the `[[bin]] name`, which is what `module_path!`
+/// roots at) — `loractl_cli` would match nothing, and `loractl-core` has no
+/// `tracing` dependency at all, by the render invariant.
+fn flag_directives(level: LevelFilter) -> String {
+    let level = level.to_string().to_lowercase();
+    let baseline = if level == "error" || level == "off" {
+        level.as_str()
+    } else {
+        "warn"
+    };
+    format!("{baseline},loractl={level}")
+}
+
+/// Resolve the effective filter: an explicit, non-empty `RUST_LOG` wins over
+/// the flags; otherwise the flags (or the WARN default) decide.
+fn resolve_verbosity(verbose: u8, quiet: bool, rust_log: Option<&str>) -> Verbosity {
+    match rust_log.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(directives) => Verbosity::Env(directives.to_string()),
+        None => Verbosity::Level(level_for(verbose, quiet)),
+    }
 }
 
 #[derive(Subcommand)]
@@ -271,13 +360,16 @@ struct SampleCmd {
 /// `SENTRY_DSN` is unset, so this is always safe to call.
 ///
 /// Two tracing layers are installed:
-/// - a `fmt` layer renders human-readable logs, gated by the usual `RUST_LOG`
-///   env filter (console behaviour is unchanged);
+/// - a `fmt` layer renders human-readable logs, gated by the [`Verbosity`] the
+///   caller resolved from `-v`/`-q`/`RUST_LOG` (default: warnings and above);
 /// - a Sentry layer forwards `INFO`-and-above tracing events to GlitchTip —
 ///   `ERROR` events become issues, `WARN`/`INFO` attach as breadcrumbs for
-///   context — independent of `RUST_LOG` so telemetry doesn't hinge on log
-///   verbosity.
-pub fn init_telemetry() -> sentry::ClientInitGuard {
+///   context — independent of the console filter so telemetry doesn't hinge on
+///   log verbosity.
+///
+/// Called *after* `Cli::parse()` (the flags are an input), which is why it is
+/// a separate step from [`run`] rather than something `main` can do first.
+pub fn init_telemetry(verbosity: Verbosity) -> sentry::ClientInitGuard {
     // GlitchTip speaks the Sentry ingest protocol; the DSN is read from the
     // `SENTRY_DSN` environment variable. `release` tags events with the crate
     // version so issues group by build.
@@ -286,12 +378,13 @@ pub fn init_telemetry() -> sentry::ClientInitGuard {
         ..Default::default()
     });
 
+    let filter = match verbosity {
+        Verbosity::Env(directives) => EnvFilter::new(directives),
+        Verbosity::Level(level) => EnvFilter::new(flag_directives(level)),
+    };
+
     tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_target(false)
-                .with_filter(EnvFilter::from_default_env()),
-        )
+        .with(fmt::layer().with_target(false).with_filter(filter))
         .with(sentry::integrations::tracing::layer().with_filter(LevelFilter::INFO))
         .init();
 
@@ -304,9 +397,16 @@ pub fn init_telemetry() -> sentry::ClientInitGuard {
     guard
 }
 
-/// Parse arguments and dispatch. Called by `main`.
-pub fn run() -> Result<()> {
-    match Cli::parse().command {
+/// Parse arguments. Split from [`run`] so `main` can bring telemetry up with
+/// the parsed verbosity flags *before* dispatching, while keeping the sentry
+/// guard alive across the whole run.
+pub fn parse() -> Cli {
+    Cli::parse()
+}
+
+/// Dispatch a parsed command line. Called by `main`.
+pub fn run(cli: Cli) -> Result<()> {
+    match cli.command {
         Command::Train(cmd) => train(cmd),
         Command::Sample(cmd) => sample(cmd),
         Command::Inspect(cmd) => inspect(cmd),
@@ -468,13 +568,118 @@ fn pretty_value(value: &str) -> String {
     }
 }
 
-fn train(cmd: TrainCmd) -> Result<()> {
-    let config = resolve_config(&cmd)?;
+/// Render a phase's optional counters as a trailing ` 12/40 (30%)`, or the
+/// empty string when the phase is uncountable.
+fn phase_progress(done: Option<u64>, total: Option<u64>) -> String {
+    match (done, total) {
+        (Some(done), Some(total)) if total > 0 => {
+            format!(" {done}/{total} ({}%)", done.saturating_mul(100) / total)
+        }
+        (Some(done), Some(total)) => format!(" {done}/{total}"),
+        (Some(done), None) => format!(" {done}"),
+        _ => String::new(),
+    }
+}
 
-    std::fs::create_dir_all(&config.output.dir)
-        .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
+/// Decides which `Phase` updates earn a durable scrollback line at `-v`.
+///
+/// Core throttles a countable phase to ~100 reports, which is right for a
+/// live bar but far too many log lines — quantizing 261 sites would bury the
+/// terminal. So: a new phase always logs, a countable phase logs once per
+/// completed decile (≤ 11 lines), and an uncountable phase logs whenever its
+/// detail changes. At `-vv` (DEBUG) the throttle is bypassed by the caller's
+/// `tracing::enabled!` check, so nothing is lost when it is actually wanted.
+#[derive(Default)]
+struct PhaseLog {
+    /// Whether any phase has been logged yet (distinguishes "no phase" from
+    /// a phase whose name happens to be empty).
+    started: bool,
+    /// Name of the last *logged* phase.
+    name: String,
+    /// Detail of the last *logged* update.
+    detail: String,
+    /// Decile (0..=10) of the last *logged* update, when countable.
+    decile: Option<u64>,
+}
 
-    let bar = ProgressBar::new(config.steps.max(1));
+impl PhaseLog {
+    /// Returns `true` when this update deserves a log line, recording it as
+    /// the new baseline. Skipped updates leave the baseline untouched, so the
+    /// decile gate measures distance from the last line actually written.
+    fn should_log(
+        &mut self,
+        name: &str,
+        detail: &str,
+        done: Option<u64>,
+        total: Option<u64>,
+    ) -> bool {
+        // Everything is worth a line at DEBUG and above; the throttle exists
+        // only to keep the default `-v` (INFO) ladder readable.
+        let verbose = tracing::enabled!(tracing::Level::DEBUG);
+        let decile = match (done, total) {
+            (Some(done), Some(total)) if total > 0 => {
+                Some((done.saturating_mul(10) / total).min(10))
+            }
+            _ => None,
+        };
+        let log = if verbose || !self.started || self.name != name {
+            true
+        } else if let Some(decile) = decile {
+            Some(decile) != self.decile || done == total
+        } else {
+            self.detail != detail
+        };
+        if log {
+            self.started = true;
+            self.name = name.to_string();
+            self.detail = detail.to_string();
+            self.decile = decile;
+        }
+        log
+    }
+}
+
+/// Where a throttled `Phase` line goes.
+#[derive(Debug, PartialEq, Eq)]
+enum PhaseSink {
+    /// Through `tracing` at INFO, suspending the bar around the write.
+    Log,
+    /// Printed directly (the same stream the `fmt` layer renders to): there is
+    /// no bar drawing this progress and the log level would otherwise swallow
+    /// it.
+    Print,
+    /// The operator asked for silence (`-q`).
+    Drop,
+}
+
+/// Route a phase line.
+///
+/// indicatif draws **nothing** when the target is not a terminal, which is
+/// exactly the documented long-run route (`ssh popos …`, a dispatched
+/// `gpu.yml`, `nohup … > train.log`). There the bar's animated spinner and
+/// message carry no information at all, so a log that stays empty for tens of
+/// minutes is the same "looks hung" failure the steady tick fixed for TTYs.
+/// With no bar to carry it, the line is written regardless of `-v` — but `-q`
+/// asked for silence and still gets it.
+fn phase_sink(bar_hidden: bool, info_enabled: bool, warn_enabled: bool) -> PhaseSink {
+    if info_enabled {
+        PhaseSink::Log
+    } else if bar_hidden && warn_enabled {
+        PhaseSink::Print
+    } else {
+        PhaseSink::Drop
+    }
+}
+
+/// The run's progress bar, drawn to `target`.
+///
+/// Split out of [`train`] so the two lines that carry the "it isn't hung"
+/// signal — the steady tick and the initial message — are reachable from a
+/// test against a capturing draw target. `train()` itself is never executed by
+/// any test (the crate has no `[lib]`, so it cannot even be linked), which is
+/// how a missing `enable_steady_tick` stayed invisible in the first place.
+fn build_progress_bar(steps: u64, target: ProgressDrawTarget) -> ProgressBar {
+    let bar = ProgressBar::with_draw_target(Some(steps.max(1)), target);
     bar.set_style(
         ProgressStyle::with_template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
@@ -482,13 +687,48 @@ fn train(cmd: TrainCmd) -> Result<()> {
         .expect("valid progress template")
         .progress_chars("=>-"),
     );
+    // Redraw on a timer, not only when an event arrives. Setup (a one-time
+    // dataset encode, a 13 GB checkpoint load) can run for tens of minutes
+    // before the first `Step`; without a steady tick the spinner and
+    // `{elapsed_precise}` sit frozen at `00:00:00` and the run looks hung.
+    // `suspend` pauses the ticker while a log line is written, so this does
+    // not fight the `bar.suspend(...)` calls below.
+    bar.set_message("starting…");
+    bar.enable_steady_tick(Duration::from_millis(100));
+    bar
+}
 
-    // The trainer factory — the constructor seam the load-bearing invariant
-    // protects. Routing on `model.base` lives in core (`select_trainer`) so
-    // the CLI and the API cannot drift apart.
-    let mut trainer = select_trainer(&config);
-    let adapter = trainer.train(&config, &mut |event| match event {
+/// Render one `TrainEvent` onto the bar. The whole of the CLI's half of the
+/// event contract lives here so it can be driven directly by a test.
+fn render_event(bar: &ProgressBar, phase_log: &mut PhaseLog, event: TrainEvent) {
+    match event {
         TrainEvent::Started { total_steps } => bar.set_length(total_steps),
+        TrainEvent::Phase {
+            name,
+            detail,
+            done,
+            total,
+        } => {
+            // Setup progress goes in the *message*, never the bar's
+            // position/length — those belong to the step count (`Started`
+            // sized the bar to `config.steps`) and re-purposing them would
+            // corrupt step accounting for the rest of the run. The animated
+            // spinner and elapsed timer carry liveness; the message carries
+            // where we are.
+            let message = format!("{name}: {detail}{}", phase_progress(done, total));
+            bar.set_message(message.clone());
+            if phase_log.should_log(&name, &detail, done, total) {
+                match phase_sink(
+                    bar.is_hidden(),
+                    tracing::enabled!(tracing::Level::INFO),
+                    tracing::enabled!(tracing::Level::WARN),
+                ) {
+                    PhaseSink::Log => bar.suspend(|| tracing::info!("{message}")),
+                    PhaseSink::Print => println!("{message}"),
+                    PhaseSink::Drop => {}
+                }
+            }
+        }
         TrainEvent::Step { step, loss, lr } => {
             bar.set_position(step);
             bar.set_message(format!("loss {loss:.4}  lr {lr:.2e}"));
@@ -505,6 +745,27 @@ fn train(cmd: TrainCmd) -> Result<()> {
         TrainEvent::Finished { adapter_path } => {
             bar.finish_with_message(format!("done → {}", adapter_path.display()));
         }
+    }
+}
+
+fn train(cmd: TrainCmd) -> Result<()> {
+    let config = resolve_config(&cmd)?;
+
+    std::fs::create_dir_all(&config.output.dir)
+        .with_context(|| format!("creating output dir {}", config.output.dir.display()))?;
+
+    let bar = build_progress_bar(config.steps, ProgressDrawTarget::stderr());
+
+    // Scrollback throttle for `Phase`, kept across the whole run — see
+    // `PhaseLog`. Only the transient bar message is updated per event.
+    let mut phase_log = PhaseLog::default();
+
+    // The trainer factory — the constructor seam the load-bearing invariant
+    // protects. Routing on `model.base` lives in core (`select_trainer`) so
+    // the CLI and the API cannot drift apart.
+    let mut trainer = select_trainer(&config);
+    let adapter = trainer.train(&config, &mut |event| {
+        render_event(&bar, &mut phase_log, event);
     })?;
 
     println!("adapter: {}", adapter.display());
@@ -838,6 +1099,266 @@ mod tests {
             // empty: every example ships a non-zero step count.
             assert!(config.steps > 0, "preset `{name}` should set steps");
         }
+    }
+
+    /// The verbosity ladder (#…: "the run looks hung and says nothing").
+    ///
+    /// The kill-test is the first assertion: the default MUST be WARN. It used
+    /// to be `EnvFilter::from_default_env()`, which with `RUST_LOG` unset
+    /// enables *nothing* — every honest `TrainEvent::Warning` was silently
+    /// dropped. A regression to "off" would make this test fail rather than
+    /// making the tool quietly lie.
+    #[test]
+    fn verbosity_flags_map_to_levels() {
+        assert_eq!(
+            level_for(0, false),
+            LevelFilter::WARN,
+            "no flags must still surface warnings"
+        );
+        assert_eq!(level_for(1, false), LevelFilter::INFO);
+        assert_eq!(level_for(2, false), LevelFilter::DEBUG);
+        assert_eq!(level_for(3, false), LevelFilter::TRACE);
+        assert_eq!(
+            level_for(9, false),
+            LevelFilter::TRACE,
+            "saturates at trace"
+        );
+        assert_eq!(level_for(0, true), LevelFilter::ERROR, "-q is errors only");
+    }
+
+    /// `RUST_LOG` is an explicit env override and wins over the flags — but
+    /// only when it actually says something; an empty or whitespace value is
+    /// treated as unset, so `RUST_LOG= loractl -v` still gets INFO instead of
+    /// an empty (silent) filter.
+    #[test]
+    fn rust_log_overrides_the_flags_when_non_empty() {
+        assert_eq!(
+            resolve_verbosity(3, false, Some("loractl_core=debug,warn")),
+            Verbosity::Env("loractl_core=debug,warn".to_string())
+        );
+        assert_eq!(
+            resolve_verbosity(0, true, Some("info")),
+            Verbosity::Env("info".to_string()),
+            "RUST_LOG beats -q too"
+        );
+        assert_eq!(
+            resolve_verbosity(1, false, Some("   ")),
+            Verbosity::Level(LevelFilter::INFO),
+            "a blank RUST_LOG is not an override"
+        );
+        assert_eq!(
+            resolve_verbosity(0, false, None),
+            Verbosity::Level(LevelFilter::WARN)
+        );
+    }
+
+    /// `-v` and `-q` are contradictory, so clap must reject them together
+    /// rather than letting one silently win. They are `global`, so this holds
+    /// both before and after the subcommand.
+    #[test]
+    fn verbose_and_quiet_conflict() {
+        Cli::command()
+            .try_get_matches_from(["loractl", "-v", "train", "c.yaml"])
+            .expect("-v alone is fine");
+        Cli::command()
+            .try_get_matches_from(["loractl", "-q", "train", "c.yaml"])
+            .expect("-q alone is fine");
+        Cli::command()
+            .try_get_matches_from(["loractl", "-q", "-v", "train", "c.yaml"])
+            .expect_err("-q and -v must conflict");
+        Cli::command()
+            .try_get_matches_from(["loractl", "train", "-v", "-q", "c.yaml"])
+            .expect_err("the conflict must hold after the subcommand too");
+    }
+
+    /// Countable phases are throttled to one line per decile, so the 261-site
+    /// quantize pass cannot bury the terminal at `-v`; a new phase name always
+    /// gets its line, and an uncountable phase logs on each new detail.
+    #[test]
+    fn phase_logging_is_throttled_per_decile() {
+        let mut log = PhaseLog::default();
+        let lines = (0..=261)
+            .filter(|site| log.should_log("quantize", "streaming sites", Some(*site), Some(261)))
+            .count();
+        assert!(
+            (2..=12).contains(&lines),
+            "261 site updates logged {lines} lines; expected ~11"
+        );
+
+        // A different phase always earns its line, even mid-count.
+        assert!(log.should_log("inject", "14 LoRA adapters", None, None));
+        assert!(
+            !log.should_log("inject", "14 LoRA adapters", None, None),
+            "an unchanged uncountable update must not repeat"
+        );
+        assert!(
+            log.should_log("inject", "196 sites matched", None, None),
+            "a new detail on an uncountable phase must log"
+        );
+    }
+
+    /// The flag ladder must never become a *global* directive: with
+    /// `tracing-log` bridging `log` records, a bare `debug` turns `-vv` on a
+    /// GPU build into a wall of wgpu/naga output. The kill-test is the last
+    /// assertion — a bare level must not satisfy this.
+    #[test]
+    fn flag_levels_are_scoped_to_loractls_own_target() {
+        assert_eq!(flag_directives(LevelFilter::WARN), "warn,loractl=warn");
+        assert_eq!(flag_directives(LevelFilter::INFO), "warn,loractl=info");
+        assert_eq!(flag_directives(LevelFilter::DEBUG), "warn,loractl=debug");
+        assert_eq!(flag_directives(LevelFilter::TRACE), "warn,loractl=trace");
+        assert_eq!(
+            flag_directives(LevelFilter::ERROR),
+            "error,loractl=error",
+            "-q silences third-party warnings too"
+        );
+        for level in [LevelFilter::INFO, LevelFilter::DEBUG, LevelFilter::TRACE] {
+            let directives = flag_directives(level);
+            assert!(
+                directives.contains("loractl="),
+                "{directives} is a global directive — third-party log records would flood it"
+            );
+            // …and it must parse, or every run would silently lose its filter.
+            EnvFilter::try_new(&directives).expect("directives parse");
+        }
+    }
+
+    /// Without a bar, the phase line is the *only* progress an operator sees —
+    /// and every documented long run (ssh, `gpu.yml`, `nohup … > train.log`) is
+    /// non-TTY, so gating it on `-v` there reproduces the "looks hung" symptom
+    /// in a log file. `-q` still wins.
+    #[test]
+    fn phase_lines_survive_a_hidden_bar_at_the_default_level() {
+        // Bar drawn (a TTY): the bar carries progress, so the default level
+        // keeps the scrollback quiet.
+        assert_eq!(phase_sink(false, false, true), PhaseSink::Drop);
+        assert_eq!(phase_sink(false, true, true), PhaseSink::Log);
+        // No bar: the line must get out even though INFO is off.
+        assert_eq!(
+            phase_sink(true, false, true),
+            PhaseSink::Print,
+            "a redirected run must still report setup progress"
+        );
+        assert_eq!(phase_sink(true, true, true), PhaseSink::Log);
+        // `-q` asked for silence, bar or not.
+        assert_eq!(phase_sink(true, false, false), PhaseSink::Drop);
+        assert_eq!(phase_sink(false, false, false), PhaseSink::Drop);
+    }
+
+    /// A capturing [`indicatif::TermLike`] so the bar's actual draws are
+    /// observable — the only way to test the two lines that carry "this run is
+    /// not hung", since `train()` itself is unreachable from any test.
+    #[derive(Clone, Debug, Default)]
+    struct CaptureTerm(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl CaptureTerm {
+        fn writes(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+        fn text(&self) -> String {
+            self.0.lock().unwrap().join("\n")
+        }
+        fn push(&self, s: &str) {
+            self.0.lock().unwrap().push(s.to_string());
+        }
+    }
+
+    impl indicatif::TermLike for CaptureTerm {
+        fn width(&self) -> u16 {
+            120
+        }
+        fn height(&self) -> u16 {
+            40
+        }
+        fn move_cursor_up(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn move_cursor_down(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn move_cursor_right(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn move_cursor_left(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn write_line(&self, s: &str) -> std::io::Result<()> {
+            self.push(s);
+            Ok(())
+        }
+        fn write_str(&self, s: &str) -> std::io::Result<()> {
+            self.push(s);
+            Ok(())
+        }
+        fn clear_line(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn flush(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capturing_bar(steps: u64) -> (ProgressBar, CaptureTerm) {
+        let term = CaptureTerm::default();
+        let bar = build_progress_bar(steps, ProgressDrawTarget::term_like(Box::new(term.clone())));
+        (bar, term)
+    }
+
+    /// The frozen-bar fix. Setup can run for tens of minutes before the first
+    /// `Step`; without `enable_steady_tick` the spinner and `{elapsed_precise}`
+    /// never redraw and the run looks hung — the original symptom.
+    #[test]
+    fn the_bar_redraws_on_a_timer_with_no_events() {
+        let (bar, term) = capturing_bar(10);
+        // Baseline *after* construction, so the setup draws don't count: the
+        // question is whether anything is drawn while nothing happens.
+        let before = term.writes();
+        std::thread::sleep(Duration::from_millis(400));
+        let ticks = term.writes() - before;
+        bar.finish_and_clear();
+        assert!(
+            ticks >= 2,
+            "the bar must redraw on a timer with no events (got {ticks} draws in 400ms)"
+        );
+    }
+
+    /// A `Phase` lands in the bar's *message*, never its position/length.
+    #[test]
+    fn phase_events_render_into_the_bar_message() {
+        let (bar, term) = capturing_bar(10);
+        let mut log = PhaseLog::default();
+        render_event(
+            &bar,
+            &mut log,
+            TrainEvent::Phase {
+                name: "encode".into(),
+                detail: "encoding a.png".into(),
+                done: Some(3),
+                total: Some(40),
+            },
+        );
+        assert_eq!(bar.position(), 0, "a phase must not move the step count");
+        assert_eq!(bar.length(), Some(10), "a phase must not resize the bar");
+        bar.finish_and_clear();
+        assert!(
+            term.text().contains("encode: encoding a.png 3/40 (7%)"),
+            "phase message missing from the bar: {}",
+            term.text()
+        );
+    }
+
+    #[test]
+    fn phase_progress_renders_counters_only_when_present() {
+        assert_eq!(phase_progress(Some(3), Some(40)), " 3/40 (7%)");
+        assert_eq!(phase_progress(Some(40), Some(40)), " 40/40 (100%)");
+        assert_eq!(phase_progress(Some(7), None), " 7");
+        assert_eq!(phase_progress(None, Some(40)), "");
+        assert_eq!(phase_progress(None, None), "");
+        assert_eq!(
+            phase_progress(Some(0), Some(0)),
+            " 0/0",
+            "no divide by zero"
+        );
     }
 
     #[test]

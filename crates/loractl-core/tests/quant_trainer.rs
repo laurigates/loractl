@@ -663,3 +663,63 @@ fn tiny_krea2_cuda_int4_trains_e2e() {
     let keys = kohya_keys(&finished.unwrap_or(adapter));
     assert_eq!(keys.len(), 42, "unexpected cuda int4 export keys: {keys:?}");
 }
+
+/// The quantized load reports progress (`TrainEvent::Phase`, name
+/// `"quantize"`).
+///
+/// On the real model this loop streams 261 multi-hundred-MiB tensors through
+/// dequant → quantize → store over minutes with nothing else on the wire, so
+/// it is the single most valuable phase to report. Pinned here on the 53-site
+/// tiny bundle: the skeleton build announces itself, every per-site report
+/// carries `done`/`total` counting the base linears, and — the property that
+/// keeps the real run from drowning in events — the per-site reports are
+/// throttled to at most ~100 regardless of site count.
+#[test]
+fn quantized_load_reports_per_site_progress() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("quant-phase");
+    let dataset = staged_dataset(&out);
+    let mut cfg = config(&out, dataset, 2);
+    cfg.compute.quant = Quant::Int8;
+
+    let mut skeleton: Option<String> = None;
+    let mut sites: Vec<(u64, u64)> = Vec::new();
+    DiffusionTrainer
+        .train(&cfg, &mut |event| {
+            if let TrainEvent::Phase {
+                name,
+                detail,
+                done,
+                total,
+            } = event
+                && name == "quantize"
+            {
+                match (done, total) {
+                    (Some(d), Some(t)) => sites.push((d, t)),
+                    _ => skeleton = Some(detail),
+                }
+            }
+        })
+        .expect("the int8 run completes");
+
+    let skeleton = skeleton.expect("the skeleton build must announce itself");
+    assert!(
+        skeleton.contains("int8"),
+        "the skeleton phase must name the scheme: {skeleton}"
+    );
+    // 53 base linears — the same set the loader's accounting Warning counts
+    // (52 quantized + 1 unaligned). Under 100 sites nothing is throttled away,
+    // so every one reports, in order, from 0.
+    assert_eq!(
+        sites,
+        (0..53).map(|d| (d, 53)).collect::<Vec<_>>(),
+        "per-site reports must count every base linear from 0"
+    );
+    assert!(
+        sites.len() <= 100,
+        "the per-site cadence must stay bounded: {} reports",
+        sites.len()
+    );
+}

@@ -119,10 +119,12 @@ is no queue and no fairness between clients.
 ## Event shapes
 
 Every `data:` payload is a flat JSON object whose `type` field is the
-discriminator. Six event types come from core's `TrainEvent`:
+discriminator. Seven event types come from core's `TrainEvent`:
 
 ```json
 {"type":"started","total_steps":1000}
+{"type":"phase","name":"load","detail":"MMDiT (13.1 GiB)"}
+{"type":"phase","name":"encode","detail":"caching latents","done":3,"total":40}
 {"type":"step","step":42,"loss":1.2345,"lr":0.0001}
 {"type":"checkpoint","step":250,"path":"output/checkpoint-250.safetensors"}
 {"type":"sample","step":500,"path":"output/sample-500.png"}
@@ -130,13 +132,45 @@ discriminator. Six event types come from core's `TrainEvent`:
 {"type":"finished","adapter_path":"output/lora.safetensors"}
 ```
 
-**These six examples are enforced byte-for-byte by the
+**These eight examples are enforced byte-for-byte by the
 `train_event_wire_shapes` golden test**
 (`crates/loractl-core/tests/event_json.rs`) — the strings above are copied
 verbatim from that test. If this document and that test ever disagree, the
 document has drifted; fix the document.
 
-The seventh type is the API-layer terminal event, produced by `loractl-api`
+`phase` reports progress through a long setup or background phase that is not
+an optimization step — the one-time dataset encode, a multi-gigabyte
+checkpoint load, LoRA injection. `detail` is human-readable text for this
+update. `done` and `total` are **omitted entirely** when the phase is not
+countable (both examples above are contract), so a client must treat them as
+optional rather than expecting `null`. A phase may report any number of times —
+including none — but every `phase` event precedes the run's first `step` (see
+the ordering guarantee below); a client that only tracks steps can ignore the
+type outright.
+
+`name` is a **stable machine-readable phase id** from a closed vocabulary, so a
+client may key on it:
+
+| `name` | The phase it reports |
+|---|---|
+| `encode` | The one-time dataset encode — VAE latents and caption conditioning into the on-disk cache. Countable: one report per example. On a real model a single cache miss costs minutes, so this is the phase that dominates a first run. |
+| `dataset` | Reading the prepared cache back, then the example / bucket / batch summary for the run. |
+| `load` | A checkpoint load: the VAE, the text encoder, the MMDiT. `detail` names the component and, when readable, its size. |
+| `quantize` | Building and streaming the int8/int4 frozen-base skeleton. Countable: one report per base-linear site (261 on the real Krea 2 denoiser). |
+| `merge` | Folding an optional training adapter into the frozen base before LoRA injection. |
+| `inject` | Building the LoRA adapter set across the matched injectable sites. |
+
+Two properties a client should rely on, both pinned by tests:
+
+- **Countable phases are throttled** to roughly 100 reports each regardless of
+  size, so `done` is monotonic but **sparse** — never assume it advances by one
+  per event, and drive a progress bar from `done`/`total` rather than by
+  counting events.
+- **Phases report setup**: every `phase` event of a training run precedes its
+  first `step`. Consumers that measure step timing (the bench harness) ignore
+  them for exactly this reason — they never contaminate a measured step.
+
+The eighth type is the API-layer terminal event, produced by `loractl-api`
 itself (in `crates/loractl-api/src/state.rs`, not by core) when a run fails —
 whether the trainer returned an error or panicked:
 

@@ -754,6 +754,84 @@ async fn trainer_ok_without_finished_still_closes_stream() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// Pins the SSE `event:` **name** for `TrainEvent::Phase`.
+///
+/// That name is what a browser binds with `addEventListener("phase", …)`, and
+/// it is produced by `kind_of` — a separate claim from the JSON `type`
+/// discriminator the core golden pins. A typo there (or reusing `"step"`)
+/// ships green otherwise: the payload still serializes, the stream still
+/// closes, and the client just never fires.
+#[tokio::test(flavor = "multi_thread")]
+async fn phase_events_stream_under_their_own_sse_event_name() {
+    struct PhaseTrainer;
+
+    impl Trainer for PhaseTrainer {
+        fn train(
+            &mut self,
+            config: &TrainConfig,
+            sink: &mut dyn FnMut(TrainEvent),
+        ) -> anyhow::Result<PathBuf> {
+            sink(TrainEvent::Started {
+                total_steps: config.steps,
+            });
+            sink(TrainEvent::Phase {
+                name: "load".into(),
+                detail: "MMDiT (13.1 GiB)".into(),
+                done: Some(1),
+                total: Some(2),
+            });
+            sink(TrainEvent::Step {
+                step: 1,
+                loss: 0.5,
+                lr: 1e-4,
+            });
+            let path = config.output.dir.join("adapter.safetensors");
+            sink(TrainEvent::Finished {
+                adapter_path: path.clone(),
+            });
+            Ok(path)
+        }
+    }
+
+    let base = test_base("phase-kind");
+    let factory: TrainerFactory = Arc::new(|_| Box::new(PhaseTrainer));
+    let app = app_with(factory, &base);
+
+    let response = app
+        .clone()
+        .oneshot(post_runs(config_json(RUN_DIR, 1, 100).to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app.oneshot(get_events(1)).await.unwrap();
+    let events = parse_sse(&body_string(response.into_body()).await);
+
+    // The SSE `event:` field — the part `kind_of` owns.
+    let names: Vec<Option<&str>> = events.iter().map(|e| e.event.as_deref()).collect();
+    assert_eq!(
+        names,
+        vec![
+            Some("started"),
+            Some("phase"),
+            Some("step"),
+            Some("finished")
+        ]
+    );
+    // …and the JSON discriminator, so the two cannot silently diverge.
+    assert_eq!(types(&events), vec!["started", "phase", "step", "finished"]);
+
+    let phase: serde_json::Value = serde_json::from_str(&events[1].data).unwrap();
+    assert_eq!(phase["name"], "load");
+    assert_eq!(phase["done"], 1);
+    assert!(
+        phase["loss"].is_null(),
+        "a phase payload must not look like a step: {phase}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// Test 11: unknown run id → 404 with a JSON error body.
 #[tokio::test(flavor = "multi_thread")]
 async fn events_for_unknown_run_is_404() {
