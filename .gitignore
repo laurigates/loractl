@@ -37,6 +37,11 @@
 /crates/loractl-core/tests/fixtures/mmdit-real/
 /crates/loractl-core/tests/fixtures/mmdit_real_golden.json
 
+# Probe scratch: `just ledger-probe` (#132) and `just bench-offline` (#110)
+# stage a dataset copy and their outputs here, so the checked-in fixture dirs
+# never grow a .loractl-cache. Always regenerated; never committed.
+/tmp
+
 # Local, uncommitted training configs (keep config/examples/ tracked)
 /config/*.yaml
 !/config/examples/

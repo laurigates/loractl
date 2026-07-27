@@ -99,13 +99,18 @@ Separately open (tracked as **#159**): int4's ~7% worst-case dequant error and
 what it does to adapter *quality*. The #25 ComfyUI A/B proved the trained
 adapter visibly conditions generation, which is a conditioning proof, not a
 quality benchmark — memory fit and output quality remain different questions.
-Also unmeasured: step **throughput** under block checkpointing (one extra trunk
-forward per step; needs #110's harness — whose reusable core landed as
-`crates/loractl-bench`, but nothing depends on it yet, so no training step has
-ever been timed).
+Also unmeasured **on real hardware**: step **throughput** under block
+checkpointing (one extra trunk forward per step). #110's harness is now wired
+end to end — `just bench <config>` drives a real run and reports median
+ms/step, tok/s, effective TFLOP/s and peak VRAM — but it has only been
+exercised on the offline fixture, so the number itself still needs a GPU
+dispatch.
 
-Measure with `just step-probe` (the recipe landed in #126) —
-don't re-derive peaks from `nvidia-smi` eyeballing.
+Measure VRAM with `just step-probe` (the recipe landed in #126) and time with
+`just bench` (#110) — don't re-derive either from `nvidia-smi` eyeballing. Two
+things the bench does not license: quoting `tok_s=`/`tflops=` without the
+`MODEL` line they are a quotient of, or quoting any timing from a run whose
+aggregate reads `sanity=SUSPECT` or `plausible=false`.
 
 ## What survives from the cubecl work
 

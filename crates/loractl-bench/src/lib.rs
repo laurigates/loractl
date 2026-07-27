@@ -11,7 +11,10 @@
 //!   timer fences a batch between two full device syncs;
 //! - a **2×-iters [`Sanity`] ratio** that catches an elided / dead compute
 //!   graph (total time must scale ~2× when iters double);
-//! - a [`plausible`] dead-graph guard rejecting all-zero / non-finite output.
+//! - a [`plausible`] dead-graph guard rejecting all-zero / non-finite output;
+//! - a [`ModelLine`] (`MODEL …`) carrying the analytic work model behind a
+//!   `RESULT`'s derived throughputs, so a reader can audit the denominator
+//!   rather than trust it.
 //!
 //! It is deliberately backend-agnostic: [`time_wall_sync`] takes a `sync` fence
 //! closure, so burn/cubecl, raw CubeCL, or a plain CPU loop all drive the same
@@ -180,6 +183,47 @@ impl fmt::Display for BenchResult {
     }
 }
 
+/// One grep-parseable `MODEL label=… k=v …` line.
+///
+/// A `RESULT`'s `tflops=` / `tok_s=` figures are a *quotient*: measured time
+/// under an analytic count of work. The count is a model, and a model that
+/// only ever appears as its own quotient cannot be checked. This line carries
+/// the model's terms — and, by convention, an `excludes=` term naming what it
+/// leaves out — beside the number it produced.
+#[derive(Debug, Clone)]
+pub struct ModelLine {
+    /// Identifier for the modelled path; matches the `RESULT`'s `label=`.
+    pub label: String,
+    /// Ordered `key=value` terms of the model.
+    pub terms: Vec<(String, String)>,
+}
+
+impl ModelLine {
+    /// An empty model line for `label`.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            terms: Vec::new(),
+        }
+    }
+
+    /// Append a `key=value` term.
+    pub fn with(mut self, key: impl Into<String>, value: impl fmt::Display) -> Self {
+        self.terms.push((key.into(), value.to_string()));
+        self
+    }
+}
+
+impl fmt::Display for ModelLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MODEL label={}", self.label)?;
+        for (key, value) in &self.terms {
+            write!(f, " {key}={value}")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +302,17 @@ mod tests {
         assert!(line.contains("tflops=24.2000"), "{line}");
         assert!(line.contains("vram_mb=17300"), "{line}");
         assert!(line.contains("sanity=ok x2_ratio=2.000"), "{line}");
+    }
+
+    #[test]
+    fn model_line_is_grep_parseable() {
+        let line = ModelLine::new("train_step")
+            .with("fwd_flops", 1.5e12)
+            .with("excludes", "norms,rope")
+            .to_string();
+        assert_eq!(
+            line,
+            "MODEL label=train_step fwd_flops=1500000000000 excludes=norms,rope"
+        );
     }
 }

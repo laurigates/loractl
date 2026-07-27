@@ -1,0 +1,50 @@
+# #110 step-throughput bench, offline arm: the checked-in tiny-krea2 fixture
+# on ndarray. Run via `just bench-offline` (it stages the dataset copy so the
+# checked-in fixture dir never grows a .loractl-cache).
+#
+# This exists to keep the HARNESS exercised without a GPU — the numbers it
+# produces are about a 2-block toy at 32px and mean nothing about training
+# throughput. The real measurement is `just bench <config>` on the cuda host.
+#
+# `steps: 8` is the smallest run worth quoting, not the smallest that reports.
+# The first Step event opens a window rather than closing one and `--warmup 1`
+# drops the next, so 4 steps is the structural floor — but that leaves the
+# 2×-steps sanity ratio comparing against a single window, where one scheduling
+# hiccup reads SUSPECT. 8 steps gives 6 counted windows and a 3-window
+# baseline. The driver prints this advice itself when a run is below it.
+
+task: flow-matching
+
+model:
+  base: crates/loractl-core/tests/fixtures/tiny-krea2
+  variant: tiny-krea2
+
+dataset:
+  path: tmp/bench/dataset
+  resolution: 32
+  batch_size: 2
+
+lora:
+  rank: 4
+  alpha: 8.0
+  targets:
+    - pattern: 'blocks\.'
+
+optim:
+  lr: 1.0e-2
+
+steps: 8
+seed: 42
+
+output:
+  dir: tmp/bench/out
+  name: tiny-bench
+  # Past `steps`, so no checkpoint export lands mid-run and contaminates a
+  # timed window. The bench marks such windows `ckpt=1` and excludes them; on
+  # an 8-step run that would throw away most of the sample.
+  checkpoint_every: 1000
+
+compute:
+  backend: ndarray
+  precision: f32
+  grad_checkpointing: false

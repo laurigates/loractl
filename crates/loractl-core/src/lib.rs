@@ -33,6 +33,9 @@
 //! - [`DiffusionTrainer`] — the end-to-end Krea 2 LoRA trainer composing all
 //!   of the above, exporting ComfyUI-loadable kohya-ss adapters
 //!   (milestone 14).
+//! - [`bench`] — throughput measurement for a real run: the burn-side adapter
+//!   over the `loractl-bench` harness, timing a [`Trainer`]'s steps off its
+//!   own event stream and reporting `RESULT`/`SANITY`/`MODEL` lines (#110).
 //! - [`fp8`] — scaled-fp8 (e4m3fn + `weight_scale`) safetensors loading for
 //!   ComfyUI-style Krea-2-Turbo repacks: lazy dequant snapshots feeding the
 //!   same apply machinery as a stock checkpoint (milestone 15).
@@ -66,6 +69,7 @@
 pub mod accuracy;
 pub mod adapter;
 pub mod adapters;
+pub mod bench;
 pub mod block_ckpt;
 pub mod burn_trainer;
 pub mod config;
@@ -90,6 +94,7 @@ pub mod train;
 pub mod training_adapter;
 
 pub use adapters::{LoraAdapters, LoraSite, build_adapters};
+pub use bench::{StepBench, StepWork};
 pub use burn_trainer::BurnTrainer;
 pub use config::{
     BackendKind, ComputeConfig, FlowConfig, MetadataConfig, ModelVariant, Precision, Quant,
@@ -105,7 +110,7 @@ pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};
 pub use qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
-pub use train::{MockTrainer, Trainer, select_trainer};
+pub use train::{MockTrainer, Trainer, is_builtin_demo_base, select_trainer};
 
 // Re-exported so `loractl-cli` can name the concrete inference backend/device
 // (`sample()` in `cli.rs`) without needing its own direct `burn` dependency —

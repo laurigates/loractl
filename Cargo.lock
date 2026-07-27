@@ -3714,6 +3714,7 @@ dependencies = [
  "burn-store",
  "figment",
  "image",
+ "loractl-bench",
  "memmap2",
  "regex",
  "safetensors 0.7.0",

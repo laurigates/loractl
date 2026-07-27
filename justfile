@@ -278,6 +278,34 @@ quant-probe denoiser quant="int8":
 step-probe *args:
     cargo run --release -p loractl-core --features cuda --example step_probe -- "$@"
 
+# #110 step-throughput bench: time REAL training steps and report the
+# RESULT/SANITY/MODEL lines. The sibling of step-probe — that one answers "does
+# this config fit the card", this one "how fast does it run". Needed before any
+# lever that spends throughput to buy VRAM (#158/ADR-0008) can be judged, and
+# for the int8/int4 QLoRA throughput question (#96). Args forward through "$@"
+# for the same quoting reason as step-probe.
+# e.g. `just bench config/examples/krea2-comfyui.yaml --steps 8 --seq-len 1536`
+# Pass --seq-len: without it the token count is image-only and understates
+# tok_s/tflops (ms= is measured either way). See the example's header.
+# cuda-only, and there is deliberately no `bench-wgpu`: the harness itself is
+# backend-agnostic (it reads `compute.backend`), but a wgpu real-model run has
+# nothing trustworthy to time until burn#5162 is fixed — timing a numerically
+# corrupt run would produce a real number for work nobody wants. Build with
+# --features wgpu by hand if that changes.
+bench *args:
+    cargo run --release -p loractl-core --features cuda --example bench_step -- "$@"
+
+# The offline arm of the bench: the tiny-krea2 fixture on ndarray, no GPU. Its
+# NUMBERS are meaningless (a 2-block toy at 32px) — it exists to keep the
+# harness itself runnable and honest on any host. Stages a dataset copy under
+# tmp/ so the checked-in fixture never grows a .loractl-cache, exactly as
+# ledger-probe does.
+bench-offline *args:
+    rm -rf tmp/bench
+    mkdir -p tmp/bench/dataset
+    cp crates/loractl-core/tests/fixtures/dataset-tiny/* tmp/bench/dataset/
+    cargo run --release -p loractl-core --example bench_step -- config/probes/tiny-bench.yaml "$@"
+
 # #132 retention-ledger validation (offline, ndarray): run both checkpointing
 # arms over the tiny-krea2 fixture with the ledger enabled, then report each.
 # Stages a dataset copy under tmp/ so the checked-in fixture never grows a

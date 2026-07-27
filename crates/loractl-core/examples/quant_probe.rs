@@ -38,32 +38,13 @@ mod run {
     use burn::backend::{Cuda, cuda::CudaDevice};
     use burn::tensor::backend::Backend;
     use loractl_core::TrainEvent;
+    use loractl_core::bench::resident_vram_mib;
     use loractl_core::config::Quant;
     use loractl_core::diffusion_trainer::load_quant_module;
     use loractl_core::mmdit::{BaseLinear, Mmdit, MmditConfig};
     use loractl_core::quant::quant_value;
     use std::path::PathBuf;
     use std::str::FromStr;
-
-    /// Resident VRAM (MiB) on device 0, via `nvidia-smi`. Best-effort — a
-    /// missing tool degrades to `None`, not a probe failure.
-    fn resident_vram_mib() -> Option<u64> {
-        let out = std::process::Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=memory.used",
-                "--format=csv,noheader,nounits",
-                "--id=0",
-            ])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .lines()
-            .next()?
-            .trim()
-            .parse()
-            .ok()
-    }
 
     /// `max` and `mean` relative error of `dequant(int8(w))` vs the f32 `w`,
     /// over the block-scale-normalized magnitude (guards against a
