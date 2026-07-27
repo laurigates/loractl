@@ -44,9 +44,16 @@ pub enum TrainEvent {
     /// | `merge` | Folding an optional training adapter into the frozen base. |
     /// | `inject` | Building the LoRA adapter set across the matched sites. |
     ///
-    /// Countable phases are throttled to roughly 100 reports each, so a
-    /// consumer must treat `done` as monotonic-but-sparse, never as +1 per
-    /// event. Phases report *setup*: they are emitted before the first
+    /// Countable phases are throttled to roughly 100 reports each — with one
+    /// deliberate exception: an `encode` **cache miss** reports every example,
+    /// because a single miss is minutes of encoder work and is precisely what
+    /// the operator is waiting on. (Cache *hits* are throttled like everything
+    /// else.) So `done` is monotonic but **sparse and irregular**: treat it as
+    /// an absolute snapshot, never as +1 per event, and drive a progress bar by
+    /// assigning `done`/`total` rather than incrementing. A countable phase
+    /// always closes with a terminal `done == total` report.
+    ///
+    /// Phases report *setup*: they are emitted before the first
     /// [`Step`](TrainEvent::Step), never between steps.
     Phase {
         /// Stable machine-readable phase id — one of `"encode"`, `"dataset"`,

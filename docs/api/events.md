@@ -160,12 +160,21 @@ client may key on it:
 | `merge` | Folding an optional training adapter into the frozen base before LoRA injection. |
 | `inject` | Building the LoRA adapter set across the matched injectable sites. |
 
-Two properties a client should rely on, both pinned by tests:
+Three properties a client should rely on, all pinned by tests:
 
 - **Countable phases are throttled** to roughly 100 reports each regardless of
-  size, so `done` is monotonic but **sparse** — never assume it advances by one
-  per event, and drive a progress bar from `done`/`total` rather than by
-  counting events.
+  size — with one deliberate exception: an `encode` **cache miss** reports every
+  example, because a single miss is minutes of encoder work and is exactly what
+  the operator is waiting on (cache *hits* are throttled normally). So `done` is
+  monotonic but **sparse and irregular**.
+
+  Treat `done` as an **absolute snapshot**, never as +1 per event. Drive a
+  progress bar by *assigning* — `bar.value = done; bar.max = total` — rather
+  than incrementing. Stateless assignment is also self-healing across an SSE
+  reconnect, where a counting client would desynchronize permanently.
+- **A countable phase closes at `done == total`.** The terminal snapshot is
+  always emitted, so a client can retire the phase on it rather than guessing
+  from the next phase's arrival.
 - **Phases report setup**: every `phase` event of a training run precedes its
   first `step`. Consumers that measure step timing (the bench harness) ignore
   them for exactly this reason — they never contaminate a measured step.

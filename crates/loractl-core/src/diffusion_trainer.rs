@@ -1116,6 +1116,19 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
             BaseLinear::Plain(_) => left_plain += 1,
         }
     }
+    // The loop reports `site` BEFORE quantizing it, so its last in-loop report
+    // is `site_count - 1` — a countable phase that ends at 99% and then simply
+    // stops. Close it explicitly at `done == total`, the terminal snapshot a
+    // consumer needs to retire the phase (and the CLI's decile throttle keys
+    // its final line on `done == total`).
+    if site_count > 0 {
+        sink(TrainEvent::Phase {
+            name: PHASE_QUANTIZE.to_string(),
+            detail: format!("{what} {site_count} base linear sites"),
+            done: Some(site_count as u64),
+            total: Some(site_count as u64),
+        });
+    }
 
     // 3. Loud accounting (review): a surprise misalignment on the real model —
     //    where every base linear is block-aligned and should quantize — must be

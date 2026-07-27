@@ -281,11 +281,17 @@ else (`RUST_LOG=wgpu_core=debug,warn`).
 
 At `-v` and above, each setup phase — the one-time dataset encode, the
 multi-gigabyte checkpoint loads, quantization, LoRA injection — also leaves a
-scrollback line, throttled to roughly one per 10% of a countable phase. When
-output is **not** a terminal (`ssh … > train.log`, a dispatched `gpu.yml`) the
-progress bar draws nothing, so those phase lines print at the default level too
-— a redirected log should never sit empty through a 40-minute setup. `-q` still
-silences them.
+scrollback line, throttled to roughly one per 10% of a countable phase — except
+dataset-encode cache misses, which report per example because each miss is
+minutes of work.
+
+Progress goes to **stderr** (the bar, the log lines); stdout carries only the
+final `adapter: <path>`. When *stderr* is not a terminal — `nohup … > train.log
+2>&1`, a dispatched `gpu.yml` — indicatif draws nothing, so the phase lines
+print at the default level instead, and a redirected log never sits empty
+through a 40-minute setup. Redirecting stdout alone (`… > train.log`) leaves
+stderr a terminal, so there you still get the live bar. `-q` silences the lines
+either way.
 
 ## Roadmap
 
