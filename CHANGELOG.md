@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/laurigates/loractl/compare/v0.17.0...v0.18.0) (2026-07-27)
+
+
+### Features
+
+* **core:** time real training steps — the [#110](https://github.com/laurigates/loractl/issues/110) bench adapter and driver ([#161](https://github.com/laurigates/loractl/issues/161)) ([eb546ea](https://github.com/laurigates/loractl/commit/eb546ea9762a421e7917e278c061c7838ddebb99))
+
 ## [0.17.0](https://github.com/laurigates/loractl/compare/v0.16.0...v0.17.0) (2026-07-26)
 
 
