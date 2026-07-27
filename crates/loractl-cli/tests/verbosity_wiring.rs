@@ -19,6 +19,14 @@ use std::process::{Command, Output};
 const WARN_MARKER: &str = "BurnTrainer trains a synthetic LoRA-MLP classifier demo";
 
 fn train(args: &[&str], tag: &str) -> (Output, std::path::PathBuf) {
+    train_with_env(args, tag, &[])
+}
+
+fn train_with_env(
+    args: &[&str],
+    tag: &str,
+    extra_env: &[(&str, &str)],
+) -> (Output, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "loractl-verbosity-{tag}-{}-{}",
         std::process::id(),
@@ -31,15 +39,18 @@ fn train(args: &[&str], tag: &str) -> (Output, std::path::PathBuf) {
         env!("CARGO_MANIFEST_DIR"),
         "/../../config/examples/lora.yaml"
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_loractl"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_loractl"));
+    command
         .args(args)
         .args(["train", config, "--steps", "1"])
         // The harness may inherit `RUST_LOG`; this test is about the flag path.
         .env_remove("RUST_LOG")
         // No `--output-dir` flag exists, so steer the writes via the env layer.
-        .env("LORACTL_OUTPUT__DIR", &dir)
-        .output()
-        .expect("run `loractl train`");
+        .env("LORACTL_OUTPUT__DIR", &dir);
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let output = command.output().expect("run `loractl train`");
     (output, dir)
 }
 
@@ -66,6 +77,52 @@ fn default_run_surfaces_trainer_warnings() {
         "a flagless run must print trainer warnings — the default console \
          filter is WARN, not `EnvFilter::from_default_env()` (which enables \
          nothing when RUST_LOG is unset); output was:\n{console}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `-v` must actually raise the level for **loractl's own** events.
+///
+/// `flag_directives` emits the target `loractl`, which is the `[[bin]]` name
+/// (what `module_path!` roots at) — not the package name `loractl-cli`. An
+/// external review argued the directive therefore matches nothing and `-v` is
+/// inert; it is wrong, but nothing in the suite could settle it, because the
+/// unit test only asserts the directive *string* and never that the filter
+/// matches a real event. This pair does: a run with `-v` must show the INFO
+/// checkpoint line, and the same run without `-v` must not.
+///
+/// A checkpoint every step is the synthetic path's only INFO — the WARN marker
+/// would pass at either level and prove nothing.
+const INFO_MARKER: &str = "checkpoint";
+const CHECKPOINT_EVERY_STEP: (&str, &str) = ("LORACTL_OUTPUT__CHECKPOINT_EVERY", "1");
+
+#[test]
+fn verbose_raises_the_level_for_loractl_targets() {
+    let (out, dir) = train_with_env(&["-v"], "verbose", &[CHECKPOINT_EVERY_STEP]);
+    let console = console(&out);
+    assert!(
+        out.status.success(),
+        "train -v should exit 0; output:\n{console}"
+    );
+    assert!(
+        console.contains(INFO_MARKER),
+        "-v must surface loractl's own INFO events — if this fails, the \
+         `loractl=` target in `flag_directives` no longer matches the binary's \
+         module path and the whole verbosity ladder is inert; output was:\n{console}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn default_run_hides_info() {
+    // The kill-test for the pair above: without this, a filter stuck at INFO
+    // (or TRACE) would satisfy `verbose_raises_the_level_for_loractl_targets`
+    // while `-v` did nothing at all.
+    let (out, dir) = train_with_env(&[], "default-info", &[CHECKPOINT_EVERY_STEP]);
+    let console = console(&out);
+    assert!(
+        !console.contains(INFO_MARKER),
+        "a flagless run must stay at WARN and hide INFO; output was:\n{console}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

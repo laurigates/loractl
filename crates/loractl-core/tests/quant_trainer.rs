@@ -711,14 +711,26 @@ fn quantized_load_reports_per_site_progress() {
     );
     // 53 base linears — the same set the loader's accounting Warning counts
     // (52 quantized + 1 unaligned). Under 100 sites nothing is throttled away,
-    // so every one reports, in order, from 0.
+    // so every one reports, in order, from 0 — and the phase then CLOSES with a
+    // terminal 53/53. Without that close the loop's last in-loop report is site
+    // 52, so the phase would end at 52/53 (98%) and simply stop; a consumer
+    // driving a progress bar could never retire it. Reported by three
+    // independent model reviews (2026-07) and fixed with this assertion.
+    let expected: Vec<(u64, u64)> = (0..53)
+        .chain(std::iter::once(53))
+        .map(|d| (d, 53))
+        .collect();
     assert_eq!(
-        sites,
-        (0..53).map(|d| (d, 53)).collect::<Vec<_>>(),
-        "per-site reports must count every base linear from 0"
+        sites, expected,
+        "per-site reports must count every base linear from 0 and close at 53/53"
+    );
+    assert_eq!(
+        sites.last().copied(),
+        Some((53, 53)),
+        "a countable phase must end on done == total"
     );
     assert!(
-        sites.len() <= 100,
+        sites.len() <= 101,
         "the per-site cadence must stay bounded: {} reports",
         sites.len()
     );

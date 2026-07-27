@@ -654,9 +654,12 @@ enum PhaseSink {
 
 /// Route a phase line.
 ///
-/// indicatif draws **nothing** when the target is not a terminal, which is
-/// exactly the documented long-run route (`ssh popos …`, a dispatched
-/// `gpu.yml`, `nohup … > train.log`). There the bar's animated spinner and
+/// indicatif draws **nothing** when its draw target — **stderr**, where the
+/// tracing fmt layer also writes — is not a terminal, which is exactly the
+/// documented long-run route (a dispatched `gpu.yml`, `nohup … > train.log
+/// 2>&1`). Note this keys on *stderr*: redirecting only stdout
+/// (`… > train.log`) leaves stderr a TTY, so the bar still draws and carries
+/// the progress itself. There the bar's animated spinner and
 /// message carry no information at all, so a log that stays empty for tens of
 /// minutes is the same "looks hung" failure the steady tick fixed for TTYs.
 /// With no bar to carry it, the line is written regardless of `-v` — but `-q`
@@ -724,7 +727,12 @@ fn render_event(bar: &ProgressBar, phase_log: &mut PhaseLog, event: TrainEvent) 
                     tracing::enabled!(tracing::Level::WARN),
                 ) {
                     PhaseSink::Log => bar.suspend(|| tracing::info!("{message}")),
-                    PhaseSink::Print => println!("{message}"),
+                    // stderr, NOT stdout: the bar and the tracing fmt layer both
+                    // write to stderr, so a `println!` here would make progress
+                    // swap streams depending on `-v` — and would pollute the
+                    // stdout that `adapter: <path>` reserves for the one
+                    // machine-readable line this command emits.
+                    PhaseSink::Print => eprintln!("{message}"),
                     PhaseSink::Drop => {}
                 }
             }
