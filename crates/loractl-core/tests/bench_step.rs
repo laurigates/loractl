@@ -85,9 +85,19 @@ fn mock_trainer_run_yields_one_window_per_step_after_the_first() {
     // instead of closing one, because what precedes it is setup, not a step.
     assert_eq!(bench.samples().len(), 5);
     assert_eq!(bench.counted().len(), 4, "one window is warm-up");
-    assert!(
-        bench.samples().iter().all(|s| s.window > Duration::ZERO),
-        "every window must have positive duration"
+    // Deliberately NOT asserting `window > ZERO`: `MockTrainer`'s steps are
+    // instant by design and `Instant`'s tick is ~42 ns on Apple Silicon, so a
+    // window legitimately measures exactly zero on ~3% of runs — a pure flake.
+    // Positive durations are pinned deterministically by `bench.rs`'s
+    // `first_step_opens_a_window_but_is_not_a_sample` (which sleeps between
+    // scripted steps) and against real compute by
+    // `real_burn_training_steps_are_timed_and_pass_the_dead_graph_checks`.
+    // What belongs here is the seam: which step each window is attributed to.
+    let steps: Vec<u64> = bench.samples().iter().map(|s| s.step).collect();
+    assert_eq!(
+        steps,
+        vec![2, 3, 4, 5, 6],
+        "one window per step after the first"
     );
     assert!(
         bench.losses_plausible(),
