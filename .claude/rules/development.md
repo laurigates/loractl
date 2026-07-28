@@ -67,6 +67,11 @@ supply-chain gate (licenses/bans/sources, CI's `deny` job). rustfmt uses
 default style and will reflow multi-line signatures onto one line — expect
 that.
 
+**`cargo build`/`cargo test` are not the gate**: neither compiles `examples/`
+or feature-gated code, so a broken exhaustive `match` in either passes them.
+`just lint` is what covers examples, and `just lint-<feature>` the cfg paths —
+see [`cargo-gate-coverage.md`](cargo-gate-coverage.md).
+
 ## Post-release Cargo.lock sync
 
 `release-please` bumps the version in `Cargo.toml` **only** — it does not touch
