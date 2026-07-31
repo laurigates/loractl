@@ -242,6 +242,18 @@ dispatch. It also records a *fit* finding the memory work has not accounted for:
 run, at a fixed `[1, 512, 12, 2560]` f32 = 60 MiB per example, so VRAM scales
 with dataset size against ADR-0005's ~4 GB of headroom.
 
+Sharing ComfyUI's *resident* VRAM — importing its already-loaded Krea 2 weights
+over CUDA IPC so training and generation alias one copy — is closed by
+[ADR-0011](adrs/0011-comfyui-cross-process-vram-sharing.md). cubecl 0.10's
+`ComputeStorage` admits memory only through `alloc(size)`, and `GpuStorage`'s
+pointer map is private with no non-allocating insertion, so there is nothing to
+hand a foreign pointer to; had there been, `perform_deallocations` would free it
+out from under ComfyUI. The budget also fails independently: the only shareable
+copy is ComfyUI's ~13.1 GB scaled-fp8 base, *larger* than the ~10.1 GB int4 base
+loractl already uses. Co-tenancy stays a time-division problem. Reading
+ComfyUI's model **directory** was never blocked and remains shipped
+(`config/examples/krea2-comfyui.yaml`).
+
 ## A note on the text side
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern
