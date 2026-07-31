@@ -229,6 +229,19 @@ transfer rather than demand paging, worth ~1.06 GB of the 19.4 GB peak at 512px
 (~3.17 GB at 1024px; batch-1, derived), and blocked on that dispatch because it
 is the first lever that spends throughput to buy VRAM.
 
+The *throughput* levers are triaged ahead of that dispatch by
+[ADR-0010](adrs/0010-rtx4090-throughput-lever-triage.md), which records which of
+them are already shipped (M12's latent cache; cubecl's own pinned H2D staging;
+zune-jpeg via `image` 0.25), which are dead at loractl's layer, and the two that
+are real: **`fusion` is compiled off on the CUDA path** (burn declares burn-cuda
+`default-features = false`, so `burn::backend::Cuda` is the raw `CubeBackend`,
+not `Fusion<CubeBackend>`), and the quantized load walks its sites strictly
+serially with a single-threaded CPU dequant. Both are gated on the same
+dispatch. It also records a *fit* finding the memory work has not accounted for:
+`prepare_dataset` holds every example's conditioning on the device for the whole
+run, at a fixed `[1, 512, 12, 2560]` f32 = 60 MiB per example, so VRAM scales
+with dataset size against ADR-0005's ~4 GB of headroom.
+
 ## A note on the text side
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern
