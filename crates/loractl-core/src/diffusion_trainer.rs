@@ -1233,7 +1233,7 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
 ///   training on it, and instead of exporting an adapter from it.
 ///
 /// [ADR-0005]: ../../../docs/adrs/0005-int4-training-vram-bound.md
-fn check_step_loss(loss_value: f32, step: usize) -> Result<()> {
+fn check_step_loss(loss_value: f32, step: u64) -> Result<()> {
     if !loss_value.is_finite() {
         bail!(
             "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
