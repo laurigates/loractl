@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.0](https://github.com/laurigates/loractl/compare/v0.18.0...v0.19.0) (2026-07-31)
+
+
+### Features
+
+* **cli:** add -v/-q verbosity and report setup phases during training ([220bc8c](https://github.com/laurigates/loractl/commit/220bc8cd9ecf72eeaa4fc391ff4bc43d6073e0e8))
+
+
+### Bug Fixes
+
+* **cli:** close countable phases, route progress to stderr, pin the -v ladder ([22e842d](https://github.com/laurigates/loractl/commit/22e842d1881aa8c78e6338c3f2c0f490dd8efc23))
+* **trainer:** end the run on a negative MSE — the visible signature of a swallowed OOM ([7e58981](https://github.com/laurigates/loractl/commit/7e589815d151da5f98d1eb49e07c291ce2056bad))
+* **trainer:** type check_step_loss's step as u64, matching the loop counter ([4faffb3](https://github.com/laurigates/loractl/commit/4faffb3c4cbd54f296a1dc3bd303683ce8dd4fb0))
+
 ## [0.18.0](https://github.com/laurigates/loractl/compare/v0.17.0...v0.18.0) (2026-07-27)
 
 
