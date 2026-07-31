@@ -1210,6 +1210,50 @@ pub fn load_quant_module<B: burn::tensor::backend::Backend>(
     Ok(module)
 }
 
+/// The per-step loss invariants, shared by both step arms (block-checkpointed
+/// and monolithic) since both report the same MSE, `mean(diff²)`. A healthy
+/// value is finite **and** non-negative; each violation is a different bug and
+/// both are worth ending the run for.
+///
+/// - **Non-finite** — numeric divergence. It poisons the adapters within one
+///   optimizer step, and silently "training" NaNs for the remaining steps
+///   wastes hours and exports garbage (observed with f16 on the real 12B
+///   before the f32 encode split).
+/// - **Negative** — impossible for a mean of squares, so the forward did not
+///   compute what it reported. This is the observable signature of a **device
+///   task that panicked and was swallowed**: cubecl runs each dispatched task
+///   under `catch_unwind` and merely logs `WARN Task failed: Any { .. }`
+///   (`cubecl-common/src/device/handle/channel.rs`), so a `Memory page 0
+///   doesn't exist` panic on the `DS{U,D}-*` device thread does **not** stop
+///   the run — and per [ADR-0005] that panic is OOM fallout (a failed
+///   allocation leaves its handle at the default `{pool: 0, page: 0}`). This
+///   is exactly why the ADR-0005 gate is a *zero-panic* run rather than a
+///   surviving one: a survived OOM storm corrupts the forward silently, and a
+///   negative MSE is that corruption becoming visible. Bail instead of
+///   training on it, and instead of exporting an adapter from it.
+///
+/// [ADR-0005]: ../../../docs/adrs/0005-int4-training-vram-bound.md
+fn check_step_loss(loss_value: f32, step: usize) -> Result<()> {
+    if !loss_value.is_finite() {
+        bail!(
+            "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
+             With compute.precision: f16 this means an activation exceeded \
+             f16's range; try f32, or report the model/config combination"
+        );
+    }
+    if loss_value < 0.0 {
+        bail!(
+            "negative loss ({loss_value}) at step {step} — impossible for a mean of squares, \
+             so the forward did not compute what it reported. Check the run's log for \
+             `Memory page N doesn't exist` panics on a `DS*` thread: cubecl swallows those \
+             (`WARN Task failed`), and they are out-of-memory fallout, so the run was \
+             producing corrupt numbers rather than training. Re-measure the config's fit \
+             with `just step-probe` — the gate is a zero-panic run"
+        );
+    }
+    Ok(())
+}
+
 /// One training job on backend `AB`: re-read the cache [`encode_phase`]
 /// populated, load the MMDiT, and train the injected LoRA.
 ///
@@ -1511,13 +1555,7 @@ where
                 loss_scale,
             );
             crate::probe::phase("BACKWARD_END", step);
-            if !loss_value.is_finite() {
-                bail!(
-                    "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
-                     With compute.precision: f16 this means an activation exceeded \
-                     f16's range; try f32, or report the model/config combination"
-                );
-            }
+            check_step_loss(loss_value, step)?;
             sink(TrainEvent::Step {
                 step,
                 loss: loss_value,
@@ -1541,17 +1579,9 @@ where
             // The into_scalar above synced the device, so the forward is truly
             // complete here — a meaningful ledger boundary.
             crate::probe::phase("FORWARD_END", step);
-            // Fail fast on numeric divergence: a non-finite loss poisons the
-            // adapters within one optimizer step, and silently "training" NaNs
-            // for the remaining steps only wastes hours and exports garbage
-            // (observed with f16 on the real 12B before the f32 encode split).
-            if !loss_value.is_finite() {
-                bail!(
-                    "non-finite loss ({loss_value}) at step {step} — numeric overflow. \
-                     With compute.precision: f16 this means an activation exceeded \
-                     f16's range; try f32, or report the model/config combination"
-                );
-            }
+            // Checked BEFORE backward on this arm: a poisoned loss is not worth
+            // spending a backward pass on.
+            check_step_loss(loss_value, step)?;
             sink(TrainEvent::Step {
                 step,
                 loss: loss_value,
@@ -1862,5 +1892,49 @@ mod phase_cadence_tests {
                 "the final item of a {total}-item phase must report"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod step_loss_tests {
+    use super::check_step_loss;
+
+    #[test]
+    fn a_healthy_mse_passes() {
+        for loss in [0.0f32, 1e-9, 0.42, 1234.5] {
+            assert!(check_step_loss(loss, 3).is_ok(), "{loss} is a valid MSE");
+        }
+    }
+
+    #[test]
+    fn non_finite_losses_end_the_run() {
+        for loss in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let err = check_step_loss(loss, 7).expect_err("must not train on a non-finite loss");
+            assert!(
+                err.to_string().contains("step 7"),
+                "the message must name the step: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_negative_mse_ends_the_run_and_names_the_oom_signature() {
+        // The corruption an OOM storm leaves behind: cubecl swallows the
+        // `Memory page 0 doesn't exist` panics, so the run keeps going and a
+        // mean of squares comes back negative. The message has to point at the
+        // real cause, or the next reader debugs the loss instead of the fit.
+        let err = check_step_loss(-0.0031, 12).expect_err("a mean of squares cannot be negative");
+        let msg = err.to_string();
+        for expected in ["step 12", "Memory page", "step-probe", "zero-panic"] {
+            assert!(msg.contains(expected), "{expected:?} missing from: {msg}");
+        }
+    }
+
+    #[test]
+    fn negative_zero_is_not_a_failure() {
+        // -0.0 is a legitimate zero loss (an exact-match forward), and
+        // `-0.0 < 0.0` is false — pinned so a future rewrite to
+        // `is_sign_negative()` cannot smuggle in a false positive.
+        assert!(check_step_loss(-0.0, 1).is_ok());
     }
 }
