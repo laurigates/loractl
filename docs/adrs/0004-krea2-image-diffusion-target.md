@@ -224,7 +224,9 @@ scaled-fp8 turbo repacks (13.1 GB vs 26.3 GB bf16) could not load at all.
   LoRA — are all errors.
 
 **Scope note.** M15 is the load seam only; no real turbo training run is
-claimed — that remains future work alongside M14's open real-run checkbox.
+claimed. M14 (#25) has since closed on **Krea-2-Raw** (a 300-step DreamBooth
+run at 512px, [ADR-0005](0005-int4-training-vram-bound.md) Addendum 3), so a
+real training run *on Turbo* remains future work.
 The optional Turbo training adapter (assistant-LoRA merge-at-load,
 [#83](https://github.com/laurigates/loractl/issues/83)) has since landed as
 `model.training_adapter`: a path to a LoRA `.safetensors`
@@ -241,9 +243,10 @@ export. Golden-pinned against a numpy merge reference on a tiny fixture, with
 a producer-contract read test (real `diffusion_model.*` keys → real sites,
 loud on any unmatched key). It needs a full-precision base — rejected with
 `compute.quant`; the quant-path merge (into the f32 transient in
-`load_quant_module`) is the tracked #83 follow-up, which the eventual int4
-real-turbo run will want. Dynamic
-resolution-based timestep-shift parity
+`load_quant_module`) is an **untracked** follow-up
+([#83](https://github.com/laurigates/loractl/issues/83), which originally
+carried it, is closed), which the eventual int4 real-turbo run will want.
+Dynamic resolution-based timestep-shift parity
 ([#84](https://github.com/laurigates/loractl/issues/84)) has since landed as
 `flow.shift_mode: resolution` — per-batch `exp(μ(gh·gw))` with Krea 2's
 ai-toolkit-documented anchors (μ linear 0.5@256 → 1.15@6400 image tokens) as

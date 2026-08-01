@@ -133,6 +133,17 @@ trainers — the seam is demanded by the offline test gate, not speculative. A
 fresh trainer is built per `POST /runs` (`train(&mut self)` + concurrent
 runs).
 
+**(Amended in M14 ([#25](https://github.com/laurigates/loractl/issues/25)):
+the factory is now
+`Arc<dyn Fn(&TrainConfig) -> Box<dyn Trainer + Send> + Send + Sync>` — it
+takes the config so it can route on `model.base` — and
+`main.rs`'s one line is `Arc::new(loractl_core::select_trainer)` rather than a
+`BurnTrainer` constructor, which is what keeps the CLI and the API from
+drifting apart. `app()` also became `app(factory, config: ApiConfig) ->
+anyhow::Result<Router>`, fallible because it creates and canonicalizes the
+output base on boot. The seam itself is unchanged; see ADR-0004's load-bearing
+invariant.)**
+
 Note: `Trainer` has **no `Send` supertrait** — the `Box<dyn Trainer + Send>`
 bound compiles because current impls are unit structs. A future `!Send`
 trainer breaks this seam at compile time; that is the desired failure mode
@@ -157,9 +168,9 @@ break the byte-for-byte golden strings and a GUI can timestamp on receipt.
 | `DELETE /runs/{id}` (cancel) | Needs a core cancellation hook first — `Trainer::train` has no way to be interrupted; wrong milestone to change that contract |
 | CORS | The first browser-origin GUI (a non-localhost `Origin`) |
 | Auth / TLS | The first non-localhost bind (`LORACTL_API_ADDR` beyond 127.0.0.1) — **auth revived and landed** (#62): optional `LORACTL_API_TOKEN` bearer gate on every route, and a non-loopback bind without a token refuses to start. TLS remains cut — front with a reverse proxy for genuinely remote use |
-| History eviction / persistence | A long-lived server deployment — today history is unbounded and process-local (dev tool; restart clears it), and this is the first thing such a deployment must revisit |
+| History eviction / persistence | A long-lived server deployment — today history is process-local (dev tool; restart clears it) — **eviction revived and landed** (#36): the registry retains at most `run_retention` *completed* runs (default 32, `LORACTL_RUN_RETENTION`; in-flight runs are never evicted) — `loractl-api/src/state.rs::complete_run`, semantics in `docs/api/events.md`. Persistence remains cut |
 | Health endpoint | The first deployment behind a probe/load balancer |
-| Graceful shutdown / drain | Same long-lived-deployment trigger as eviction |
+| Graceful shutdown / drain | Same long-lived-deployment trigger as history persistence |
 
 ### 8. Evolution rules (additive-only)
 
@@ -208,9 +219,10 @@ replay also deletes the need for a status endpoint.
 
 - The wire format is now core API surface: changing an event shape is a
   breaking change pinned by a test, no longer an internal refactor.
-- Unbounded per-run history: memory grows with run length × run count until
-  process restart. Accepted for a localhost dev tool; the first thing a
-  long-lived deployment revisits (decision 7).
+- Per-run history is unbounded *within* a run: memory grows with run length.
+  Run *count* is bounded — the registry retains at most `run_retention`
+  completed runs (default 32, #36). Persistence is still cut: everything is
+  process-local, and restart clears it.
 - A POSTed run commits a blocking-pool thread to completion — there is no
   cancellation until core grows a cancellation hook.
 - `loractl-api` adds axum/tokio to the workspace's dependency tree (the CLI

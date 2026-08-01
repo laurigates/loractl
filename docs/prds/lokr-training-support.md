@@ -1,3 +1,9 @@
+---
+id: PRD-0001
+status: Proposed
+date: 2026-07-22
+---
+
 # LoKr (Kronecker) Adapter Training Support
 
 ## Summary
@@ -208,7 +214,7 @@ in `mmdit.rs` (`site`, `mmdit.rs:519`; `forward_with_adapters`,
 
 ### 3. Config — `crates/loractl-core/src/config.rs`
 
-Extend `LoraConfig` (`config.rs:166`) and `TargetSpec` (`config.rs:198`), all
+Extend `LoraConfig` (`config.rs:302`) and `TargetSpec` (`config.rs:347`), all
 `#[serde(default)]` so existing YAML keeps parsing bit-identically:
 
 - `algo: AdapterAlgo` — enum `{ Lora, Lokr }`, default `Lora`.
@@ -234,7 +240,7 @@ device)` sizing contract is preserved and extended with the two LoKr knobs.
 
 ### 5. Export — `crates/loractl-core/src/export.rs`
 
-`AdapterNameMapper` (`export.rs:45`) is a **three-key** trait (`down_key`,
+`AdapterNameMapper` (`export.rs:47`) is a **three-key** trait (`down_key`,
 `up_key`, `alpha_key`) — it assumes the LoRA down/up/alpha triple. LoKr emits a
 **variable key set** (`lokr_w1` or `lokr_w1_a`+`lokr_w1_b`; `lokr_w2` or
 `lokr_w2_a`+`lokr_w2_b`; optional `lokr_t2`; `.alpha`). Generalize the trait to
@@ -242,20 +248,20 @@ emit an **arbitrary `(suffix, tensor)` set per site** — e.g. replace the three
 fixed methods with a `keys(path) -> Vec<(String /*suffix*/, ...)>` shape, or add
 LoKr-specific methods (`lokr_w1_key`, `lokr_w2_a_key`, ... , `t2_key`) — while
 keeping the `KohyaMapper` prefix rule (`lora_<path dots→underscores>`,
-`export.rs:57`) and the `Krea2DiffusersMapper` path translation
-(`export.rs:93-133`) intact for the shared `.alpha` and prefix construction.
+`export.rs:59`) and the `Krea2DiffusersMapper` path translation
+(`export.rs:95-135`) intact for the shared `.alpha` and prefix construction.
 
-`export_adapters` (`export.rs:224`) currently writes exactly down/up/alpha per
+`export_adapters` (`export.rs:297`) currently writes exactly down/up/alpha per
 delta with the burn `[d_in, d_out]` → loader `[out, in]` transpose
-(`export.rs:242-247`). Generalize to dispatch on the `AdapterDelta` variant:
+(`export.rs:316-323`). Generalize to dispatch on the `AdapterDelta` variant:
 LoRA writes its existing triple; LoKr writes its present factors with the
 transpose/layout LyCORIS/ComfyUI expects, plus the `.alpha = scaling · r`
 scalar. Note the **`Vec::with_capacity(set.deltas.len() * 3)`**
-pre-size at `export.rs:239` bakes in the same LoRA three-key count right beside
+pre-size at `export.rs:313` bakes in the same LoRA three-key count right beside
 the trait — it must become variant-aware (LoKr writes a variable 3–7 tensors per
 site), or the capacity hint silently under-sizes. `import_adapters`
-(`export.rs:272`, the resume path) gains the inverse for LoKr, including the
-`.alpha = scaling · r` recovery (`export.rs:245-247`) where **`r` is the rank of
+(`export.rs:368`, the resume path) gains the inverse for LoKr, including the
+`.alpha = scaling · r` recovery (`export.rs:319-321`) where **`r` is the rank of
 the decomposed factor, not the full Kronecker block** — LoRA reads it back from
 `lora_a`'s cols, so the LoKr analogue must read it from the `w2_a`/`w2_b` (or
 `w1_a`/`w1_b`) decomposition, not from `d_in`/`d_out`. The self-golden export
@@ -320,7 +326,7 @@ test** for LoKr:
 
 For a first landing, at minimum the ComfyUI-native LoKr key form must be proven
 loadable; the Krea2/diffusers path-translation for LoKr should reuse
-`Krea2DiffusersMapper`'s existing site→diffusers table (`export.rs:104-113`) for
+`Krea2DiffusersMapper`'s existing site→diffusers table (`export.rs:106-115`) for
 the prefix and be covered by the same contract test over the Krea 2 sites.
 
 ## Testing
@@ -398,6 +404,12 @@ byte-for-byte unchanged (LoKr is purely additive surface). Suggested sequence:
 **Total: ~1–1.5 weeks** of core work plus the real-run A/B, which is gated on
 the M14 fit being confirmed (not on LoKr). No trainer, routing, or front-end
 changes (the event abstraction holds; `select_trainer` untouched).
+
+*(Precondition satisfied 2026-07-25, after this PRD was written: the #25 fit is
+confirmed — [ADR-0005](../adrs/0005-int4-training-vram-bound.md) Addendum 3
+records a zero-panic `just step-probe` run at 19.4 GB peak, 3/3 steps, 196/196
+sites at 512px int4, and #25 closed on 2026-07-23 via PR #150. Step 6 is no
+longer blocked; the estimate above is otherwise unchanged.)*
 
 ## Open questions
 

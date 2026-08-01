@@ -58,10 +58,18 @@ Consequences:
 - **cuda f32 is the first fully-clean GPU configuration** for loractl: the
   synthetic path runs end-to-end (`just test-cuda`; CLI `--backend cuda`).
   A real ~12B run on the 24 GB box needs frozen-base quantization — f32
-  weights (~49 GB) don't fit. int4 (Q4S) landed via #119, but even int4 is
-  **VRAM-bound at the full target set**
-  ([ADR-0005](../../docs/adrs/0005-int4-training-vram-bound.md)): the route is
-  int4 + footprint levers (fewer LoRA targets first), not quant alone.
+  weights (~49 GB) don't fit. int4 (Q4S) landed via #119, but int4 alone
+  never fit the monolithic step at **any** target set: a single trained site
+  peaked (~24 GB) and failed identically to all 196, because retention is
+  topology-driven, not trained-site-count-driven
+  ([ADR-0005](../../docs/adrs/0005-int4-training-vram-bound.md) Addendum 1,
+  item 1 — the "fewer trained sites" lever is **withdrawn**; `lora.targets`
+  is a scope/quality choice only). The measured route is int4 + **block-level
+  gradient checkpointing** (#134, PR #135): **19.4 GB** peak, zero-panic,
+  3/3 steps, 196/196 sites at 512px int4 (ADR-0005 Addendum 3). Re-probe
+  with `just step-probe` after changing resolution — under block
+  checkpointing the peak is one block interior, so resolution is a live
+  variable again.
   (f16-on-cuda stays blocked on the f16 defect above.)
 
 ## Discriminators already established (don't re-derive)
@@ -80,7 +88,12 @@ Consequences:
 - candle-metal bf16 is numerically sound but its allocator cannot host the
   12B model ([huggingface/candle#3464]); wgpu f32 is correct with input
   tracking but f32 weights (~49 GB) don't fit this 48 GB host. **There is no
-  practical workaround** — the pure-Rust real run (#25) waits on upstream.
+  practical workaround on this Metal host.** The pure-Rust real run is no
+  longer blocked, though: #25 closed 2026-07-23 on the Linux RTX 4090 via
+  cuda f32 + `quant: int4` + `grad_checkpointing: true` (ADR-0005
+  Addendum 3, #134/PR #135). The wgpu and f16 routes remain unvalidated
+  here — re-run the ladder below after any burn/cubecl bump rather than
+  assuming #5162's state.
 
 ## The validation ladder (in order, after any burn/cubecl version bump)
 

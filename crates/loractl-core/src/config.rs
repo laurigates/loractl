@@ -607,11 +607,13 @@ impl<'de> Deserialize<'de> for Quant {
 /// Default for [`ComputeConfig::dequant_chunk_mib`]: 512 MiB splits only the
 /// largest weight dequant — `tproj.fc` `[36864, 6144]` ≈ 864 MiB f32 on the
 /// real krea2 config — while leaving the ~36 MiB trunk tiles (and every tiny
-/// fixture) single-chunk. Note: ADR-0005's sweep also recorded a recurring
-/// 1,576,693,760-byte failing allocation that matches NO single weight's
-/// dequant size; whether the default threshold moves the real step's peak is
-/// exactly what the on-box `step-probe` rerun measures (lower thresholds,
-/// e.g. 64, split the SwiGLU/attention weights too).
+/// fixture) single-chunk. Note: the recurring 1,576,693,760-byte failing
+/// allocation ADR-0005's sweep recorded matches no single weight's dequant
+/// size because it is a cubecl pool page-ladder size, not a tensor at all
+/// (ADR-0005 Addendum 2 §Corrections item 2). The threshold was measured on
+/// box at 512/64/16 MiB and #128/#130's chunking landed peak-neutral — the
+/// pins are activations, not weight dequants. This knob bounds the transient
+/// dequant buffer; it is not a peak lever.
 pub const DEFAULT_DEQUANT_CHUNK_MIB: u32 = 512;
 
 /// Compute backend + device selection.

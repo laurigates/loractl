@@ -65,7 +65,7 @@ the first loractl memory lever that spends throughput to buy VRAM. Tracked as
 ## The levers (and the measured non-levers)
 
 Updated by the 2026-07-19 **retention-ledger attribution** (#132, PR #133)
-and the 2026-07-23 landed fix (#134, PR #135); ADR-0005 **Addenda 2 and 3**
+and the 2026-07-19 landed fix (#134, PR #135); ADR-0005 **Addenda 2 and 3**
 are the canonical record — read them before touching this problem:
 
 1. **Per-block gradient checkpointing (#134) — the route, now LANDED and
