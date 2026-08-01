@@ -136,27 +136,83 @@ granting a perfect zero-copy import, "train while ComfyUI generates" does not fi
 | loractl training peak, measured (ADR-0005 Addendum 3) | **19.4 GB** |
 | — of which int4 Q4S base | ~10.1 GB |
 | — loractl's non-base working set (activations, block pins, optimizer) | ~9.3 GB |
-| ComfyUI's Krea 2 base, scaled-fp8 — the copy actually shareable | **~13.1 GB** |
+| ComfyUI's Krea 2 base — the copy actually shareable (int8 repack, measured) | **~13.5 GB** |
 | ComfyUI non-base (Qwen3-VL encoder + VAE + generation activations) | several GB |
-| **Best case with a perfectly shared base** | **~26+ GB > 24 GB** |
+| **Best case with a perfectly shared base** | **~23 GB + ComfyUI's non-base > 24 GB** |
+
+The 13.5 GB is measured, not estimated, from the safetensors header of the
+checkpoint actually in use — `Comfy-Org/Krea-2` @ `7b75ff3`,
+`diffusion_models/krea2_turbo_int8_convrot.safetensors`: **13,492,686,496 bytes**,
+878 tensors, comprising **224 `I8` weights (12.16 GB)** each paired with an F32
+`weight_scale` and a U8 `comfy_quant` marker, plus 76 `BF16` tensors left
+unquantized (1.33 GB) and 354 F32 norm scales (0.01 GB). The widely-mirrored
+scaled-fp8 repack is ~13.1 GB, so the conclusion is insensitive to which of the
+two ComfyUI holds.
 
 The shared copy is also the *wrong* one. loractl trains against int4 Q4S —
 block 32, symmetric per-block scales, packed `u32` (`quant.rs:52-162`,
 `mmdit.rs:407-421`) — quantized **on device by loractl itself**. ComfyUI holds
-`float8_e4m3fn` row-major. Aliasing fp8 bytes as Q4S is not a cast; it is a
-different number system. Even reading ComfyUI's *own* fp8 file today, loractl
-dequantizes host-side (`fp8.rs:279-329`, `lut[byte] * scale` into a `Vec<f32>`)
-and re-quantizes on device. In-place consumption would need a device-side e4m3
-dequant kernel, and loractl writes no GPU kernels.
+either `float8_e4m3fn` or this `I8` + `weight_scale` + `comfy_quant` scheme, both
+row-major. Aliasing either as packed-`u32` Q4S is not a cast; it is a different
+number system. Even reading ComfyUI's *own* fp8 file today, loractl dequantizes
+host-side (`fp8.rs:279-329`, `lut[byte] * scale` into a `Vec<f32>`) and
+re-quantizes on device. In-place consumption would need a device-side dequant
+kernel, and loractl writes no GPU kernels.
 
-So the best achievable outcome is sharing a **13.1 GB fp8 base in place of the
-10.1 GB int4 base loractl already uses** — 3 GB *worse* than today, for an
+So the best achievable outcome is sharing a **~13.5 GB int8 base in place of the
+~10.1 GB int4 base loractl already uses** — over 3 GB *worse* than today, for an
 architecture that requires an upstream cubecl feature and a Rust reimplementation
 of torch's IPC refcounting.
 
 ADR-0008 already rejected the adjacent idea — "offloading the quantized base
 weights instead of activations" — on the same ground: quantization banked that
 saving (~49 GB f32 → ~10.1 GB int4). Nothing here reopens it.
+
+## Decision 5 — the int8 ComfyUI repack is not a loadable loractl input today, over any transport
+
+Found while measuring Decision 4, and worth recording on its own because it bites
+the **disk** path that *is* supported, independently of everything above.
+
+`krea2_turbo_int8_convrot.safetensors` contains no `F8_E4M3` tensor — its dtypes
+are `I8`/`BF16`/`F32`/`U8`. So `is_fp8_checkpoint` (`fp8.rs:74-83`, which returns
+true only when some tensor is `F8_E4M3`) is **false**, and the trainer routes it
+to the plain `load_module` path (`diffusion_trainer.rs:777`) instead of
+`load_fp8_module`. Nothing on that path pairs a weight with its scale, and three
+separate layers decline to catch it:
+
+1. burn-store's dtype map accepts `Dtype::I8 => DType::I8`
+   (`burn-store/src/safetensors/store.rs:1055`) — no error.
+2. `CastFloatsAdapter` (`diffusion_trainer.rs:744-774`) tests `is_float` against
+   `F64|F32|Flex32|F16|BF16` and returns non-float snapshots **unchanged** — so
+   `I8` passes straight through, untransformed.
+3. The applier validates **shape but not dtype** (`burn-store/src/applier.rs:228-240`):
+   the `I8` weight has the same shape as the float param it targets, so there is
+   no `ShapeMismatch`, and it proceeds to
+   `Tensor::from_data(data, (target_device, snapshot.dtype))`.
+
+The 224 `weight_scale` tensors are keys no module param claims, so they are
+reported as **"Unused Tensors"** — the same signature
+[`burn-store-skip-enum-variants.md`](../../.claude/rules/burn-store-skip-enum-variants.md)
+documents. Whether the final `from_data` coerces the raw integers into the float
+param or rejects them is backend-dependent and untested here; what is certain
+from the three layers above is that **the scale is never applied**, so the
+checkpoint cannot load correctly by any route. Verified by reading the load path
+at the pinned versions, not by running it — there is no GPU on this box.
+
+Supported denoiser inputs today are therefore bf16/f32 or a ComfyUI **scaled-fp8**
+repack, with loractl performing its own int4/int8 quantization on device. Adding
+an int8-repack reader would mean pairing `<name>.weight_scale` in the same shape
+`fp8.rs` already does for fp8 — tractable, and unrelated to IPC — but it does not
+exist, and until it does this checkpoint must not be pointed at
+`model.denoiser`.
+
+Two further notes on this checkpoint: it is **Turbo**, and ADR-0004 makes
+Krea-2-**Raw** the LoRA-training target — Turbo wants the ostris training
+adapter, which is itself incompatible with `compute.quant` (#83). And it is a
+distinct artifact from same-named community re-uploads: a mirror inspected first
+(`AX1Y2JP/Krea-2-Turbo-INT8-ConvRot`) is 16.17 GB / 816 tensors / 192 quantized
+sites with 4.16 GB left in BF16 — same scheme, materially different content. Pin
+the source when quoting a size.
 
 ## Consequences
 
@@ -173,7 +229,12 @@ saving (~49 GB f32 → ~10.1 GB int4). Nothing here reopens it.
 - **Reading ComfyUI's model *directory* was never the blocked part** and remains
   shipped: `config/examples/krea2-comfyui.yaml` points at a scattered ComfyUI
   `models/` tree with "no restructuring into an HF snapshot dir, no duplicate
-  files, no symlinks."
+  files, no symlinks." Decision 5 narrows *which files* in that tree are valid
+  denoiser inputs — the int8 repack is not one of them.
+- **Decision 5 is the only actionable item here**, and it is unrelated to IPC: an
+  int8-repack reader pairing `<name>.weight_scale` the way `fp8.rs` already pairs
+  fp8 would close it. Not filed as an issue by this ADR; worth one if anyone is
+  pointing `model.denoiser` at an int8 ComfyUI checkpoint.
 
 ## Alternatives considered
 

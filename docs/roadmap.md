@@ -249,10 +249,17 @@ over CUDA IPC so training and generation alias one copy — is closed by
 pointer map is private with no non-allocating insertion, so there is nothing to
 hand a foreign pointer to; had there been, `perform_deallocations` would free it
 out from under ComfyUI. The budget also fails independently: the only shareable
-copy is ComfyUI's ~13.1 GB scaled-fp8 base, *larger* than the ~10.1 GB int4 base
-loractl already uses. Co-tenancy stays a time-division problem. Reading
-ComfyUI's model **directory** was never blocked and remains shipped
-(`config/examples/krea2-comfyui.yaml`).
+copy is ComfyUI's ~13.5 GB int8 (or ~13.1 GB scaled-fp8) base, *larger* than the
+~10.1 GB int4 base loractl already uses. Co-tenancy stays a time-division
+problem. Reading ComfyUI's model **directory** was never blocked and remains
+shipped (`config/examples/krea2-comfyui.yaml`).
+
+That ADR's Decision 5 records a separate, closer-to-home gap it turned up: the
+ComfyUI **int8** repack (`krea2_turbo_int8_convrot.safetensors` — `I8` weights +
+`weight_scale` + `comfy_quant`) carries no `F8_E4M3`, so `is_fp8_checkpoint` is
+false and it routes to the plain loader, which never applies the scales — raw
+`I8` values cast to f32, `weight_scale` keys unused, **no error**. Supported
+denoiser inputs remain bf16/f32 or a scaled-**fp8** repack.
 
 ## A note on the text side
 
