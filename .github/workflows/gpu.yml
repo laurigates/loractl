@@ -55,6 +55,20 @@ on:
         # Pass --seq-len: without it the token count is image-only and
         # understates tok_s/tflops (see the bench_step example header).
         default: config/examples/krea2-comfyui.yaml --steps 8 --seq-len 1536
+      bench_model_base:
+        description: "ComfyUI models/ root for the bench (staged on the runner)"
+        required: false
+        type: string
+        # The example config's `model.base` is the placeholder
+        # `/home/you/ComfyUI/models`; this is the box's real tree.
+        default: /mnt/sabrent/comfyui-workspace/ComfyUI/models
+      bench_dataset:
+        description: "Dataset path for the bench (staged on the runner)"
+        required: false
+        type: string
+        # The example config's `dataset.path` is the placeholder
+        # `/path/to/dataset`; this is the warm-cached probe set.
+        default: /mnt/sabrent/comfyui-workspace/loractl-int4-ds
 
 permissions:
   contents: read
@@ -183,8 +197,32 @@ jobs:
 
       # Mirrors `just bench <config> [flags]`. Args are forwarded verbatim so a
       # dispatch can change config, --steps, or --seq-len without editing CI.
+      #
+      # `pipefail` is load-bearing: the default GitHub shell is `bash -e {0}`,
+      # which reports the exit status of the LAST command in a pipe — i.e.
+      # `tee`, which always succeeds. Without it an OOM or a mid-bench panic
+      # would report a GREEN job, which is exactly the silent-corruption shape
+      # `just step-probe`'s zero-panic caveat exists to prevent.
+      #
+      # Inputs go through `env:` rather than being interpolated into `run:`
+      # directly, so a dispatch value cannot inject shell. `$BENCH_ARGS` is
+      # deliberately unquoted — it must word-split into separate arguments.
       - name: step-throughput bench
-        run: just bench ${{ inputs.bench_args }} 2>&1 | tee bench.log
+        shell: bash -euo pipefail {0}
+        env:
+          BENCH_ARGS: ${{ inputs.bench_args }}
+          # config/examples/krea2-comfyui.yaml ships PLACEHOLDER paths
+          # (`/home/you/ComfyUI/models`, `/path/to/dataset`). Override them with
+          # the real staged locations via the documented config layering
+          # (YAML -> LORACTL_ env -> flags), the same way `denoiser` supplies
+          # the int8 probe's checkpoint.
+          LORACTL_MODEL__BASE: ${{ inputs.bench_model_base }}
+          LORACTL_DATASET__PATH: ${{ inputs.bench_dataset }}
+        run: |
+          # shellcheck disable=SC2086
+          # Word-splitting is the point here: BENCH_ARGS carries a config path
+          # plus separate flags, not a single argument.
+          just bench $BENCH_ARGS 2>&1 | tee bench.log
 
       # `always()`: a run that OOMs or panics mid-bench still wrote the RESULT
       # lines it managed, and those are exactly what diagnosis needs.
