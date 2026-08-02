@@ -49,6 +49,7 @@ from `just --list`:
 | `just bench-offline` | Keeps the harness runnable without a GPU. Its *numbers are meaningless* (a 2-block toy at 32px) — smoke only. |
 | `just test-cuda` / `just test-wgpu` | Real-GPU smokes, opt-in. Hosted CI is GPU-free (ndarray default). |
 | `just quant-probe` | On-box int8/int4 VRAM + dequant-error proof. |
+| `just surf` | The docs↔code drift gate over `hubs/*.md` (CI parity: `docs-drift.yml`). A hit means the anchored *code* moved — never that the prose is wrong. Re-read the claim, fix `hubs/` if it is now stale, and only then `surf verify` to re-seal. Needs `surf` on PATH; CI installs its own, so the gate holds either way. |
 
 Real GPU proofs run on the self-hosted RTX 4090 via a **dispatchable**
 workflow: `gh workflow run gpu.yml` (`-f suite=all` adds the wgpu smokes,
