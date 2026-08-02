@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Summarize a burn-autodiff retention ledger (#132, ADR-0005 attribution).
 
-Input: the file named by LORACTL_RETENTION_LEDGER during a training run,
-written by the burn-autodiff fork pin (event lines) and loractl's
-`probe::phase` (PHASE markers). See the fork's `ledger.rs` module docs for
-the line grammar.
+Input: the file named by LORACTL_RETENTION_LEDGER during a training run.
+
+NOTE: the burn-autodiff fork pin that emitted the `event` lines was removed
+once the #132 round closed, so on published burn 0.21 a ledger contains only
+loractl's own `probe::phase` PHASE markers — the per-op attribution below
+will be empty. Re-pinning the fork (see the `ledger-probe` recipe in the
+justfile) restores the event lines and the `ledger.rs` module docs that
+define their grammar.
 
 Output: a **per-step** attribution of eagerly pinned (`Computed`) checkpoint
 bytes by op-class, fallback counts, build-time drops, the backward
