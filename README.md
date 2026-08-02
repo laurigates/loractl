@@ -222,7 +222,7 @@ An optional `compute:` block selects the backend and device at run time:
 compute:
   backend: ndarray          # ndarray (default, CPU) | wgpu (GPU) | cuda | tch
   device: 0                 # GPU ordinal; ignored by ndarray
-  precision: f32            # f32 (default) | f16 (wgpu only — halves weight memory)
+  precision: f32            # f32 (default) | f16 (wgpu only — halves weight memory; f16 autodiff is broken on every GPU backend, burn#5162)
   grad_checkpointing: false # recompute activations during backward (numerically identical)
   quant: none               # none (default) | int8 | int4 (frozen-base quant; ndarray/cuda + f32 only)
 ```
@@ -231,13 +231,16 @@ compute:
   `just test` and CI stay offline and GPU-free.
 - **`wgpu`** is the GPU backend (Metal on macOS, Vulkan/DX12 elsewhere), opt-in
   behind a build feature and the one GPU path verified on the dev machine
-  (`just test-wgpu`).
+  (`just test-wgpu` — an end-to-end training smoke on the small synthetic
+  model; burn#5162 needs the MMDiT graph to fire, which this smoke never
+  builds — see `.claude/rules/burn-wgpu-metal-numerics.md`).
 - **`cuda`** (needs the CUDA toolkit at build time) is wired into both
   trainers, **f32-only** — burn's non-f32 autodiff produces exactly-zero
   adapter gradients on cuda
-  ([burn#5162](https://github.com/tracel-ai/burn/issues/5162)). cuda f32 is the
-  one GPU configuration with clean validated numerics. `tch` (libtorch) remains
-  compile-gated.
+  ([burn#5162](https://github.com/tracel-ai/burn/issues/5162)). cuda f32 is
+  the first fully-clean GPU configuration: the wgpu f32 path matches CPU
+  bit-identically only with the input-tracking workaround, and every f16 path
+  is broken on both backends. `tch` (libtorch) remains compile-gated.
 
 Selecting a GPU backend in a binary built **without** its feature fails loudly
 (never a silent CPU fallback). The GPU backend is a **portability** target (the
@@ -248,10 +251,14 @@ tests stay on ndarray, since GPU float-reduction order differs.
 
 Fitting the ~12.8B Krea 2 base on a single GPU is a memory problem, addressed
 by three orthogonal knobs above: `precision: f16` (wgpu, ~24.6 GB on a 48 GiB
-host), `grad_checkpointing`, and frozen-base `quant: int8`/`int4` (the QLoRA
-pattern — quantized frozen base, f32 adapters; `ndarray`/`cuda` + f32 only).
-The monolithic training step is **VRAM-bound** on a 24 GB card at the full LoRA
-target set; **int4 + block-level gradient checkpointing is the route that fixes
+host — **the wgpu f16 route is currently blocked by
+[burn#5162](https://github.com/tracel-ai/burn/issues/5162); cuda f32 + int4 is
+the working 24 GB route**), `grad_checkpointing`, and frozen-base `quant:
+int8`/`int4` (the QLoRA pattern — quantized frozen base, f32 adapters;
+`ndarray`/`cuda` + f32 only).
+The monolithic training step is **VRAM-bound** on a 24 GB card at *any* LoRA
+target set — a single trained site peaks like all 196, because retention is
+topology-driven; **int4 + block-level gradient checkpointing is the route that fixes
 it**, measured at 19.4 GB peak (512px, 196/196 sites). The full analysis is
 [ADR-0005](docs/adrs/0005-int4-training-vram-bound.md); the precision-accuracy
 trade-off is [ADR-0006](docs/adrs/0006-reduced-precision-accuracy-gate.md).

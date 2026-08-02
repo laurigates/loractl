@@ -58,6 +58,13 @@ attribution:
    GPU consumer is an idle ComfyUI at a constant **386 MiB**. The working set
    is a slow activation ramp then a **~+7 GB spike** at the backward pass. Total
    working set ≈ 25.5 GB, ~1.5–2 GB over the 24 GB card.
+   *(The third sentence's **both** figures — the ≈ 25.5 GB total and the
+   "~1.5–2 GB over" gap — are withdrawn by Addendum 2 §Corrections item 3,
+   which retires that framing wholesale. Like fact 6 below, they were read off
+   a saturated card, so they measured what fit rather than what was needed; the
+   ledger puts true unconstrained demand at ~2.5–3× the card. What stands is
+   the device-side observation in the first two sentences: the ~23.4 GB
+   loractl peak, the 386 MiB ComfyUI tenant, and the ramp-then-spike shape.)*
 6. **The pressure is resolution-INDEPENDENT (measured, not assumed).**
    *(Withdrawn as stated — see Addendum 2 §Corrections item 1: both arms rode
    the 24 GB ceiling, so these identical peaks measured the card, not the
@@ -92,10 +99,13 @@ attribution:
    sequence length), while sustaining the practical conclusion that lowering
    resolution was still no rescue in this monolithic regime, since even 384px
    demanded >2× the card. The unblock was block-level gradient checkpointing;
-   see Addendum 3.)* Effective levers, weight-side: **fewer trained
+   see Addendum 3.)* Effective levers, weight-side: ~~**fewer trained
    sites** (fewer LoRA targets → less optimizer state and fewer simultaneous
-   dequant/gradient buffers), **base-weight streaming**, and **reducing
-   simultaneous dequantized-weight retention in the backward pass** (a
+   dequant/gradient buffers)~~ *(**WITHDRAWN** by Addendum 1 item 1: a single
+   trained site peaks like all 196, because retention is topology-driven, so
+   `lora.targets` is a scope/quality choice, not a memory lever)*,
+   **base-weight streaming**, and **reducing simultaneous
+   dequantized-weight retention in the backward pass** (a
    burn-autodiff memory concern — `QuantMatmulT` already dequantizes transiently,
    but ~10.9 GB of weight-tile buffers are co-resident at peak). Ineffective:
    lower resolution, LoRA rank (params are a small fraction).
@@ -150,15 +160,23 @@ directions are **falsified by the measurement**, one is narrowed:
    scope/quality choice only.)
 2. **Post-load pool reclaim is safe but NOT sufficient.** The explicit
    `sync → memory_cleanup → sync` bracket works on stock cubecl 0.10 at
-   quiescence (validated twice: 15.1 → 10.3 GB) but the step's ~14–15 GB
+   quiescence (validated twice: 15,113 MiB → 10,345 MiB, i.e. 14.8 → 10.1 GiB;
+   the "15.1 → 10.3 GB" originally reported here was MiB/1000, not GB —
+   15113/1000 and 10345/1000, so the artifact is self-evident from the raw
+   MiB) but the step's ~14–15 GB
    transient working set refills the card regardless: reclaimed base
-   ~10.3 GB + step state ≈ 24.7 GB vs ~23.6 GB usable. PR #125 closed on
+   ~10.3 GB + step state ≈ 24.7 GB vs ~23.6 GB usable. *(That sum is
+   left in the basis it was derived in — the same MiB/1000 artifact
+   corrected just above. On the corrected basis the resident base is
+   10.1 GiB, so the arithmetic does not carry over unchanged; it is
+   kept as-reported rather than silently re-footed.)* PR #125 closed on
    this data (branch kept — it composes with the retention fix below).
    *(The "~14–15 GB transient" magnitude is withdrawn by Addendum 2
    §Corrections item 3 — it was read off a saturated card, so it measured
    what fit, not what was needed. The ledger's 67.9 GiB is not this quantity
-   restated: both are step demand above the ~10.3 GB resident base, but this
-   one was device-observed under saturation while that one is host-side
+   restated: both are step demand above the same resident base (quoted here
+   in the as-reported basis noted above), but this one was device-observed
+   under saturation while that one is host-side
    logical demand, which no saturated card can show. Both point the same way
    — the real figure is larger — so the conclusion is **sustained**: reclaim
    is safe but insufficient.)*
@@ -233,9 +251,10 @@ corrections to the record, then the attribution and the verdict.
 Composition of the Balanced 67.9 GiB (top classes): the **attention-score
 trio** — raw `q·kT` scores, the mask add, and softmax's max-subtract, each
 `[1, 48, 1536, 1536]` f32 = 432 MiB x 28 blocks x 3 = **35.4 GiB**; SwiGLU
-gate/up outputs `[1536, 16384]` x 56 = 10.5 GiB (QuantMatmulT + adapter-path
-copies); quant-site outputs ~9.6 GiB; misc elementwise `[1536, 6144]` classes
-~8 GiB. Mechanism (code-verified in burn-autodiff 0.21): `BalancedCheckpointing`
+gate/up outputs, each `[1536, 16384]` f32 = 96 MiB, across 28 blocks x {gate,
+up} = 56 sites, retained as both the QuantMatmulT output and the adapter-path
+copy = **10.5 GiB** for the class; quant-site outputs ~9.6 GiB; misc
+elementwise `[1536, 6144]` classes ~8 GiB. Mechanism (code-verified in burn-autodiff 0.21): `BalancedCheckpointing`
 eagerly clones any compute-bound tensor's primitive at forward
 checkpoint-registration, and flips ops with **untracked parents** (masks, RoPE
 tables, modulation, every `.no_grad()` base param) to compute-bound
@@ -258,7 +277,7 @@ block inputs (~36 MiB each; ~1 GiB for 28 blocks) and recomputes the block
 interior during backward — QuantMatmulT already re-dequantizes transiently,
 so recompute adds one forward per block, not weight traffic. Every dominant
 class above (scores trio, SwiGLU, site outputs) becomes a within-block
-transient. Post-fix demand estimate: ~10.3 GB quantized base + ~1 GiB block
+transient. Post-fix demand estimate: ~10.1 GiB quantized base + ~1 GiB block
 pins + ~2-3 GiB single-block recompute transient + optimizer state ≈
 **16-18 GB — fits the 24 GB card with real margin**. Chunked attention inside
 the recomputed block is the follow-on if the transient needs shrinking.
@@ -371,11 +390,15 @@ visibly conditions Krea-2-Turbo generation in ComfyUI.
 - **Throughput is unmeasured.** The fit is measured; the cost of one extra
   trunk forward per step is not — loractl has no benchmark harness
   ([#110](https://github.com/laurigates/loractl/issues/110)).
-  *(Refined by [ADR-0008](0008-host-offload-mechanism-and-scope.md) Decision 3:
-  #110's reusable core has since landed as `crates/loractl-bench`, but nothing
-  in the workspace depends on it — no training-step adapter, no VRAM read-out,
-  no `just bench` recipe — so the conclusion is unchanged: no training step has
-  ever been timed.)*
+  *(Refined by [ADR-0008](0008-host-offload-mechanism-and-scope.md) Decision 3,
+  then by [ADR-0010](0010-rtx4090-throughput-lever-triage.md) §Context: #110's
+  reusable core landed as `crates/loractl-bench` and its driver followed in
+  PR #161 (merged 2026-07-27) — `crates/loractl-core/src/bench.rs` is the
+  burn-side adapter, `just bench` exists, and the `RESULT` schema reports
+  `vram_mib=`/`vram_peak_mib=`. But it has only ever run the offline two-block
+  toy at 32px, whose numbers the justfile itself calls meaningless, so the
+  conclusion is unchanged: no step on the real model has been timed on real
+  hardware.)*
 - **Chunked attention inside the recomputed block** stays the reserved
   follow-on, now unneeded at 19.4 GB but relevant if sequence length grows
   (demand scales with seq; the trunk pads to multiples of 256).

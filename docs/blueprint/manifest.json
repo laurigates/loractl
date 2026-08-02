@@ -121,7 +121,7 @@
     }
   },
   "id_registry": {
-    "last_prd": 0,
+    "last_prd": 1,
     "last_prp": 0,
     "documents": {
       "ADR-0001": {
@@ -159,6 +159,60 @@
         "relates_to": [],
         "github_issues": [],
         "created": "2026-07-08"
+      },
+      "ADR-0005": {
+        "path": "docs/adrs/0005-int4-training-vram-bound.md",
+        "title": "int4 real-model training is VRAM-bound, not a cubecl reclaim bug; offloading is burn/loractl's job",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-18"
+      },
+      "ADR-0006": {
+        "path": "docs/adrs/0006-reduced-precision-accuracy-gate.md",
+        "title": "Relative-accuracy gate for reduced-precision numerics (int8/int4/fp8/f16)",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-22"
+      },
+      "ADR-0007": {
+        "path": "docs/adrs/0007-adapter-algorithm-strategy.md",
+        "title": "Adapter-algorithm strategy: which PEFT methods to support, and separating parameter-efficiency from the VRAM wall",
+        "status": "Proposed",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-22"
+      },
+      "ADR-0008": {
+        "path": "docs/adrs/0008-host-offload-mechanism-and-scope.md",
+        "title": "Host-RAM offload: explicit scheduled transfer, not demand paging; and why the lever stays reserved",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-26"
+      },
+      "ADR-0010": {
+        "path": "docs/adrs/0010-rtx4090-throughput-lever-triage.md",
+        "title": "RTX 4090 throughput: the premise is unmeasured, and three of the four proposed levers are already shipped or dead by construction",
+        "status": "Accepted",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-31"
+      },
+      "PRD-0001": {
+        "path": "docs/prds/lokr-training-support.md",
+        "title": "LoKr (Kronecker) Adapter Training Support",
+        "status": "Proposed",
+        "domain": null,
+        "relates_to": [],
+        "github_issues": [],
+        "created": "2026-07-22"
       }
     },
     "github_issues": {}

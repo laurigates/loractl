@@ -161,6 +161,19 @@ sweep because inferred figures were once stated as measured.
    only**. (ADR-0005 Addendum 3's "loractl has no benchmark harness" was true
    when written and is now imprecise — the core landed, the driver did not.)
 
+   *(Amended 2026-08-01 — [PR #161](https://github.com/laurigates/loractl/pull/161),
+   merged 2026-07-27, the day after this ADR landed, overtook the paragraph
+   above: the driver landed. `loractl-core` now depends on `loractl-bench`
+   (`crates/loractl-core/Cargo.toml`), `crates/loractl-core/src/bench.rs` is the
+   burn-`Tensor`/`Autodiff` `StepBench` adapter and carries the
+   `resident_vram_mib` read-out, `examples/bench_step.rs` reports `vram_mib=`
+   per timed step, and `just bench` / `just bench-offline` exist. **Decision 3
+   is unchanged**, on its corrected basis:
+   [#110](https://github.com/laurigates/loractl/issues/110) is still open — #161
+   refs it rather than closing it — and `just bench` has so far only run against
+   the offline two-block toy at 32px, so no real training step has been timed.
+   See [ADR-0010](0010-rtx4090-throughput-lever-triage.md) §Context.)*
+
    Order of magnitude for the round trip (~2.11 GB per step at 512px, derived):
    ~85 ms on PCIe 4.0 x16 at ~25 GB/s effective, ~176 ms on PCIe 3.0 x16 at
    ~12 GB/s — against a step time nobody has measured. bitsandbytes' own worked
@@ -216,6 +229,10 @@ sweep because inferred figures were once stated as measured.
   vs adapter quality, previously called open in **six** documents — `CLAUDE.md`,
   the cubecl rule, `docs/roadmap.md`, ADR-0005, ADR-0007 and the LoKr PRD — and
   tracked in none; all six now carry the pointer).
+  *(Amended 2026-08-01 — five, not six: `CLAUDE.md`'s copy was dropped on
+  2026-07-27 by the always-loaded-context cut (commit `d29c3b9`), deliberately,
+  since `CLAUDE.md` does not restate ADR content. The sentence above was true on
+  this ADR's date and is kept as written.)*
 - **No code lands with this ADR.** There is nothing to implement until #110
   exists (Decision 3); shipping an implementation anyway would contradict the
   document.

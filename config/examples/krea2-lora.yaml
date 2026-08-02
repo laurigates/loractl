@@ -14,17 +14,20 @@
 # `precision: f32` — the numerically-clean GPU path (burn#5162 breaks non-f32
 # autodiff on every GPU backend). Full-depth f32 is ~49 GB (beyond a 24 GB
 # card), so quantize the frozen base (#96). Measured on the RTX 4090
-# (ADR-0005): int8's ~17.1 GB reclaimed resident base no longer fits a
-# TRAINING step on 24 GB (the step's dequant/gradient working set OOMs on
-# top of it; int8 fits inference/forward only) — use `quant: int4` (~10.1 GB
-# reclaimed base) and see ADR-0005 + config/examples/krea2-comfyui.yaml for
-# the target-set guidance. Swap the `compute:` block at the bottom for this
-# commented one:
+# (ADR-0005 Addendum 1 item 2): the reclaimed int4 base is ~10.1 GiB
+# (10,345 MiB), and the MONOLITHIC step then rode the ~23.6 GB usable
+# ceiling — which is why int8's substantially larger resident base leaves no
+# room for a TRAINING step on 24 GB; int8 is inference/forward only. With
+# `grad_checkpointing: true` the int4 step measures 19.4 GB peak with ~4 GB
+# headroom (ADR-0005 Addendum 3) — that is the combination the #25 real run
+# used. See ADR-0005 + config/examples/krea2-comfyui.yaml for the target-set
+# guidance. Swap the `compute:` block at the bottom for this commented one:
 #
 #   compute:
 #     backend: cuda
 #     precision: f32        # quant dequantizes to f32; f16/bf16 are rejected
 #     quant: int4           # frozen-base int4 (QLoRA); adapters stay f32
+#     grad_checkpointing: true  # the knob that makes the step fit (ADR-0005 A3)
 
 task: flow-matching
 

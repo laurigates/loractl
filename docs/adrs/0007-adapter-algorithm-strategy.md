@@ -11,6 +11,7 @@ date: 2026-07-22
 - **Milestones:** M14 ([#25](https://github.com/laurigates/loractl/issues/25) the real run), follows M6 ([#17](https://github.com/laurigates/loractl/issues/17) the LoraAdapters/export seam)
 - **Deciders:** loractl maintainers
 - **Builds on:** [ADR-0004](0004-krea2-image-diffusion-target.md) (the Krea 2 target) and [ADR-0005](0005-int4-training-vram-bound.md) (the VRAM reclassification and its Addendum 2 retention attribution)
+- **Relied on by:** [ADR-0008](0008-host-offload-mechanism-and-scope.md) (2026-07-26), which builds on Decision 3's lever taxonomy and corrects its #96 → #158 reservation
 
 ## Context
 
@@ -30,9 +31,12 @@ dominated by the attention-score trio (`[1, 48, 1536, 1536]` f32 scores +
 mask-add + softmax max-subtract = 432 MiB × 28 × 3 = **35.4 GiB**), SwiGLU
 outputs (10.5 GiB), and quant-site outputs (~9.6 GiB). Crucially, the demand is
 **topology-driven**: one trainable adapter early in the trunk makes the entire
-downstream graph tracked, so retention is independent of resolution, trained-site
-count, and LoRA rank (all measured dead in Addendum 2 and its predecessor
-sweep). The measured fix is block-level gradient checkpointing (#134,
+downstream graph tracked, so retention is independent of trained-site count and
+LoRA rank (both measured dead in Addendum 2 and its predecessor sweep). Demand
+does scale with sequence length — 67.9 GiB at seq 1536 / 512px vs 51.7 GiB at
+seq 1280 / 384px — so resolution was a *non-lever* for the monolithic step
+rather than irrelevant: even 384px demand exceeded 2× the card (ADR-0005
+Addendum 2 §Corrections item 1). The measured fix is block-level gradient checkpointing (#134,
 `src/block_ckpt.rs::checkpointed_step`) layered on an int4/int8 QLoRA base
 (#119/#96); that combination measures **19.4 GB** peak on a 24 GB card
 (ADR-0005 Addendum 3, against a 16–18 GB projection).

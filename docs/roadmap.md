@@ -200,16 +200,20 @@ Getting there meant solving a VRAM wall. The #132 retention-ledger attribution
 ([ADR-0005](adrs/0005-int4-training-vram-bound.md) Addendum 2, PR #133)
 measured the monolithic step's true logical demand at **67.9 GiB pinned per
 forward** (~3× the RTX 4090) — burn-autodiff eagerly pins the whole tracked
-trunk interior, topology-driven and independent of resolution/site-count. The
-fix was **#134 — block-level gradient checkpointing**
-(`src/block_ckpt.rs::checkpointed_step`): `compute.grad_checkpointing: true` on
+trunk interior, topology-driven: independent of trained-site count and LoRA
+rank, and scaling with sequence (67.9 GiB at seq 1536 / 512px vs 51.7 GiB at
+seq 1280 / 384px), so resolution was a *non-lever* for the monolithic step
+rather than irrelevant — even 384px demand was >2x the card (ADR-0005
+Addendum 2 §Corrections item 1). The fix was **#134 — block-level gradient
+checkpointing** (`src/block_ckpt.rs::checkpointed_step`):
+`compute.grad_checkpointing: true` on
 the diffusion path runs the trunk forward graph-free storing only block inputs,
 then replays each block on its own standalone graph in backward (grads
 bit-identical to the monolithic path; incompatible with `lora.dropout > 0`; a
 nested-backward custom op is impossible on burn 0.21 — verified deadlock, now
 fixed upstream for 0.22 by burn#5194).
 
-**int4 (~10.1 GB reclaimed resident base) + block checkpointing is the 24 GB
+**int4 (~10.1 GiB reclaimed resident base) + block checkpointing is the 24 GB
 training route**, measured: a zero-panic `just step-probe` (#126) at 512px int4
 peaks at **19.4 GB** — 3/3 steps, 196/196 sites, ~4 GB headroom (ADR-0005
 Addendum 3). The gate is always a **zero-panic** run, never a survived OOM
@@ -221,8 +225,9 @@ per-block forward costs something, and the #110 harness that can now price it
 (`just bench`, `crates/loractl-bench` + `loractl-core::bench`) has only been
 exercised on the offline fixture; the number needs a GPU dispatch. int4's
 dequant error vs adapter quality is a separate question from fit (now tracked
-as #159), and the dataset-pipeline ergonomics issues (#147–#149) are the next
-user-facing gap. The next *memory* lever — offloading the #134 block-boundary
+as #159) — the fit-vs-quality separation and the adapter-parameterization menu
+behind it are [ADR-0007](adrs/0007-adapter-algorithm-strategy.md). The
+dataset-pipeline ergonomics issues (#147–#149) are the next user-facing gap. The next *memory* lever — offloading the #134 block-boundary
 activations to host RAM (#158) — is now scoped and priced by
 [ADR-0008](adrs/0008-host-offload-mechanism-and-scope.md): explicit scheduled
 transfer rather than demand paging, worth ~1.06 GB of the 19.4 GB peak at 512px

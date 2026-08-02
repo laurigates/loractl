@@ -1,10 +1,15 @@
 //! On-box step-VRAM probe (ADR-0005) — measure what a few REAL
 //! [`DiffusionTrainer`](loractl_core::DiffusionTrainer) training steps cost in
-//! peak resident VRAM, per LoRA target set. ADR-0005 established that the
-//! int4 real-model step OOMs on genuine VRAM exhaustion driven by
-//! resolution-INDEPENDENT dequant/gradient buffers that scale with the number
-//! of TRAINED SITES — so the prescribed measurement is exactly this: sweep
-//! `lora.targets` and watch the step peak. It reports:
+//! peak resident VRAM. ADR-0005 established that the int4 real-model step
+//! OOMs on genuine VRAM exhaustion. Its original attribution —
+//! resolution-independent dequant/gradient buffers scaling with trained-site
+//! count — was withdrawn by Addendum 1 item 1 (site count is not a memory
+//! lever; one site peaks like 196) and Addendum 2 §Corrections item 1 (the
+//! pinned bytes are activations, retained by graph topology; demand does
+//! scale with sequence length, though even 384px demand exceeded 2× the card
+//! in that monolithic regime). This probe is the zero-panic VRAM gate for any
+//! memory change — the 19.4 GB / 196-site / 512px int4 fit of Addendum 3. It
+//! reports:
 //!
 //! 1. **Site accounting** — how many of the architecture's injectable sites
 //!    the (final) target list matches, of the total, computed from
@@ -39,8 +44,8 @@
 //!     config/examples/krea2-comfyui.yaml [--target <regex>]... [--steps N]
 //!
 //! Not a numerics-golden target and never run in CI — the real measurement
-//! needs multi-GB weights and a 24 GB GPU. It is the ADR-0005 sweep tool
-//! behind the #96/#25 target-set decision.
+//! needs multi-GB weights and a 24 GB GPU. It produced the ADR-0005 sweep
+//! that FALSIFIED the target-set lever behind the #96/#25 decision.
 
 use anyhow::{Context, Result};
 use figment::Figment;
