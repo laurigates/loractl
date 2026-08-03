@@ -60,20 +60,18 @@ reviewer to judge the "is it still true?" half.
 VRAM numbers, throughput, upstream bug status — are not anchorable at all; those
 live in `docs/roadmap.md` and the ADRs and are maintained by hand.
 
-**`surf lint`'s warnings are advisory, and five are load-bearing-ly ignored.**
-Lint flags every unanchored public callable in a file some hub already anchors
-into, so `diffusion_trainer.rs` is in scope purely because `memory-route.md`
-anchors one (private) function there. Its five `pub fn`s — `denoiser_filename`,
-`encoder_fingerprint`, `load_fp8_encoder`, `load_fp8_module`,
-`load_quant_module` — are **deliberately unanchored** (decided in #166): the
-file runs ~26 commits/90d, far past the 6-8-doc / low-churn bar the anchored
-symbols met, and each is already pinned by a literal-asserting integration test
-in `crates/loractl-core/tests/`. Surface 0.8.0 has no way to *record* an
-acceptance — `surf.toml` takes only `hubs` and `bundles`, and there is no
-ignore subcommand — so the warnings reappear on every run and this paragraph is
-the only place the decision lives. `surf lint` exits 0; they block nothing.
-Any new `pub fn` in that file joins the list, and that is a judgment call each
-time — never a reason to anchor mechanically.
+**Five lint warnings are permanent, by decision.** `surf lint` flags unanchored
+public callables in any file a hub anchors into, so `diffusion_trainer.rs` is in
+scope only because `memory-route.md` anchors one private function there. Its five
+`pub fn`s — `denoiser_filename`, `encoder_fingerprint`, `load_fp8_encoder`,
+`load_fp8_module`, `load_quant_module` — stay unanchored deliberately (#166): the
+file churns ~26 commits/90d, well past the low-churn bar the anchored symbols met,
+and integration tests in `crates/loractl-core/tests/` already pin them with
+literal assertions. Surface 0.8.0 cannot *record* that acceptance — `surf.toml`
+takes only `hubs` and `bundles`, and there is no ignore subcommand (upstream:
+Connorrmcd6/surface#171) — so they recur every run, and this paragraph is the
+only place the decision lives. Lint exits 0; they block nothing. A new `pub fn`
+there joins the list: judge it, never anchor mechanically.
 
 ## Testing conventions
 
