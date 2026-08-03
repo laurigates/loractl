@@ -60,6 +60,21 @@ reviewer to judge the "is it still true?" half.
 VRAM numbers, throughput, upstream bug status — are not anchorable at all; those
 live in `docs/roadmap.md` and the ADRs and are maintained by hand.
 
+**`surf lint`'s warnings are advisory, and five are load-bearing-ly ignored.**
+Lint flags every unanchored public callable in a file some hub already anchors
+into, so `diffusion_trainer.rs` is in scope purely because `memory-route.md`
+anchors one (private) function there. Its five `pub fn`s — `denoiser_filename`,
+`encoder_fingerprint`, `load_fp8_encoder`, `load_fp8_module`,
+`load_quant_module` — are **deliberately unanchored** (decided in #166): the
+file runs ~26 commits/90d, far past the 6-8-doc / low-churn bar the anchored
+symbols met, and each is already pinned by a literal-asserting integration test
+in `crates/loractl-core/tests/`. Surface 0.8.0 has no way to *record* an
+acceptance — `surf.toml` takes only `hubs` and `bundles`, and there is no
+ignore subcommand — so the warnings reappear on every run and this paragraph is
+the only place the decision lives. `surf lint` exits 0; they block nothing.
+Any new `pub fn` in that file joins the list, and that is a judgment call each
+time — never a reason to anchor mechanically.
+
 ## Testing conventions
 
 New ML code lands with tests, and ML correctness is verified against a
