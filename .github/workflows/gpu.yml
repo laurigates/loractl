@@ -17,6 +17,7 @@ name: GPU
 #   gh workflow run gpu.yml                          # cuda smokes (default)
 #   gh workflow run gpu.yml -f suite=all             # cuda + wgpu smokes
 #   gh workflow run gpu.yml -f int8_probe=true       # + the #96 int8 proof
+#   gh workflow run gpu.yml -f bench=true            # + the #110 throughput bench
 
 on:
   workflow_dispatch:
@@ -42,6 +43,32 @@ on:
         # The checkpoint is already staged in the box's ComfyUI models tree
         # (see CLAUDE.local.md). Overridable per-dispatch.
         default: /mnt/sabrent/comfyui-workspace/ComfyUI/models/diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
+      bench:
+        description: "Also run the #110 step-throughput bench (bench_step)"
+        required: false
+        type: boolean
+        default: false
+      bench_args:
+        description: "Args forwarded to `just bench` (config path + flags)"
+        required: false
+        type: string
+        # Pass --seq-len: without it the token count is image-only and
+        # understates tok_s/tflops (see the bench_step example header).
+        default: config/examples/krea2-comfyui.yaml --steps 8 --seq-len 1536
+      bench_model_base:
+        description: "ComfyUI models/ root for the bench (staged on the runner)"
+        required: false
+        type: string
+        # The example config's `model.base` is the placeholder
+        # `/home/you/ComfyUI/models`; this is the box's real tree.
+        default: /mnt/sabrent/comfyui-workspace/ComfyUI/models
+      bench_dataset:
+        description: "Dataset path for the bench (staged on the runner)"
+        required: false
+        type: string
+        # The example config's `dataset.path` is the placeholder
+        # `/path/to/dataset`; this is the warm-cached probe set.
+        default: /mnt/sabrent/comfyui-workspace/loractl-int4-ds
 
 permissions:
   contents: read
@@ -139,9 +166,70 @@ jobs:
       - name: int8 VRAM / dequant proof
         run: just quant-probe "${{ inputs.denoiser }}"
 
-  # FUTURE (#115): once loractl-bench grows a runnable `bench` binary, add a
-  # bench job here using CAEF's two-pass warm-run methodology — the first
-  # (warm-up / tune) pass is context only; the second clean-warm pass produces
-  # the reportable RESULT / SANITY lines. This GPU workflow is where those
-  # numbers get produced. The bench crate is currently scaffold-only (lib.rs,
-  # no bin), so there is nothing to run yet.
+  # The #110 step-throughput bench: time REAL training steps on the real model
+  # and emit the `loractl-bench` RESULT / SANITY / MODEL lines. Runs the
+  # `bench_step` example via `just bench` — the same path the on-box manual run
+  # takes. Warm-up is handled inside the harness (`--warmup N` excludes the
+  # leading windows from the aggregate), so this is one dispatch, not two
+  # passes. Opt-in via `bench` because it loads the multi-GB checkpoint and
+  # holds the GPU for the whole run.
+  #
+  # The output lines ARE the deliverable, so they are teed to a file and
+  # uploaded as an artifact — a run whose log scrolls away has produced
+  # nothing. Read the `MODEL` line before quoting any `tok_s=`/`tflops=`, and
+  # discard any aggregate reading `sanity=SUSPECT` / `plausible=false`.
+  bench:
+    name: step-throughput bench (#110, self-hosted GPU)
+    if: inputs.bench
+    runs-on: [self-hosted, gpu, cuda]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Persistent self-hosted runner — see the cuda job's cache-bin note.
+          cache-bin: "false"
+
+      # Mirrors `just bench <config> [flags]`. Args are forwarded verbatim so a
+      # dispatch can change config, --steps, or --seq-len without editing CI.
+      #
+      # `pipefail` is load-bearing: the default GitHub shell is `bash -e {0}`,
+      # which reports the exit status of the LAST command in a pipe — i.e.
+      # `tee`, which always succeeds. Without it an OOM or a mid-bench panic
+      # would report a GREEN job, which is exactly the silent-corruption shape
+      # `just step-probe`'s zero-panic caveat exists to prevent.
+      #
+      # Inputs go through `env:` rather than being interpolated into `run:`
+      # directly, so a dispatch value cannot inject shell. `$BENCH_ARGS` is
+      # deliberately unquoted — it must word-split into separate arguments.
+      - name: step-throughput bench
+        shell: bash -euo pipefail {0}
+        env:
+          BENCH_ARGS: ${{ inputs.bench_args }}
+          # config/examples/krea2-comfyui.yaml ships PLACEHOLDER paths
+          # (`/home/you/ComfyUI/models`, `/path/to/dataset`). Override them with
+          # the real staged locations via the documented config layering
+          # (YAML -> LORACTL_ env -> flags), the same way `denoiser` supplies
+          # the int8 probe's checkpoint.
+          LORACTL_MODEL__BASE: ${{ inputs.bench_model_base }}
+          LORACTL_DATASET__PATH: ${{ inputs.bench_dataset }}
+        run: |
+          # shellcheck disable=SC2086
+          # Word-splitting is the point here: BENCH_ARGS carries a config path
+          # plus separate flags, not a single argument.
+          just bench $BENCH_ARGS 2>&1 | tee bench.log
+
+      # `always()`: a run that OOMs or panics mid-bench still wrote the RESULT
+      # lines it managed, and those are exactly what diagnosis needs.
+      - name: Upload bench log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-log
+          path: bench.log
+          if-no-files-found: error
