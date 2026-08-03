@@ -1,10 +1,15 @@
 //! ADR-0005 attribution probe markers (#132).
 //!
-//! When the `LORACTL_RETENTION_LEDGER` env var names a file, the burn-autodiff
-//! fork pin (see the workspace `[patch.crates-io]`) appends one line per
-//! checkpoint/retention event to it. This module appends `PHASE` marker lines
-//! to the *same* file so the event stream can be segmented into
+//! When the `LORACTL_RETENTION_LEDGER` env var names a file, this module
+//! appends `PHASE` marker lines to it, segmenting a run into
 //! forward/backward/optimizer windows per step.
+//!
+//! During the #132 attribution round a burn-autodiff fork pin (PR #133's
+//! workspace `[patch.crates-io]` block) also appended one line per
+//! checkpoint/retention event to the *same* file, and the markers existed to
+//! segment that event stream. The pin was removed once #132 closed, so today
+//! only the `PHASE` markers are written; see the `ledger-probe` justfile
+//! recipe for how to re-pin the fork if the event lines are needed again.
 //!
 //! Not rendering: nothing here writes to stdout/stderr or the event sink —
 //! it is opt-in diagnostics to a caller-named file, a no-op unless the env

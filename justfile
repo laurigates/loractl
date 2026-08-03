@@ -318,8 +318,18 @@ bench-offline *args:
 # #132 retention-ledger validation (offline, ndarray): run both checkpointing
 # arms over the tiny-krea2 fixture with the ledger enabled, then report each.
 # Stages a dataset copy under tmp/ so the checked-in fixture never grows a
-# .loractl-cache. The burn-autodiff fork pin (workspace [patch.crates-io])
-# writes the event lines; scripts/ledger-report.py aggregates them.
+# .loractl-cache.
+#
+# DEGRADED WITHOUT THE FORK PIN: burn's Computed/DROP/BUILD event lines came
+# from a burn-autodiff fork pinned via the workspace [patch.crates-io] block,
+# removed once #132 closed. As it stands this recipe writes only loractl's own
+# PHASE markers, and scripts/ledger-report.py aggregates whatever is present.
+# TO RE-PIN: restore PR #133's [patch.crates-io] block (all 26 burn crates ->
+# laurigates/burn @ feat/retention-ledger-v0.21 = v0.21.0 + 12b0ba1e/07c099e8)
+# plus deny.toml's matching allow-git entry. Patch the WHOLE burn workspace,
+# not just burn-autodiff, or the Backend traits stop unifying. NOTE: that
+# branch is v0.21-based — after the burn 0.22 migration (#79) the two ledger
+# commits must be PORTED forward, not merely re-pinned.
 ledger-probe:
     rm -rf tmp/ledger-probe
     mkdir -p tmp/ledger-probe/dataset
