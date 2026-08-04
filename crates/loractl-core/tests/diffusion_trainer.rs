@@ -855,3 +855,149 @@ fn setup_phases_are_reported_before_the_first_step() {
         "a warm pass must report cache hits: {warm:?}"
     );
 }
+
+/// A one-site LoRA training adapter (#83) written to `path`: diffusers
+/// `lora_A`/`lora_B` naming, `diffusion_model.`-prefixed (as ostris/ComfyUI
+/// ship them), with a per-site `.alpha` so nothing merges at fallback
+/// scaling. Targets `blocks.0.attn.wq`, a `[64, 64]` base linear in the
+/// tiny-Krea-2 architecture (`MmditConfig::tiny_krea2().features == 64`).
+///
+/// Generated here rather than checked in: the merge phase only fires when
+/// `model.training_adapter` is set, and this test must stay offline and
+/// fixture-free.
+fn write_training_adapter(path: &Path) {
+    const RANK: usize = 2;
+    const FEATURES: usize = 64;
+    // Small deterministic ramps: the merge only has to happen, not to move
+    // the loss anywhere in particular.
+    let ramp =
+        |n: usize, base: f32| -> Vec<f32> { (0..n).map(|i| base + (i as f32) * 0.001).collect() };
+    let entries: Vec<(String, Vec<usize>, Vec<f32>)> = vec![
+        (
+            "diffusion_model.blocks.0.attn.wq.lora_A.weight".into(),
+            vec![RANK, FEATURES],
+            ramp(RANK * FEATURES, -0.01),
+        ),
+        (
+            "diffusion_model.blocks.0.attn.wq.lora_B.weight".into(),
+            vec![FEATURES, RANK],
+            ramp(FEATURES * RANK, 0.01),
+        ),
+        (
+            "diffusion_model.blocks.0.attn.wq.alpha".into(),
+            vec![1],
+            vec![RANK as f32],
+        ),
+    ];
+    let bufs: Vec<(String, Vec<usize>, Vec<u8>)> = entries
+        .into_iter()
+        .map(|(k, shape, vals)| {
+            (
+                k,
+                shape,
+                vals.iter().flat_map(|f| f.to_le_bytes()).collect(),
+            )
+        })
+        .collect();
+    let views: Vec<(String, safetensors::tensor::TensorView)> = bufs
+        .iter()
+        .map(|(k, shape, bytes)| {
+            (
+                k.clone(),
+                safetensors::tensor::TensorView::new(
+                    safetensors::tensor::Dtype::F32,
+                    shape.clone(),
+                    bytes,
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    safetensors::serialize_to_file(views, None, path).unwrap();
+}
+
+/// The `merge` phase (#83's merge-at-load) is pinned by EXECUTION, not by
+/// reading the source (#170).
+///
+/// `setup_phases_are_reported_before_the_first_step` above cannot reach it:
+/// its config leaves `model.training_adapter` unset, so the emission never
+/// runs — and `tests/training_adapter.rs` calls `merge_training_adapter`
+/// directly, never through `.train()`. That left the one emission deletable
+/// with the whole suite staying green, which is the exact failure shape #165
+/// already shipped once (a `quantize` phase that never emitted its terminal
+/// snapshot).
+///
+/// So: drive a real (1-step) run with a generated training adapter and pin
+/// both that the phase arrives and WHERE it arrives — before LoRA injection
+/// (it folds into the frozen base, which injection then wraps) and therefore
+/// before the first `Step`.
+///
+/// The MNIST `dataset` half of #170 stays uncovered by design: that emission
+/// is behind `--features mnist`, whose loader downloads the dataset, so it
+/// can never join the default offline suite.
+#[test]
+fn merge_phase_is_emitted_before_injection_and_the_first_step() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("diffusion-merge-phase");
+    let dataset = staged_dataset(&out);
+    let adapter_path = out.0.join("assistant.safetensors");
+    write_training_adapter(&adapter_path);
+
+    let mut cfg = config(&out, dataset);
+    cfg.steps = 1; // the phase is setup-time; one step is enough to have a "first Step"
+    cfg.model.training_adapter = Some(adapter_path.clone());
+
+    // Index in the whole event stream, so "before" is checkable.
+    let mut merge: Option<(usize, String)> = None;
+    let mut inject: Option<usize> = None;
+    let mut first_step: Option<usize> = None;
+    let mut seen = 0usize;
+    DiffusionTrainer
+        .train(&cfg, &mut |event| {
+            let idx = seen;
+            seen += 1;
+            match event {
+                TrainEvent::Phase {
+                    name: PhaseName::Merge,
+                    detail,
+                    ..
+                } => {
+                    if merge.is_none() {
+                        merge = Some((idx, detail));
+                    }
+                }
+                TrainEvent::Phase {
+                    name: PhaseName::Inject,
+                    ..
+                } => inject = inject.or(Some(idx)),
+                TrainEvent::Step { .. } => first_step = first_step.or(Some(idx)),
+                _ => {}
+            }
+        })
+        .expect("the training-adapter run completes");
+
+    let (merge_idx, merge_detail) =
+        merge.expect("a `merge` phase must be emitted when model.training_adapter is set");
+    let inject_idx = inject.expect("the run injected adapters");
+    let first_step = first_step.expect("the run stepped");
+
+    assert!(
+        merge_idx < inject_idx,
+        "merge folds into the frozen base BEFORE LoRA injection wraps it \
+         (merge at {merge_idx}, inject at {inject_idx})"
+    );
+    assert!(
+        merge_idx < first_step,
+        "the merge phase must precede the first Step (merge at {merge_idx}, \
+         first Step at {first_step})"
+    );
+    // The detail names what is being merged — a phase that fired with the
+    // wrong (or an empty) subject would pass a bare presence check.
+    assert!(
+        merge_detail.starts_with("training adapter")
+            && merge_detail.ends_with("from assistant.safetensors"),
+        "merge must report the adapter it folds in: {merge_detail}"
+    );
+}
