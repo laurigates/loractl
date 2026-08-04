@@ -45,19 +45,31 @@
 //!
 //! The config is read from the YAML file ONLY (no `LORACTL_` env layering) —
 //! same rule as `step_probe`: a measurement run should be fully described by
-//! the file plus the flags. The backend comes from `compute.backend`, so the
-//! same binary times the offline ndarray fixture and the real cuda run:
+//! the file plus the flags. That is why the two path overrides below are flags
+//! and not env vars: an env var does not appear in the invocation the bench log
+//! records, so a reader could not tell which weights or dataset produced a
+//! number. `just quant-probe <denoiser>` passes its checkpoint the same way.
+//! The backend comes from `compute.backend`, so the same binary times the
+//! offline ndarray fixture and the real cuda run:
 //!
 //! ```text
 //! cargo run --release -p loractl-core --example bench_step -- <config.yaml>
 //! cargo run --release -p loractl-core --features cuda --example bench_step -- \
-//!   config/examples/krea2-comfyui.yaml --steps 8 --seq-len 1536
+//!   config/examples/krea2-comfyui.yaml --steps 8 --seq-len 1536 \
+//!   --model-base /mnt/.../ComfyUI/models --dataset /mnt/.../loractl-int4-ds
 //! ```
 //!
 //! Flags: `--steps N` (overrides `steps`), `--warmup N` (leading windows
 //! excluded from the aggregate, default 1), `--seq-len N` (the trunk's real
 //! sequence length — see below), `--label NAME` (the `RESULT label=`; must be
-//! whitespace-free, since the lines are space-delimited).
+//! whitespace-free, since the lines are space-delimited), `--model-base PATH`
+//! and `--dataset PATH` (override `model.base` / `dataset.path`).
+//!
+//! The shipped `config/examples/*.yaml` carry PLACEHOLDER paths
+//! (`/home/you/ComfyUI/models`, `/path/to/dataset`), so any run against a real
+//! model MUST pass `--model-base` and `--dataset`. Omitting them fails at the
+//! first dataset read (`reading dataset directory /path/to/dataset`) rather
+//! than silently benchmarking something else.
 //!
 //! ## Why `--seq-len` is worth passing
 //!
@@ -90,14 +102,28 @@ struct Args {
     warmup: usize,
     seq_len: Option<usize>,
     label: String,
+    /// Overrides `model.base`. The shipped example configs carry PLACEHOLDER
+    /// paths, so a real run has to say where the staged tree actually is.
+    /// A `String`, not a `PathBuf`, because `model.base` doubles as the trainer
+    /// selector (`select_trainer` routes "synthetic"/"mnist" by name).
+    model_base: Option<String>,
+    /// Overrides `dataset.path`. Same reason as `model_base`.
+    dataset: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+/// The real parser, taking the argument sequence explicitly so the flag
+/// contract is testable without spawning a process.
+fn parse_args_from<I: Iterator<Item = String>>(argv: I) -> Result<Args> {
     let mut config: Option<PathBuf> = None;
     let (mut steps, mut seq_len) = (None, None);
+    let (mut model_base, mut dataset) = (None, None);
     let mut warmup = 1usize;
     let mut label = "train_step".to_string();
-    let mut args = std::env::args().skip(1);
+    let mut args = argv;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| -> Result<String> {
@@ -146,8 +172,17 @@ fn parse_args() -> Result<Args> {
                     );
                 }
             }
+            // The example configs ship placeholders (`/home/you/ComfyUI/models`,
+            // `/path/to/dataset`), so every real run overrides these two. They
+            // are FLAGS rather than `LORACTL_` env vars on purpose: this bench
+            // is a measurement, and a measurement must be fully described by
+            // the invocation that appears in the log. `just quant-probe
+            // <denoiser>` supplies its checkpoint the same way.
+            "--model-base" => model_base = Some(value("--model-base")?),
+            "--dataset" => dataset = Some(PathBuf::from(value("--dataset")?)),
             other if other.starts_with("--") => anyhow::bail!(
-                "unknown flag {other} (expected --steps, --warmup, --seq-len, --label)"
+                "unknown flag {other} (expected --steps, --warmup, --seq-len, \
+                 --label, --model-base, --dataset)"
             ),
             _ => {
                 if config.is_some() {
@@ -166,7 +201,31 @@ fn parse_args() -> Result<Args> {
         warmup,
         seq_len,
         label,
+        model_base,
+        dataset,
     })
+}
+
+/// Apply the flag overrides to a freshly-extracted config.
+///
+/// Applied AFTER extraction, exactly as the CLI applies its own flag overrides
+/// post-extract: flags are partial and must win last.
+///
+/// `model_base` / `dataset` are the ones that matter operationally — every
+/// shipped `config/examples/*.yaml` carries a PLACEHOLDER for both, so a real
+/// run overrides them here or dies on the placeholder. They are flags rather
+/// than `LORACTL_` env vars so the bench log records which weights and dataset
+/// produced the number; see the module header.
+fn apply_overrides(config: &mut TrainConfig, args: &Args) {
+    if let Some(steps) = args.steps {
+        config.steps = steps;
+    }
+    if let Some(base) = &args.model_base {
+        config.model.base = base.clone();
+    }
+    if let Some(path) = &args.dataset {
+        config.dataset.path = path.clone();
+    }
 }
 
 fn main() -> Result<()> {
@@ -176,9 +235,7 @@ fn main() -> Result<()> {
         .merge(Yaml::file(&args.config))
         .extract()
         .with_context(|| format!("loading config {}", args.config.display()))?;
-    if let Some(steps) = args.steps {
-        config.steps = steps;
-    }
+    apply_overrides(&mut config, &args);
 
     // The aggregate needs one warm-up window plus at least two counted ones,
     // and every timed window is bounded by a Step event on each side — so the
@@ -253,4 +310,102 @@ fn main() -> Result<()> {
     }
 
     result.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The two path flags must actually reach the config. This is the contract
+    /// `gpu.yml`'s bench dispatch depends on: the shipped example configs carry
+    /// placeholders, so if these overrides are dropped the run dies on
+    /// `/path/to/dataset` — which is exactly how the first `-f bench=true`
+    /// dispatch failed, back when the workflow tried to pass them as
+    /// `LORACTL_` env vars that this example deliberately does not read.
+    #[test]
+    fn path_flags_override_the_config_file() {
+        let args = parse_args_from(
+            argv(&[
+                "config/probes/tiny-bench.yaml",
+                "--model-base",
+                "/staged/models",
+                "--dataset",
+                "/staged/dataset",
+                "--steps",
+                "8",
+            ])
+            .into_iter(),
+        )
+        .expect("flags parse");
+
+        let mut config: TrainConfig = Figment::new()
+            .merge(Yaml::file("config/probes/tiny-bench.yaml"))
+            .extract()
+            .expect("the offline probe config parses");
+
+        // Baseline first: whatever the file says must NOT already be the value
+        // we are about to assert, or the test passes vacuously.
+        assert_ne!(config.model.base, "/staged/models");
+        assert_ne!(config.dataset.path, PathBuf::from("/staged/dataset"));
+        let untouched_resolution = config.dataset.resolution;
+
+        apply_overrides(&mut config, &args);
+
+        assert_eq!(config.model.base, "/staged/models");
+        assert_eq!(config.dataset.path, PathBuf::from("/staged/dataset"));
+        assert_eq!(config.steps, 8);
+        // A field no flag touches still comes from the file — the overrides are
+        // surgical, not a wholesale replacement.
+        assert_eq!(config.dataset.resolution, untouched_resolution);
+    }
+
+    /// Absent flags must leave the file's values alone, so a run that omits
+    /// them is described entirely by its config.
+    #[test]
+    fn absent_flags_leave_the_config_untouched() {
+        let args = parse_args_from(argv(&["config/probes/tiny-bench.yaml"]).into_iter())
+            .expect("bare config path parses");
+
+        let mut config: TrainConfig = Figment::new()
+            .merge(Yaml::file("config/probes/tiny-bench.yaml"))
+            .extract()
+            .expect("the offline probe config parses");
+        let (base, path, steps) = (
+            config.model.base.clone(),
+            config.dataset.path.clone(),
+            config.steps,
+        );
+
+        apply_overrides(&mut config, &args);
+
+        assert_eq!(config.model.base, base);
+        assert_eq!(config.dataset.path, path);
+        assert_eq!(config.steps, steps);
+    }
+
+    /// The example does NOT read `LORACTL_` env vars — that is the documented
+    /// difference between a measurement run (file + flags, fully described by
+    /// its invocation) and the product CLI (which does layer env). Pinned so a
+    /// future change has to be deliberate rather than incidental.
+    #[test]
+    fn loractl_env_vars_are_not_read() {
+        // SAFETY: single-threaded within this test; the value is removed again
+        // before returning so no sibling test observes it.
+        unsafe { std::env::set_var("LORACTL_DATASET__PATH", "/from/env") };
+        let config: TrainConfig = Figment::new()
+            .merge(Yaml::file("config/probes/tiny-bench.yaml"))
+            .extract()
+            .expect("the offline probe config parses");
+        unsafe { std::env::remove_var("LORACTL_DATASET__PATH") };
+
+        assert_ne!(
+            config.dataset.path,
+            PathBuf::from("/from/env"),
+            "bench_step must not layer LORACTL_ env vars (see the module header)"
+        );
+    }
 }

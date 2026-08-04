@@ -212,17 +212,20 @@ jobs:
         env:
           BENCH_ARGS: ${{ inputs.bench_args }}
           # config/examples/krea2-comfyui.yaml ships PLACEHOLDER paths
-          # (`/home/you/ComfyUI/models`, `/path/to/dataset`). Override them with
-          # the real staged locations via the documented config layering
-          # (YAML -> LORACTL_ env -> flags), the same way `denoiser` supplies
-          # the int8 probe's checkpoint.
-          LORACTL_MODEL__BASE: ${{ inputs.bench_model_base }}
-          LORACTL_DATASET__PATH: ${{ inputs.bench_dataset }}
+          # (`/home/you/ComfyUI/models`, `/path/to/dataset`), so a real run must
+          # override both. They go in as FLAGS, not `LORACTL_` env vars:
+          # `bench_step` reads its config from the file plus flags only (it says
+          # so in its header, as does `step_probe`), because a measurement must
+          # be fully described by the invocation the log records. This also
+          # matches how `denoiser` reaches the int8 probe — as an argument.
+          MODEL_BASE: ${{ inputs.bench_model_base }}
+          DATASET: ${{ inputs.bench_dataset }}
         run: |
           # shellcheck disable=SC2086
           # Word-splitting is the point here: BENCH_ARGS carries a config path
-          # plus separate flags, not a single argument.
-          just bench $BENCH_ARGS 2>&1 | tee bench.log
+          # plus separate flags, not a single argument. The two paths are quoted
+          # separately so a directory with a space cannot split.
+          just bench $BENCH_ARGS --model-base "$MODEL_BASE" --dataset "$DATASET" 2>&1 | tee bench.log
 
       # `always()`: a run that OOMs or panics mid-bench still wrote the RESULT
       # lines it managed, and those are exactly what diagnosis needs.

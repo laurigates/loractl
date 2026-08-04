@@ -158,8 +158,17 @@ fmt-check:
     cargo fmt --all -- --check
 
 # Run tests (offline, fast — mnist not enabled).
+#
+# `--examples` is a SECOND invocation on purpose: cargo defaults examples to
+# `test = false`, so a plain `cargo test` only *builds* them and silently skips
+# any `#[cfg(test)]` they carry. The measurement examples (`bench_step`,
+# `step_probe`, `quant_probe`) are load-bearing tools whose flag contracts CI
+# dispatches depend on, so their tests have to actually run — the same
+# examples-are-a-blind-spot problem `.claude/rules/cargo-gate-coverage.md`
+# documents for `cargo build`. Keep in sync with ci.yml's test job.
 test:
     cargo test
+    cargo test --examples
 
 # Dead-code report: `pub` items nothing outside their own file names, plus
 # manifest dependencies nothing imports. REPORTING ONLY, deliberately not part
