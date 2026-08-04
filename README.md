@@ -214,6 +214,43 @@ A run is fully described by a YAML config (see `config/examples/lora.yaml`).
 Precedence, lowest to highest: **YAML file → `LORACTL_`-prefixed env vars →
 CLI flags.** Nested keys use `__` in env vars (`LORACTL_OUTPUT__DIR=/tmp/out`).
 
+### Dataset
+
+The diffusion path reads a **kohya-style folder**: images alongside same-stem
+`.txt` caption files. An image with no caption file trains as an
+*unconditional* example — valid data, not an error.
+
+```yaml
+dataset:
+  path: /path/to/my-images   # images + same-stem .txt captions
+  resolution: 512            # must be a multiple of 16
+  batch_size: 1              # per bucket — batches never mix buckets
+```
+
+- **Any size and aspect ratio is accepted — no pre-processing needed.** Each
+  image is cover-resized and center-cropped into the nearest of seven
+  aspect-ratio buckets (1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16), each sized to
+  roughly `resolution²` pixels. That crop is **lossy at the edges**: an image
+  far from every bucket's aspect loses the overflow, so crop it yourself when
+  the subject sits near a border.
+- **`.png`, `.jpg`, `.jpeg` only** — every other extension is skipped
+  *silently*. A folder of `.webp` therefore reads as empty and fails fast (`no
+  .png/.jpg/.jpeg images found in …`); a folder with a few of them quietly
+  trains on fewer images than you counted.
+- **`resolution` must be a multiple of 16** (Krea 2's compression × patch
+  grid). An unaligned value is a config error, not a panic.
+
+> **Editing a dataset in place? Delete `.loractl-cache/` first.** Latents and
+> conditioning are encoded once and cached under `<dataset>/.loractl-cache/`,
+> keyed by file name, bucket shape, and encoder identity — deliberately **not**
+> by content. Overwriting `dog.png` or rewriting `dog.txt` under the same name
+> serves the previous run's tensors, silently. Adding, removing, or renaming
+> files is safe; editing one in place is not.
+
+The pipeline itself — bucket generation, the cache layout and its fingerprint
+keying, and the encode-once-per-example contract — is documented in
+[`crates/loractl-core/src/dataset.rs`](crates/loractl-core/src/dataset.rs).
+
 ### Compute backend
 
 An optional `compute:` block selects the backend and device at run time:
