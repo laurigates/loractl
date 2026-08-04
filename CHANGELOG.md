@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/laurigates/loractl/compare/v0.19.0...v0.19.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **bench:** pass the bench's real paths as flags, not LORACTL_ env vars ([#192](https://github.com/laurigates/loractl/issues/192)) ([6255438](https://github.com/laurigates/loractl/commit/6255438feec92305af06642d27535cabf2e0dfcf))
+
 ## [0.19.0](https://github.com/laurigates/loractl/compare/v0.18.0...v0.19.0) (2026-07-31)
 
 
