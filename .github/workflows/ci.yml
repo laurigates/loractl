@@ -32,6 +32,11 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # Examples default to `test = false`, so the line above only builds them.
+      # Mirrors `just test`'s second invocation — see its comment.
+      - name: cargo test --examples
+        run: cargo test --examples
+
   # Compile-only clippy over the opt-in feature paths kept out of the default
   # `just lint` (they pull heavy/networked deps). One job with sequential steps
   # so the shared burn tree compiles once under a single rust-cache — a matrix
