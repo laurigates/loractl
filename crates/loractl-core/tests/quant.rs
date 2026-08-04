@@ -138,9 +138,56 @@ fn int4_quant_matmul_t_matches_the_torch_golden() {
     quant_matmul_matches(INT4_GOLDEN, QuantValue::Q4S);
 }
 
-/// Quantization error is bounded by half a scale step per element — the
-/// symmetric-quant contract, independent of the golden. `qmax` is the scheme's
-/// range max (127 for int8, 7 for int4), which sets `scale = absmax/qmax`.
+/// The float-rounding budget for the roundtrip bound, in units of
+/// `f32::EPSILON * absmax` (#188).
+///
+/// The real-arithmetic bound on `|dequant(quant(w)) - w|` is EXACTLY
+/// `scale/2`; every excess above it is f32 rounding, and each rounding term
+/// scales with the magnitude of the values involved — so a fixed absolute
+/// epsilon is wrong by construction. (The old `1e-7` was already below a
+/// single half-ULP at `|w| ~ 3`: `ulp(3.0) = 2^-22 ~ 2.4e-7`, half of it
+/// `~1.2e-7`. It failed only when a draw also landed within ~2e-8 of a tie
+/// point, which is why it flaked rather than failing outright.)
+///
+/// Derivation. With `eps = f32::EPSILON` (the ULP of 1.0), `ulp(v) <=
+/// eps * |v|`, and every value in play has magnitude at most `absmax`:
+///
+/// 1. **Quantize** computes `round(w / scale)` in f32
+///    (burn-ndarray-0.21.0 `ops/quantization.rs`, `quantize_one`). Rounding
+///    the quotient can push it across a tie point, shifting the chosen level
+///    by up to `ulp(w/scale)/2`, i.e. `<= eps * |w| / 2 <= eps * absmax / 2`
+///    of weight error.
+/// 2. **Dequantize** computes `scale * q` in f32 (`dequantize_one`): one
+///    rounding of a value of magnitude `<= absmax`, so `<= eps * absmax / 2`.
+/// 3. **Scale mismatch.** This test recomputes `scale = absmax / qmax` while
+///    the tensor was quantized with burn's own calibrated scale
+///    (`2 * absmax / (b - a)`, burn-backend-0.21.0 `quantization/scheme.rs`).
+///    Those agree exactly on ndarray f32, but a backend that associates the
+///    division differently can differ by a few ULP of `scale`, worth
+///    `<= few * eps * absmax / qmax`, i.e. `<= eps * absmax / 7` at worst
+///    (int4's `qmax`).
+/// 4. **The subtraction** `dq - w` is over two values within one `scale` of
+///    each other, so it is exact where it matters (Sterbenz) and otherwise
+///    rounds a result of magnitude `~scale` — `~eps * scale`, negligible.
+///
+/// Summed, that is under `1.5 * eps * absmax`; `k = 4` carries ~2.7x headroom
+/// over the conservative sum. Derived, not tuned against an observed failure.
+///
+/// **It cannot mask a regression.** At `absmax ~ 3` the budget is
+/// `4 * 1.19e-7 * 3 ~ 1.4e-6`, while a genuine quantization defect (wrong
+/// rounding mode, off-by-one level, misaligned block) misses by ~one full
+/// `scale`: `2.4e-2` for int8, `4.3e-1` for int4 — 4 to 5 orders of
+/// magnitude above the budget. The kill-test for this lives in the PR that
+/// introduced the constant (#188).
+const ROUNDING_ULPS: f32 = 4.0;
+
+/// Quantization error is bounded by half a scale step plus a float-rounding
+/// budget, per element — the symmetric-quant contract, independent of the
+/// golden. `qmax` is the scheme's range max (127 for int8, 7 for int4), which
+/// sets `scale = absmax/qmax`. The input is drawn UNSEEDED on purpose (each
+/// run is a fresh sample), so the budget must hold for every draw — see
+/// [`ROUNDING_ULPS`] for why it is relative to the block magnitude and not a
+/// fixed absolute epsilon.
 fn roundtrip_error_bounded(value: QuantValue, qmax: f32) {
     let device = Default::default();
     let w = Tensor::<Cpu, 2>::random(
@@ -154,13 +201,16 @@ fn roundtrip_error_bounded(value: QuantValue, qmax: f32) {
     let dq_data = dq.into_data().into_vec::<f32>().unwrap();
     for (row, chunk) in w_data.chunks(96).enumerate() {
         for (block_idx, block) in chunk.chunks(QUANT_BLOCK).enumerate() {
-            let scale = block.iter().fold(0f32, |m, v| m.max(v.abs())) / qmax;
+            let absmax = block.iter().fold(0f32, |m, v| m.max(v.abs()));
+            let scale = absmax / qmax;
+            let budget = ROUNDING_ULPS * f32::EPSILON * absmax;
             let offset = row * 96 + block_idx * QUANT_BLOCK;
             for (i, w_v) in block.iter().enumerate() {
                 let err = (dq_data[offset + i] - w_v).abs();
                 assert!(
-                    err <= scale * 0.5 + 1e-7,
-                    "block ({row},{block_idx}) elem {i} ({value:?}): err {err} > scale/2 {}",
+                    err <= scale * 0.5 + budget,
+                    "block ({row},{block_idx}) elem {i} ({value:?}): err {err} > scale/2 {} + \
+                     rounding budget {budget:e}",
                     scale * 0.5
                 );
             }
