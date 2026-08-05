@@ -63,12 +63,17 @@ on:
         # `/home/you/ComfyUI/models`; this is the box's real tree.
         default: /mnt/sabrent/comfyui-workspace/ComfyUI/models
       bench_dataset:
-        description: "Dataset path for the bench (staged on the runner)"
-        required: false
+        description: "Dataset path for the bench (staged on the runner) — REQUIRED"
+        required: true
         type: string
-        # The example config's `dataset.path` is the placeholder
-        # `/path/to/dataset`; this is the warm-cached probe set.
-        default: /mnt/sabrent/comfyui-workspace/loractl-int4-ds
+        # Deliberately NO default. A default here is a claim the repo cannot
+        # keep: the staged path lives only on the runner, is not tracked, and
+        # sits among unrelated directories with nothing marking it as loractl's
+        # — so a routine disk cleanup silently deleted the previous default
+        # (`.../loractl-int4-ds`, gone 2026-08-05) and the next dispatch failed
+        # on a path the workflow still advertised. Requiring it also matches
+        # `bench_step`'s own contract: a measurement is described by its
+        # invocation, so a bench result names the dataset it measured.
 
 permissions:
   contents: read
@@ -81,6 +86,23 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The runner's root disk is small, shared with a second runner, and sits
+  # ~90% full at rest. A debug-profile `cargo test` over this dependency graph
+  # (burn + cubecl + tokenizers) writes ~14 GB of artifacts, dominated by DWARF
+  # — a single `libloractl_core` rlib is ~107 MB — and the concurrent links at
+  # the end are the peak. When the filesystem fills mid-link, `rust-lld` does
+  # not report ENOSPC: it mmaps its output, so the failed page-in arrives as
+  # SIGBUS and the job dies with `ld terminated with signal 7 [Bus error]`,
+  # which reads as a toolchain bug rather than a full disk. Observed killing
+  # `cuda smokes` on three consecutive dispatches, including one taken right
+  # after freeing 7 GB — headroom alone does not fix it.
+  #
+  # `line-tables-only` keeps backtrace file/line (what a failing GPU smoke is
+  # read for) and drops the variable/type DWARF that is the bulk. It changes
+  # debuginfo only, never codegen, so the smokes still exercise the same code.
+  # `dev` covers the dependencies, `test` the test targets that inherit it.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   # cuda f32 is the known-clean GPU path on this box (burn#5162 does NOT affect
@@ -207,6 +229,54 @@ jobs:
       # Inputs go through `env:` rather than being interpolated into `run:`
       # directly, so a dispatch value cannot inject shell. `$BENCH_ARGS` is
       # deliberately unquoted — it must word-split into separate arguments.
+      # A bench is a measurement, so it must refuse to produce a number it
+      # cannot stand behind. Both checks below failed SILENTLY before, as a
+      # plausible-looking result rather than an error:
+      #
+      #   * A missing dataset surfaced as `reading dataset directory <path>`
+      #     only after a full model load.
+      #   * GPU contention surfaced as `non-finite loss (NaN) at step 1`. That
+      #     is not a numerics failure — ComfyUI was holding 17.6 GB of the
+      #     24.5 GB card, allocations failed, and the run trained on corrupt
+      #     values. Per ADR-0005 the giveaway is `Memory page 0 doesn't exist`
+      #     on a `DS*` thread (a failed alloc leaves its handle at the
+      #     uninitialized {pool:0,page:0} default), which cubecl swallows.
+      #
+      # 4 GiB of headroom is the floor, not the requirement: the measured
+      # int4 + block-checkpointing config peaks at 19.4 GB (ADR-0005 Addendum
+      # 3), so this catches a card that is already largely spoken for while
+      # staying loose enough not to fail on a few hundred MiB of desktop use.
+      - name: Preflight — dataset present and GPU uncontended
+        shell: bash -euo pipefail {0}
+        env:
+          DATASET: ${{ inputs.bench_dataset }}
+        run: |
+          if [ ! -d "$DATASET" ]; then
+            echo "::error::bench dataset not found: $DATASET"
+            echo "Stage it on the runner, or dispatch with a bench_dataset that exists."
+            exit 1
+          fi
+          # -maxdepth 1 on purpose: the loader scans ONE level, so a nested
+          # kohya_ss-style tree must fail here rather than later as "0 images".
+          images=$(find "$DATASET" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | wc -l | tr -d ' ')
+          if [ "$images" -eq 0 ]; then
+            echo "::error::bench dataset has no .png/.jpg/.jpeg at its top level: $DATASET"
+            echo "The loader scans one level only and silently skips other extensions."
+            exit 1
+          fi
+          echo "dataset ok: $images image(s) in $DATASET"
+
+          free_mib=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1)
+          echo "GPU free: ${free_mib} MiB"
+          nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv || true
+          if [ "$free_mib" -lt 4096 ]; then
+            echo "::error::only ${free_mib} MiB GPU memory free — another process is holding the card."
+            echo "A contended run does not fail cleanly: it OOMs mid-step and reports a NaN loss."
+            echo "If it is an idle ComfyUI cache, release it and re-dispatch:"
+            echo "  curl -X POST http://127.0.0.1:8188/free -H 'Content-Type: application/json' -d '{\"unload_models\":true,\"free_memory\":true}'"
+            exit 1
+          fi
+
       - name: step-throughput bench
         shell: bash -euo pipefail {0}
         env:
