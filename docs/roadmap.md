@@ -266,6 +266,68 @@ false and it routes to the plain loader, which never applies the scales — raw
 `I8` values cast to f32, `weight_scale` keys unused, **no error**. Supported
 denoiser inputs remain bf16/f32 or a scaled-**fp8** repack.
 
+## First measured throughput on the 4090 (#110, 2026-08-05)
+
+Every memory lever so far — int4, block-level gradient checkpointing — was
+adopted on a memory argument with **no throughput price attached**, which is
+what [ADR-0010](adrs/0010-rtx4090-throughput-lever-triage.md) means by calling
+its own premise unmeasured. The first valid `just bench` dispatch
+([run 30982204201](https://github.com/laurigates/loractl/actions/runs/30982204201))
+closes that gap:
+
+| | |
+|---|---|
+| median step | **4482.18 ms** (~4.5 s) |
+| peak VRAM | **19,691 MiB** |
+| derived | `tok_s=342.6901`, `tflops=26.4414` |
+| validity | `sanity=ok`, `plausible=true`, `x2_ratio=2.002`, `steps_counted=6` |
+
+Configuration: RTX 4090 (24 GB), cuda + `precision: f32` + `quant: int4` +
+`grad_checkpointing: true`, batch 1, 512px, `--seq-len 1536` declared. The
+denoiser was a ComfyUI **scaled-fp8** repack of `krea/Krea-2-Raw`, which
+loractl quantizes to int4 on device (the supported input forms are recorded in
+[ADR-0011](adrs/0011-comfyui-cross-process-vram-sharing.md) Decision 5).
+
+**`vram_peak_mib=19691` independently corroborates
+[ADR-0005](adrs/0005-int4-training-vram-bound.md) Addendum 3's ~19.4 GB** for
+this configuration — a different tool, a different day, within ~1%. That is the
+strongest thing about this measurement, and it is worth more than the step time
+itself: two instruments agreeing on the peak is what makes the 24 GB route a
+measured fact rather than a single observation.
+
+### What these numbers do and do not license
+
+- **`tok_s` and `tflops` are quotients of the run's own `MODEL` line and must
+  never be quoted without it.** That line's
+  `excludes=text_fusion,modulation,norms,rope,softmax,patch_embed,lora_delta`
+  makes both an **under**-count, and `seq_len_source=declared` means 1536 was
+  supplied rather than measured.
+- **They are not comparable to other LoRA trainers.** The FLOP count is a
+  loractl accounting choice, so a cross-tool comparison would be dividing by two
+  different denominators. Only `ms=` and `vram_peak_mib=` are measured
+  quantities, and those are comparable solely against a run matching on base
+  model, quantization, checkpointing, batch, resolution, sequence length, and
+  GPU. A step time is a property of model + config + hardware, not of the
+  trainer.
+- **The timed window excludes encoding.** The dataset's cache was warm, so text
+  and VAE encode sit outside it. Trainers differ on whether their published
+  `s/it` includes that, which is one more reason the figure does not travel.
+- **This is one run over 6 counted steps on a 5-image dataset.** Adequate for
+  step timing, which is driven by resolution and bucket shape rather than corpus
+  size; not a repeated-trial benchmark, and not a statement about adapter
+  quality ([#159](https://github.com/laurigates/loractl/issues/159) is that
+  question).
+
+The decision record for the timing mechanism itself is
+[#162](https://github.com/laurigates/loractl/issues/162) (ADR-0009).
+
+Two failure modes had to be fixed before a number existed at all, both of which
+produced a *plausible-looking wrong answer* rather than an error: a contended
+GPU (ComfyUI holding 17.6 GB of the card while idle) surfaced as
+`non-finite loss (NaN) at step 1` on an f32 config, and a full runner disk
+surfaced as `ld terminated with signal 7 [Bus error]`. Both are now preflighted
+in `gpu.yml`.
+
 ## A note on the text side
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern
