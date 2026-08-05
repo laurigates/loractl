@@ -13,16 +13,41 @@ that actually cover them are `just lint` (`cargo clippy --all-targets`) and the
 
 ## What each gate actually compiles
 
-| Command | lib + bins | `examples/` | `#[cfg(feature = "x")]` |
-|---|---|---|---|
-| `cargo build --workspace` | ✅ | ❌ | ❌ |
-| `cargo test --workspace` | ✅ | ❌ | ❌ |
-| `just lint` (`clippy --all-targets`) | ✅ | ✅ | ❌ |
-| `just lint-mnist` / `-wgpu` / `-mmdit-real` / … | ✅ | ✅ | ✅ (that one) |
+| Command | lib + bins | `examples/` compiled | tests **inside** `examples/` RUN | `#[cfg(feature = "x")]` |
+|---|---|---|---|---|
+| `cargo build --workspace` | ✅ | ❌ | ❌ | ❌ |
+| `cargo test --workspace` | ✅ | ❌ | ❌ | ❌ |
+| `cargo test` (this workspace) | ✅ | ✅ | ❌ | ❌ |
+| `cargo test --examples` | ✅ | ✅ | ✅ | ❌ |
+| `just lint` (`clippy --all-targets`) | ✅ | ✅ | n/a (no run) | ❌ |
+| `just lint-mnist` / `-wgpu` / `-mmdit-real` / … | ✅ | ✅ | n/a | ✅ (that one) |
 
 **`--all-targets` is the examples lever; `--features` is the cfg lever. Neither
 implies the other**, which is why `feature-lints` is a separate CI job and why
 `just lint` alone is not sufficient before touching a feature-gated path.
+
+### Compiling an example is not running its tests
+
+Cargo defaults every `[[example]]` target to **`test = false`**. So `cargo test`
+**builds** an example (catching a broken `match`, which is what the rest of this
+rule is about) and then **silently skips any `#[cfg(test)] mod tests` inside
+it** — no "0 tests" line, no target listed, nothing to notice. A test written
+in an example is dead on arrival unless something runs `--examples`.
+
+This is the same shape as the build gap above, one level further in: there, code
+was never *compiled*; here, tests are compiled and never *executed*. Both fail by
+producing no output rather than a failure.
+
+It matters here because the examples are not demos — `bench_step`, `step_probe`
+and `quant_probe` are the measurement tools, and CI dispatches depend on their
+flag contracts. `just test` and `ci.yml` therefore run `cargo test --examples`
+as a **second invocation** (not `--all-targets`, which would drop doctests).
+
+> Evidence (2026-08-05, #192): a regression test pinning `bench_step`'s
+> `--model-base`/`--dataset` overrides passed under
+> `cargo test -p loractl-core --example bench_step` and would never have run
+> under the gate. Caught only by asking whether the gate actually executed it —
+> the test itself gave no sign either way.
 
 ## Evidence — it bit twice in one session (2026-07-27, #165)
 
