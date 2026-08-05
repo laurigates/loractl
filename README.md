@@ -202,7 +202,8 @@ loractl's first real base model was the **GPT-2 family**
 safetensors via `burn-store` and re-expresses the forward pass, checked against
 PyTorch for parity stage by stage (always-run tiny fixture + opt-in real
 `gpt2`). See [ADR-0001](docs/adrs/0001-first-real-target-model.md). The current
-target is **Krea 2**, an open-weights ~12B rectified-flow image model — its
+target is **Krea 2** ([`krea/Krea-2-Raw`](https://huggingface.co/krea/Krea-2-Raw)),
+an open-weights ~12B rectified-flow image model — its
 VAE, text encoder, MMDiT denoiser, dataset pipeline, and end-to-end
 `DiffusionTrainer` are all in place. See
 [ADR-0004](docs/adrs/0004-krea2-image-diffusion-target.md) and the
@@ -299,6 +300,14 @@ topology-driven; **int4 + block-level gradient checkpointing is the route that f
 it**, measured at 19.4 GB peak (512px, 196/196 sites). The full analysis is
 [ADR-0005](docs/adrs/0005-int4-training-vram-bound.md); the precision-accuracy
 trade-off is [ADR-0006](docs/adrs/0006-reduced-precision-accuracy-gate.md).
+
+What that route costs in time: on an **RTX 4090**, Krea 2 at 512px with
+`quant: int4` and `grad_checkpointing: true` trains at **~4.5 s/step with a
+19.7 GB peak** (batch 1, cuda + f32). Measured, single run — see
+[the roadmap](docs/roadmap.md#first-measured-throughput-on-the-4090-110-2026-08-05)
+for the configuration it holds for and what it does not license. It is **not**
+comparable to other trainers' published `s/it`: a step time belongs to the
+model and config, not the trainer.
 
 ## Observability (GlitchTip / Sentry)
 

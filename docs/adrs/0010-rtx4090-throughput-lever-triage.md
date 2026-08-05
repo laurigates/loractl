@@ -169,10 +169,26 @@ Consequence 1 below; #175 is a memory bug and is not gated on it.
 
 Ordered, because each step's result decides whether the next is worth doing:
 
-1. **Dispatch `just bench` on the 4090** (`gh workflow run gpu.yml`). Until this
-   exists, every claim in the analysis — and every number in this ADR's
-   Decision 3/4 cost estimates — is a prediction. This also unblocks #162 and
-   #158, which are both waiting on the same dispatch.
+1. ~~**Dispatch `just bench` on the 4090**~~ — **DONE 2026-08-05**
+   ([run 30982204201](https://github.com/laurigates/loractl/actions/runs/30982204201)).
+   The premise this ADR opens by calling unmeasured is now measured: median
+   **4482.18 ms/step**, **19,691 MiB** peak, `sanity=ok`, `x2_ratio=2.002`, on
+   cuda + f32 + int4 + `grad_checkpointing`, batch 1, 512px, seq 1536 declared.
+   Numbers, configuration, and the limits on what they license live in the
+   [roadmap](../roadmap.md#first-measured-throughput-on-the-4090-110-2026-08-05)
+   — not restated here, so there is one copy to keep true.
+
+   Two consequences for this ADR specifically. **The peak corroborates
+   [ADR-0005](0005-int4-training-vram-bound.md) Addendum 3's ~19.4 GB within
+   ~1%**, from a second instrument. And the step time can now be read against
+   the `MODEL` line's own floor (`step_flops=1.185e14`), which is what
+   Consequence 2 below was waiting for — though note that line's `excludes=`
+   list makes the floor an under-count, so "slower than the floor" is a weaker
+   verdict than it sounds.
+
+   Still a prediction, and explicitly not settled by this: every Decision 3/4
+   **cost estimate**. One dispatch prices the *current* step; it does not price
+   a change to it. #162 and #158 are unblocked.
 2. **If the step is slower than the `MODEL` line's floor:** run the Decision 3
    fusion A/B, both gates.
 3. **If loading is the complaint:** profile the load phase, then take Decision
