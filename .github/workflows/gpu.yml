@@ -86,6 +86,23 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The runner's root disk is small, shared with a second runner, and sits
+  # ~90% full at rest. A debug-profile `cargo test` over this dependency graph
+  # (burn + cubecl + tokenizers) writes ~14 GB of artifacts, dominated by DWARF
+  # — a single `libloractl_core` rlib is ~107 MB — and the concurrent links at
+  # the end are the peak. When the filesystem fills mid-link, `rust-lld` does
+  # not report ENOSPC: it mmaps its output, so the failed page-in arrives as
+  # SIGBUS and the job dies with `ld terminated with signal 7 [Bus error]`,
+  # which reads as a toolchain bug rather than a full disk. Observed killing
+  # `cuda smokes` on three consecutive dispatches, including one taken right
+  # after freeing 7 GB — headroom alone does not fix it.
+  #
+  # `line-tables-only` keeps backtrace file/line (what a failing GPU smoke is
+  # read for) and drops the variable/type DWARF that is the bulk. It changes
+  # debuginfo only, never codegen, so the smokes still exercise the same code.
+  # `dev` covers the dependencies, `test` the test targets that inherit it.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   # cuda f32 is the known-clean GPU path on this box (burn#5162 does NOT affect
