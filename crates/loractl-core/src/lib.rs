@@ -97,8 +97,8 @@ pub use adapters::{LoraAdapters, LoraSite, build_adapters};
 pub use bench::{StepBench, StepWork};
 pub use burn_trainer::BurnTrainer;
 pub use config::{
-    BackendKind, ComputeConfig, FlowConfig, MetadataConfig, ModelVariant, Precision, Quant,
-    ShiftMode, TaskKind, TrainConfig,
+    BackendKind, BucketMode, ComputeConfig, FlowConfig, MetadataConfig, ModelVariant, Precision,
+    Quant, ShiftMode, TaskKind, TrainConfig,
 };
 pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
 pub use event::{PhaseCounters, PhaseName, TrainEvent};

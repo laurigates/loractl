@@ -3742,6 +3742,7 @@ dependencies = [
  "image",
  "loractl-bench",
  "memmap2",
+ "rayon",
  "regex",
  "safetensors 0.7.0",
  "serde",

@@ -66,7 +66,7 @@
 //! load-bearing invariant, and it is what lets the same measurement feed a
 //! terminal, a CI log, or an HTTP surface unchanged.
 
-use crate::config::TrainConfig;
+use crate::config::{BucketMode, TrainConfig};
 use crate::event::TrainEvent;
 use crate::mmdit::MmditConfig;
 use burn::tensor::backend::{Backend, ExecutionError};
@@ -384,10 +384,31 @@ impl StepWork {
             );
         }
 
+        // The square-bucket / full-batch derivation is an assumption at the
+        // best of times; the #147/#148 bucketing knobs are the two configs
+        // that *invalidate* it outright — `no_upscale` gives a smaller box
+        // than the square one, and a grid bucket set makes short batches the
+        // norm rather than a bucket's tail. Name them in the tag so a `MODEL`
+        // line from such a run cannot be read as authoritative.
+        let default_bucketing =
+            config.dataset.bucketing == BucketMode::Aspects && !config.dataset.no_upscale;
+        let mut assumes = String::from("square_bucket,full_batch");
+        if config.dataset.bucketing != BucketMode::Aspects {
+            assumes.push_str(",non_default_bucketing");
+        }
+        if config.dataset.no_upscale {
+            assumes.push_str(",no_upscale");
+        }
+        let caveat = if default_bucketing {
+            ""
+        } else {
+            " — dataset bucketing is non-default, so the derived token count is an \
+             upper bound on this run's actual geometry"
+        };
         let note = format!(
             "work model: {batch} × {seq_len} tokens/step ({source}); \
              {image_tokens} image tokens derived from resolution {} \
-             (latent {latent}, patch {}), assuming the square bucket and a full batch",
+             (latent {latent}, patch {}), assuming the square bucket and a full batch{caveat}",
             config.dataset.resolution, cfg.patch,
         );
         let work = Self::mmdit_step(&cfg, batch, seq_len, config.compute.grad_checkpointing)
@@ -398,7 +419,7 @@ impl StepWork {
             // `dataset.rs` buckets by aspect ratio (area-preserving but 16-px
             // aligned) and a bucket's last batch can be short.
             .with_term("vae_downsample", 8)
-            .with_term("assumes", "square_bucket,full_batch");
+            .with_term("assumes", assumes);
         (work, note)
     }
 }
@@ -1353,6 +1374,61 @@ mod tests {
         // see how much of the declared sequence is text.
         assert_eq!(line_term(&model, "image_tokens"), Some("4"), "{model}");
         assert!(note.contains("declared"), "{note}");
+    }
+
+    /// `(resolution/8/patch)²` is a **square-bucket, full-batch** derivation,
+    /// and the #147/#148 knobs are exactly the two configs that break it:
+    /// `no_upscale` hands some images a smaller box, and a grid bucket set
+    /// makes short batches the norm. Neither can be corrected for from config
+    /// alone (both depend on the images), so the honest move is to keep the
+    /// derivation and mark the line — a `MODEL` line is read as authority.
+    #[test]
+    fn for_config_flags_non_default_bucketing_in_the_assumes_tag() {
+        let default = diffusion_config(32);
+        let (work, note) = StepWork::for_config(&default, None);
+        let model = bench_with_work(work).model_line().unwrap().to_string();
+        assert_eq!(
+            line_term(&model, "assumes"),
+            Some("square_bucket,full_batch"),
+            "{model}"
+        );
+        assert!(!note.contains("non-default"), "{note}");
+
+        for (label, dataset) in [
+            (
+                "no_upscale",
+                crate::config::DatasetConfig {
+                    no_upscale: true,
+                    ..default.dataset.clone()
+                },
+            ),
+            (
+                "non_default_bucketing",
+                crate::config::DatasetConfig {
+                    bucketing: BucketMode::Grid,
+                    ..default.dataset.clone()
+                },
+            ),
+        ] {
+            let (work, note) = StepWork::for_config(
+                &TrainConfig {
+                    dataset,
+                    ..diffusion_config(32)
+                },
+                None,
+            );
+            let model = bench_with_work(work).model_line().unwrap().to_string();
+            let assumes = line_term(&model, "assumes").expect("assumes term");
+            assert!(assumes.contains(label), "{label} missing from {model}");
+            assert!(
+                assumes.contains("square_bucket,full_batch"),
+                "the base assumptions must survive: {model}"
+            );
+            assert!(
+                note.contains("non-default"),
+                "the note must say so too: {note}"
+            );
+        }
     }
 
     #[test]

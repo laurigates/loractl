@@ -11,7 +11,8 @@
 //! Black-box: observes only the `TrainEvent` stream. Offline, milliseconds.
 
 use loractl_core::config::{
-    BackendKind, ComputeConfig, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
+    BackendKind, BucketMode, ComputeConfig, DatasetConfig, LoraConfig, OptimConfig, OutputConfig,
+    TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -51,6 +52,9 @@ fn config(out: &TempDir, steps: u64, lr: f64, compute: ComputeConfig) -> TrainCo
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr,
