@@ -528,7 +528,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     let mut encoded = 0u64;
     let mut vae: Option<QwenVae<B>> = None;
     let mut conditioner: Option<Qwen3VlConditioner<B>> = None;
-    prepare_dataset::<B>(
+    let prepared = prepare_dataset::<B>(
         &config.dataset,
         &fingerprint,
         &device,
@@ -625,9 +625,30 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
             }
         },
     )?;
+    // Bucket occupancy and batch count are surfaced here because the
+    // #147/#148 knobs degrade *quietly*: finer bucketing means smaller
+    // per-bucket groups, batches never mix buckets, and so a config reading
+    // `batch_size: 4` can silently train at an effective batch of ~1. That is
+    // not an error and nothing else in the run reports it — but it does change
+    // the exported `ss_num_batches_per_epoch`/`ss_num_epochs`, so one line of
+    // output beats a surprise in the header. Recomputed from the prepared
+    // dataset rather than from the config, so it describes what this run will
+    // actually do — but counted arithmetically rather than by calling
+    // `batches()`, so this phase does not depend on the batching rule at all
+    // and cannot drift into a second, subtly different implementation of it.
+    let batch_size = config.dataset.batch_size.max(1) as usize;
+    let mut occupancy = vec![0usize; prepared.buckets.len()];
+    for item in &prepared.items {
+        occupancy[item.bucket] += 1;
+    }
+    let populated = occupancy.iter().filter(|&&n| n > 0).count();
+    let batches: usize = occupancy.iter().map(|n| n.div_ceil(batch_size)).sum();
     emit(
         PhaseName::Encode,
-        format!("cache ready — {seen} examples ({encoded} encoded this pass)"),
+        format!(
+            "cache ready — {seen} examples ({encoded} encoded this pass) in {populated} \
+             bucket(s) → {batches} batch(es) at batch_size {batch_size}"
+        ),
         Some(PhaseCounters::new(seen, seen)),
     );
     Ok(())

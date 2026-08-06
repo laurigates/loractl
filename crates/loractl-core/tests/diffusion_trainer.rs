@@ -810,6 +810,37 @@ fn setup_phases_are_reported_before_the_first_step() {
         "a cold pass must report encodes, not cache hits: {encodes:?}"
     );
 
+    // The 6th report is the closing summary, and it is the ONLY place a run
+    // says how the #147/#148 bucketing knobs actually landed — the README
+    // tells users to read this line, because finer bucketing silently stops
+    // honoring `batch_size` (batches never mix buckets) and moves the
+    // exported `ss_num_batches_per_epoch`. Pinned against ground truth for
+    // this fixture: 5 staged examples fill 2 of the 3 generated buckets (4
+    // landscapes + 1 portrait), which at batch_size 2 is 2 + 1 = 3 batches.
+    //
+    // `populated` is 2 while the bucket SET is 3, so an implementation that
+    // counted generated rather than occupied buckets fails here; and the
+    // 4 + 1 split means `div_ceil` applied to the wrong operand does too.
+    assert_eq!(
+        encodes[5].2,
+        "cache ready — 5 examples (5 encoded this pass) in 2 bucket(s) → 3 batch(es) \
+         at batch_size 2",
+        "the encode summary must describe the run it just prepared"
+    );
+    // The summary counts batches arithmetically (`occupancy.div_ceil`) rather
+    // than by calling `batches()` — deliberately, so the encode phase does not
+    // depend on the batching rule. Two implementations of one rule can drift,
+    // so both are pinned, and they must agree on 3.
+    let dataset_detail = phases
+        .iter()
+        .find(|p| p.1 == PhaseName::Dataset && p.2.contains("batches per epoch"))
+        .map(|p| p.2.clone())
+        .expect("the dataset phase reports the epoch shape");
+    assert_eq!(
+        dataset_detail, "5 examples, 3 buckets, 3 batches per epoch",
+        "the dataset phase's batch count must agree with the encode summary's"
+    );
+
     // The checkpoint loads name what they are loading, and the injection
     // reports the site count the run actually adapted (7 sites × 2 blocks).
     let loads: Vec<&str> = phases
@@ -856,6 +887,15 @@ fn setup_phases_are_reported_before_the_first_step() {
     assert!(
         warm[..5].iter().all(|d| d.starts_with("cached ")),
         "a warm pass must report cache hits: {warm:?}"
+    );
+    // …and the summary's `encoded this pass` counter tracks the cache too:
+    // the bucket/batch half is unchanged (same dataset, same knobs), the
+    // encode count drops to zero.
+    assert_eq!(
+        warm[5],
+        "cache ready — 5 examples (0 encoded this pass) in 2 bucket(s) → 3 batch(es) \
+         at batch_size 2",
+        "a warm pass must report zero encodes and the same shape"
     );
 }
 
