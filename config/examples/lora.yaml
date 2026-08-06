@@ -22,6 +22,18 @@ dataset:
   # Folder of images + same-named .txt caption files.
   path: ./data/my-subject
   resolution: 512
+  # Bucketing (both default off — the defaults suit ordinary photography):
+  # no_upscale: true           # (#147) a small image gets a smaller aligned
+  #                            # box of its own aspect instead of being
+  #                            # Lanczos-enlarged to fill its bucket.
+  # bucketing: grid            # (#148) aspects (default: 7 fixed ratios,
+  #                            # ~1% crop loss at 4:3 but 55% at 4:1) | grid
+  #                            # (kohya-style 2-D grid: ~4% worst case over
+  #                            # the whole aspect range, and MANY more
+  #                            # buckets — batches never mix buckets, so
+  #                            # expect more size-1 batches. See the README.)
+  # min_bucket_resolution: 256 # grid only; shortest bucket side, multiple of
+  #                            # 16. Defaults to resolution / 2.
 
 optim:
   lr: 1.0e-4

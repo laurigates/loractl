@@ -17,7 +17,9 @@
 //! step). Offline, milliseconds.
 
 use loractl_core::adapter;
-use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
+use loractl_core::config::{
+    BucketMode, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
+};
 use loractl_core::{BurnTrainer, Device, NdArray, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -57,6 +59,9 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,

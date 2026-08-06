@@ -355,6 +355,72 @@ pub struct TargetSpec {
     pub alpha: Option<f32>,
 }
 
+/// How the aspect-ratio bucket set is generated (#148).
+///
+/// Like [`BackendKind`]/[`ShiftMode`], the enum and its `Deserialize` are
+/// always compiled and route through `FromStr`, so the YAML and env layers
+/// accept the same spellings (case-insensitive) and report the same clear
+/// error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BucketMode {
+    /// The fixed seven-ratio set (1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16) —
+    /// [`crate::dataset::generate_buckets`], and the backward-compatible
+    /// default. Nails the ratios ordinary photography actually uses (a 4:3
+    /// source discards ~0.9% of its pixels) and is *bad* at everything else:
+    /// a 4:1 banner discards **55%**, because 16:9 is the widest box on
+    /// offer.
+    #[default]
+    Aspects,
+    /// A kohya-style symmetric 2-D grid: every
+    /// [`BUCKET_ALIGN`](crate::dataset::BUCKET_ALIGN)-aligned box whose area
+    /// fits inside `resolution²` and whose shorter side is at least
+    /// [`DatasetConfig::min_bucket_resolution`], plus each box's
+    /// transpose — [`crate::dataset::generate_grid_buckets`]. Caps the
+    /// worst-case discarded fraction at ~4% across the whole 0.25–4.0 aspect
+    /// range (that 4:1 banner becomes lossless), at the cost of being
+    /// slightly *worse* than `aspects` for the seven ratios that list was
+    /// hand-picked for (4:3 discards ~2.7% here). Opt in when the dataset is
+    /// aspect-diverse, not by default.
+    ///
+    /// **It buys crop coverage with batch density.** Batches never mix
+    /// buckets, so 65 buckets over a 20-image folder leaves most batches at
+    /// size 1: `batch_size` quietly stops being honored, and the exported
+    /// `ss_num_batches_per_epoch`/`ss_num_epochs` change with it.
+    Grid,
+}
+
+// No `clap::ValueEnum` derive here on purpose (same reasoning as
+// [`BackendKind`]): the vocabulary lives once in core. There is no CLI flag
+// for this knob — the YAML and `LORACTL_DATASET__BUCKETING` env layers are
+// the surface (the `model.checkpoint` / `flow.shift_mode` precedent: this is
+// a per-dataset choice, not a per-invocation one).
+impl FromStr for BucketMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "aspects" => Ok(Self::Aspects),
+            "grid" => Ok(Self::Grid),
+            other => Err(format!("unknown bucketing mode {other:?} (aspects|grid)")),
+        }
+    }
+}
+
+// Deserialize through `FromStr` (not the derive) so the YAML and env layers
+// accept exactly the same spellings — see [`BackendKind`]'s `Deserialize` for
+// the full rationale. `Serialize` stays derived (writes kebab-case), so a
+// round-trip is stable.
+impl<'de> Deserialize<'de> for BucketMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Where and how to read training data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetConfig {
@@ -369,6 +435,48 @@ pub struct DatasetConfig {
     /// M14; the synthetic tasks ignore it.
     #[serde(default = "defaults::batch_size")]
     pub batch_size: u32,
+
+    /// Never Lanczos-**up**scale an image to fill its bucket (#147; kohya's
+    /// `bucket_no_upscale`). A source smaller than its bucket instead gets a
+    /// smaller [`BUCKET_ALIGN`](crate::dataset::BUCKET_ALIGN)-aligned box of
+    /// the same aspect that fits inside it —
+    /// [`fit_bucket`](crate::dataset::fit_bucket) — so the pixel pipeline is
+    /// unchanged and no detail is invented. Boxes floor at `BUCKET_ALIGN`,
+    /// with no `min_bucket_resolution` coupling: a 40×40 thumbnail in a 512px
+    /// dataset trains as a 32×32 box rather than being stretched to fill one.
+    ///
+    /// Flipping this re-encodes only the *affected* latents — the latent
+    /// cache key already carries the bucket box — and never the (far more
+    /// expensive) conditioning cache.
+    ///
+    /// Env override: `LORACTL_DATASET__NO_UPSCALE` (no CLI flag).
+    #[serde(default)]
+    pub no_upscale: bool,
+
+    /// How the bucket set is generated (#148). Default:
+    /// [`BucketMode::Aspects`], the fixed seven-ratio set — read that enum's
+    /// docs before switching, including the batch-density cost.
+    ///
+    /// Env override: `LORACTL_DATASET__BUCKETING` (no CLI flag).
+    #[serde(default)]
+    pub bucketing: BucketMode,
+
+    /// Shortest bucket side in [`BucketMode::Grid`], in pixels; must be a
+    /// multiple of [`BUCKET_ALIGN`](crate::dataset::BUCKET_ALIGN). `None` →
+    /// `resolution / 2` (aligned down), which yields aspects from 1:4 to 4:1.
+    /// Lower it for wider
+    /// coverage at the cost of more buckets; the *longest* side is not a
+    /// separate knob because the area budget already derives it
+    /// (`h ≥ min ⟹ w ≤ resolution²/min`).
+    ///
+    /// Rejected with an error when [`Self::bucketing`] is
+    /// [`BucketMode::Aspects`]: `config.rs` carries no
+    /// `#[serde(deny_unknown_fields)]`, so a knob that is merely *ignored* is
+    /// this schema's worst failure shape — refuse it out loud instead.
+    ///
+    /// Env override: `LORACTL_DATASET__MIN_BUCKET_RESOLUTION` (no CLI flag).
+    #[serde(default)]
+    pub min_bucket_resolution: Option<u32>,
 }
 
 impl Default for DatasetConfig {
@@ -381,6 +489,9 @@ impl Default for DatasetConfig {
             path: PathBuf::new(),
             resolution: defaults::resolution(),
             batch_size: defaults::batch_size(),
+            no_upscale: false,
+            bucketing: BucketMode::default(),
+            min_bucket_resolution: None,
         }
     }
 }
@@ -911,10 +1022,14 @@ mod tests {
     ///   value into an impl.
     /// - **Genuinely checked — a literal against the type's own `Default`.**
     ///   `seed` (`0` vs `u64::default()`), `lora.dropout` (`0.0`),
-    ///   `lora.targets` (`Vec::new()` vs `Vec::default()`), and `ModelConfig`'s
-    ///   six `Option` overrides (`None` vs `Option::default()`). Nine arms.
-    ///   Editing `seed: 0` to `seed: 42` in the impl fails this test today —
-    ///   verified, not assumed.
+    ///   `lora.targets` (`Vec::new()` vs `Vec::default()`), `ModelConfig`'s
+    ///   six `Option` overrides (`None` vs `Option::default()`), and the three
+    ///   #147/#148 dataset knobs — `dataset.no_upscale` (`false` vs
+    ///   `bool::default()`), `dataset.bucketing` (`BucketMode::default()` on
+    ///   both sides, so tautological in practice) and
+    ///   `dataset.min_bucket_resolution` (`None` vs `Option::default()`).
+    ///   Twelve arms. Editing `seed: 0` to `seed: 42` in the impl fails this
+    ///   test today — verified, not assumed.
     /// - **Not checked at all.** `model.base` and `dataset.path` have no serde
     ///   default, so their "serde side" is the [`MINIMAL`] literal below —
     ///   hand-written to match, and editable in lockstep.

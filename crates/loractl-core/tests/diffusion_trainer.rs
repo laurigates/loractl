@@ -13,7 +13,7 @@
 //! interop step tracked on #25.
 
 use loractl_core::config::{
-    DatasetConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig, OutputConfig, TargetSpec,
+    BucketMode, DatasetConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig, OutputConfig, TargetSpec,
     TaskKind,
 };
 use loractl_core::{DiffusionTrainer, PhaseName, TrainConfig, TrainEvent, Trainer, read_metadata};
@@ -127,6 +127,9 @@ fn config(out: &TempDir, dataset: PathBuf) -> TrainConfig {
             path: dataset,
             resolution: 32,
             batch_size: 2,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,

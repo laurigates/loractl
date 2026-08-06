@@ -20,8 +20,8 @@
 //!    fp8-snapshot branch (fp8 → f32 → int8).
 
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig, OutputConfig,
-    TargetSpec, TaskKind,
+    BucketMode, ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, ModelVariant, OptimConfig,
+    OutputConfig, TargetSpec, TaskKind,
 };
 use loractl_core::{
     BackendKind, BurnTrainer, DiffusionTrainer, PhaseName, Precision, Quant, TrainConfig,
@@ -115,6 +115,9 @@ fn config(out: &TempDir, dataset: PathBuf, steps: u64) -> TrainConfig {
             path: dataset,
             resolution: 32,
             batch_size: 2,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,
