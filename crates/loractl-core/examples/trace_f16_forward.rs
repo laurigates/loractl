@@ -25,8 +25,8 @@ mod wgpu_main {
         KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
     };
     use loractl_core::CastFloatsAdapter;
-    use loractl_core::config::DatasetConfig;
-    use loractl_core::dataset::prepare_dataset;
+    use loractl_core::config::{BucketMode, DatasetConfig};
+    use loractl_core::dataset::plan_dataset;
     use loractl_core::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
     use std::path::PathBuf;
 
@@ -52,21 +52,23 @@ mod wgpu_main {
         let dataset = PathBuf::from(args.get(2).context("arg 2: dataset dir")?);
         let device = Default::default();
 
-        // Real cached batch (warm cache required — closures bail).
-        let prepared = prepare_dataset::<B>(
+        // Real cached batch. A warm cache is a precondition, and now one the
+        // API states: `plan_dataset` takes no encoders, so a cold cache is its
+        // own error rather than a closure that bails.
+        let prepared = plan_dataset(
             &DatasetConfig {
                 path: dataset,
                 resolution: 256,
                 batch_size: 1,
+                no_upscale: false,
+                bucketing: BucketMode::Aspects,
+                min_bucket_resolution: None,
             },
             "krea2-ml512-enc32",
-            &device,
-            |_| bail!("cold latent cache — run the trainer's encode phase first"),
-            |_| bail!("cold cond cache — run the trainer's encode phase first"),
             |_| {},
         )?;
-        let batches = prepared.batches(1);
-        let batch = &batches[0];
+        let plans = prepared.batches(1);
+        let batch = prepared.load_batch::<B>(&plans[0], &device)?;
         stats("latents", &batch.latents);
         stats("conditioning", &batch.conditioning);
 
