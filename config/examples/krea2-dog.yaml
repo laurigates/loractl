@@ -23,7 +23,13 @@ dataset:
   path: /path/to/dreambooth-dog        # the 5-image DreamBooth "dog" set
                                        # (google/dreambooth), each with a
                                        # "a photo of sks dog" .txt caption
-  resolution: 512
+  resolution: 512                      # the ONLY resolution this `compute:`
+                                       # route has been measured at: 19.4 GB
+                                       # peak, zero panics (ADR-0005 Addendum
+                                       # 3). 1024px is a 4608-token trunk
+                                       # sequence against 1536 here — a 3× step,
+                                       # unmeasured. Re-probe with
+                                       # `just step-probe` before trusting it.
   batch_size: 1
 
 lora:

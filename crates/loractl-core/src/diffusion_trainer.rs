@@ -112,7 +112,9 @@ use burn::backend::{Cuda, cuda::CudaDevice};
 /// the variant → denoiser-architecture mapping (Turbo is architecturally
 /// identical to Krea2; the variants differ only in the default denoiser
 /// filename).
-fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
+pub(crate) fn variant_configs(
+    variant: ModelVariant,
+) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
     let mmdit = MmditConfig::for_variant(variant);
     match variant {
         ModelVariant::Krea2 | ModelVariant::Krea2Turbo => (
@@ -536,6 +538,10 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
 
     let mut seen = 0u64;
     let mut encoded = 0u64;
+    // #179: the fit advisory needs both the config AND the example count, and
+    // this is the first point in the process that holds them — `train()` never
+    // sees a count. The latch keeps it to one warning per run.
+    let mut advised = false;
     let mut vae: Option<QwenVae<B>> = None;
     let mut conditioner: Option<Qwen3VlConditioner<B>> = None;
     prepare_dataset::<B>(
@@ -616,6 +622,16 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
         },
         |p| {
             seen = p.total as u64;
+            // Emitted on the first tick — after the scan, before any encoder
+            // loads, any image decode, the MMDiT load, or step 1, i.e. before
+            // everything expensive a config outside the measured envelope is
+            // about to spend. Advisory only: see `envelope`.
+            if !advised {
+                advised = true;
+                if let Some(message) = crate::envelope::preflight_advisory(config, Some(p.total)) {
+                    (sink.borrow_mut())(TrainEvent::Warning { message });
+                }
+            }
             // A miss is the expensive case (minutes on the real encoders), so
             // it always reports; hits are throttled — a warm 5000-image pass
             // must not emit 5000 events.

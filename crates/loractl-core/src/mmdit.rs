@@ -84,6 +84,13 @@ use burn::tensor::{DType, Tensor, TensorData};
 /// to uniform garbage that valid positions never read.
 const MASK_NEG: f32 = -3.0e4;
 
+/// The trunk zero-pads the combined text+image sequence up to a multiple of
+/// this before the attention stack ([`Mmdit::forward`] step 4), exactly like
+/// the reference. Named because it is also an input to the *config-level*
+/// token derivation in [`token_geometry`], and a second copy of the literal
+/// is how the two would silently disagree.
+pub const SEQUENCE_PAD: usize = 256;
+
 /// Static architecture of a `SingleStreamDiT` variant. Field names mirror
 /// `SingleMMDiTConfig`.
 #[derive(Debug, Clone, PartialEq)]
@@ -1391,7 +1398,7 @@ impl<B: QuantBackend> Mmdit<B> {
         let mut mask = mask;
         let mut pos = pos;
         let fulllen = combined.dims()[1];
-        let padlen = fulllen.div_ceil(256) * 256 - fulllen;
+        let padlen = fulllen.div_ceil(SEQUENCE_PAD) * SEQUENCE_PAD - fulllen;
         if padlen > 0 {
             let f = self.config.features;
             combined = Tensor::cat(vec![combined, Tensor::zeros([b, padlen, f], &device)], 1);
@@ -1522,6 +1529,54 @@ fn temb<B: Backend>(t: Tensor<B, 1>, dim: usize, device: &B::Device) -> Tensor<B
         Tensor::<B, 1>::from_data(TensorData::new(freqs, [half]), device).reshape([1, 1, half]);
     let args = t.mul_scalar(1e3).reshape([b, 1, 1]) * freqs;
     Tensor::cat(vec![args.clone().cos(), args.sin()], 2)
+}
+
+/// The token geometry a square `resolution` implies, derived from the config
+/// alone — no image, no latent, no model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenGeometry {
+    /// Latent side in pixels: `resolution / vae_compression`.
+    pub latent: usize,
+    /// Image tokens the patch grid yields: `(latent / patch)²`.
+    pub image_tokens: usize,
+    /// What the trunk actually attends over: image tokens plus the fixed
+    /// caption block, padded up to [`SEQUENCE_PAD`].
+    pub sequence_len: usize,
+}
+
+/// Derive [`TokenGeometry`] for a square bucket at `resolution`.
+///
+/// This is the one home of the derivation. It is exact rather than an upper
+/// bound because the caption side is *fixed*, not merely capped:
+/// `Qwen3VlConditioner::tokenize` truncates **and** right-pads every caption
+/// to the same budget, so `caption_tokens` is what every batch contributes
+/// regardless of what the captions say (ADR-0008, "Sequence length is not
+/// proportional to pixel area").
+///
+/// Deliberately **not** variant-aware: `vae_compression`, `patch` and
+/// `caption_tokens` are parameters so the one caller that models image tokens
+/// only ([`StepWork::for_config`](crate::bench::StepWork::for_config), which
+/// reports `seq_len_source=derived_image_only`) can keep its contract by
+/// passing `caption_tokens: 0`, and so a variant whose VAE is not f8 cannot
+/// be silently given Krea 2's downsample.
+///
+/// No `max(1)` anywhere: a resolution too small to make a single token
+/// derives zero, and `for_config` relies on seeing that zero to refuse a
+/// degenerate denominator rather than print a fabricated one.
+pub fn token_geometry(
+    resolution: u32,
+    vae_compression: usize,
+    patch: usize,
+    caption_tokens: usize,
+) -> TokenGeometry {
+    let latent = (resolution as usize) / vae_compression;
+    let image_tokens = (latent / patch).pow(2);
+    let combined = image_tokens + caption_tokens;
+    TokenGeometry {
+        latent,
+        image_tokens,
+        sequence_len: combined.div_ceil(SEQUENCE_PAD) * SEQUENCE_PAD,
+    }
 }
 
 /// Patchify a latent `[b, c, h, w]` into MMDiT image tokens

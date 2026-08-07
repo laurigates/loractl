@@ -75,6 +75,7 @@ pub mod burn_trainer;
 pub mod config;
 pub mod dataset;
 pub mod diffusion_trainer;
+pub mod envelope;
 pub mod event;
 pub mod export;
 pub mod flow;

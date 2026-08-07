@@ -42,7 +42,14 @@ model:
 
 dataset:
   path: /path/to/dataset       # images + same-named .txt captions
-  resolution: 512              # multiple of 16
+  resolution: 512              # multiple of 16 — and the only resolution any
+                               # real Krea 2 route in this repo has been
+                               # measured at (19.4 GB peak at 512px, int4 +
+                               # grad_checkpointing on a 24 GB card, ADR-0005
+                               # Addendum 3). Raising it raises the trunk
+                               # SEQUENCE, not the pixel count: 1024px is 4608
+                               # tokens against 1536 here, a 3× step. Re-probe
+                               # with `just step-probe` before trusting it.
   batch_size: 1
 
 lora:

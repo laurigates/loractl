@@ -30,7 +30,17 @@ model:
 
 dataset:
   path: /path/to/dataset            # images + same-named .txt captions
-  resolution: 512                   # multiple of 16
+  resolution: 512                   # multiple of 16 — and the ONLY resolution
+                                    # the `compute:` route below has been
+                                    # measured at: 19.4 GB peak, zero panics
+                                    # (ADR-0005 Addendum 3). Raising it raises
+                                    # the trunk SEQUENCE, not the pixel count —
+                                    # 1024px is 4608 tokens against 1536 here,
+                                    # a 3× step, and nothing at that size has
+                                    # been measured. Re-probe with
+                                    # `just step-probe` before trusting it; a
+                                    # run outside this point gets a warning
+                                    # before the encode phase (#179).
   batch_size: 1
 
 lora:
