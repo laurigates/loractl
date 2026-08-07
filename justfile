@@ -324,6 +324,46 @@ bench-offline *args:
     cp crates/loractl-core/tests/fixtures/dataset-tiny/* tmp/bench/dataset/
     cargo run --release -p loractl-core --example bench_step -- config/probes/tiny-bench.yaml "$@"
 
+# Materialize a PINNED PUBLIC captioned dataset into loractl's image + .txt
+# layout. `just dataset-fetch` with no arguments lists the registry; otherwise
+# `just dataset-fetch tuxemon tmp/datasets/tuxemon-56 56`.
+#
+# Public and revision-pinned on purpose: #175/#178 close on before/after
+# numbers, and a number measured against a folder only one person has is an
+# assertion rather than a result. Entries are taken in filename order, so a
+# smaller `n` is a strict PREFIX of a larger one — which is what lets the
+# residency matrix vary example count and nothing else.
+#
+# Set HF_HOME to a roomy disk first; the default cache lands on the root disk,
+# which is the one that fills (see .claude/rules/gpu-runner-failure-signatures.md).
+dataset-fetch key="" out="" n="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{key}}" ]; then exec ./scripts/fetch_dataset.py --list; fi
+    out="{{out}}"
+    [ -n "$out" ] || out="tmp/datasets/{{key}}-{{n}}"
+    ./scripts/fetch_dataset.py --dataset "{{key}}" --out "$out" --limit "{{n}}"
+
+# The #175/#178 on-box acceptance matrix: peak VRAM at two dataset sizes and
+# cold-encode wall time, on BOTH sides of a revision pair, plus a bench arm so
+# the per-step read the lazy loader added is priced rather than assumed.
+#
+# This is the measurement PR #197 explicitly did not claim — it needs the real
+# 24 GB card and the multi-GB checkpoints, and #175's criterion is a SCALING
+# claim ("peak no longer scales with example count"), which a single
+# before/after pair cannot answer. Hence two sizes per side.
+#
+# The card must be idle: the probe reads whole-GPU nvidia-smi, so a resident
+# ComfyUI is added to every peak. The script refuses rather than report a
+# poisoned number; `--free-endpoint http://127.0.0.1:8188` drops ComfyUI's idle
+# weight cache without stopping it, `--stop-service comfyui.service` is the
+# hammer. `--dry-run` runs the preflight alone, which is the cheap way to
+# confirm a scheduled window will actually work.
+#
+# e.g. just residency-matrix --models-root ~/ComfyUI/models --free-endpoint http://127.0.0.1:8188
+residency-matrix *args:
+    ./scripts/residency-matrix.sh "$@"
+
 # #132 retention-ledger validation (offline, ndarray): run both checkpointing
 # arms over the tiny-krea2 fixture with the ledger enabled, then report each.
 # Stages a dataset copy under tmp/ so the checked-in fixture never grows a
