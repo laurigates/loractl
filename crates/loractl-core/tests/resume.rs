@@ -309,6 +309,19 @@ fn an_unfinished_auto_target_is_refused_by_name_with_a_documented_way_through() 
     );
     let note = note.expect("announced");
     assert!(note.contains("did not finish"), "{note}");
+    // The copy moved the WEIGHTS (step 2) and left the finished run's sidecar
+    // (step 4) beside them. Pairing those is invisible — same shapes, same
+    // sites — so the mismatch is caught on the two recorded step counts and
+    // reported here rather than restored (`resume::stale_sidecar`).
+    assert!(
+        note.contains("NOT restored: AdamW's moments"),
+        "a step-4 sidecar must not be paired with step-2 weights: {note}"
+    );
+    assert!(note.contains("krea2-lora.optim.safetensors"), "{note}");
+    assert!(
+        note.contains("records 4 steps") && note.contains("the source records 2"),
+        "the skip must quote both step counts: {note}"
+    );
 }
 
 /// Naming a checkpoint explicitly is itself the statement of intent, so

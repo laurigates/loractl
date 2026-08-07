@@ -358,8 +358,16 @@ at 1, and AdamW re-warmed its moments from zero.
   `crates/loractl-core/src/resume.rs`), keyed by **site path** rather than
   `ParamId` — burn's ids are random per construction, so a `ParamId`-keyed dump
   would silently restore nothing in the next process. The kohya artifact is
-  byte-shape unchanged; `tests/krea2_lora_keys.rs` and `tests/lora_export.rs`
+  byte-shape unchanged; `tests/krea2_lora_keys.rs` and `tests/adapter_export.rs`
   are untouched.
+- **The sidecar is checked against the source's provenance**, not merely found
+  beside it: `save_optimizer_state` records `loractl_steps_done` and the adapter
+  records `ss_steps`, and a disagreement means the sidecar belongs to another
+  run (the documented recovery workflow — copy `checkpoint-N.safetensors` over
+  the final export — produces exactly that). Shapes match in that case, so
+  nothing else can see it. It is skipped and named in the resume `Warning`
+  rather than restored, since re-warming AdamW is survivable and erroring would
+  stop a recovery dead.
 - **Not restored: the RNG stream.** burn 0.21 exposes no save/restore, so a
   resumed run is a continuation and not a bit-identical replay. The single
   resume `Warning` says so.

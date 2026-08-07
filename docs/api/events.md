@@ -185,8 +185,10 @@ skipped a step, or — with no ordering guarantee relative to `phase`/`step` —
 **resume announcement** (#180). A resumed run emits exactly one `warning`
 naming the source it continued, the step it continues *from*, and explicitly
 what was and was **not** restored (AdamW's moments and the loss scale, when a
-`.optim.safetensors` sidecar sits beside the source; never the RNG stream, so
-a resumed run is a continuation and not a bit-identical replay). It carries no
+`.optim.safetensors` sidecar sits beside the source *and records the same step
+count the source does* — a sidecar left behind by a different run is named and
+skipped rather than paired with these weights; never the RNG stream, so a
+resumed run is a continuation and not a bit-identical replay). It carries no
 machine-readable fields by design — a client that needs the step number reads
 it from the `step` events, whose numbering continues rather than restarting.
 Note the consequence for progress: `started.total_steps` is the run's **total**

@@ -125,10 +125,13 @@ fn denoiser_filename_precedence() {
 /// Turbo shares Krea2's encoder-cache fingerprint: the two variants read the
 /// same encoder files from the same `base`, so their caches must be
 /// interchangeable — a variant-derived fingerprint would force a pointless
-/// full re-encode when switching raw ↔ turbo. The historical literals are
-/// pinned too: the emitted strings must stay byte-identical to the pre-M15
-/// `{variant:?}`-derived form, or every existing on-disk cache is silently
-/// invalidated.
+/// full re-encode when switching raw ↔ turbo.
+///
+/// The exact strings are pinned too, so that invalidating every on-disk cache
+/// is always a deliberate edit here rather than a side effect. It has been
+/// deliberate twice: `enc32` (the f32 encode path) and `-t2` (#163's derived
+/// template offsets, which change the conditioning tensor itself under an
+/// unchanged `ml{max_length}` — see `encoder_fingerprint`'s docs).
 #[test]
 fn turbo_shares_the_krea2_encoder_cache_fingerprint() {
     for max_length in [16, 512] {
@@ -140,10 +143,10 @@ fn turbo_shares_the_krea2_encoder_cache_fingerprint() {
     }
     assert_eq!(
         encoder_fingerprint(ModelVariant::Krea2, 512),
-        "krea2-ml512-enc32"
+        "krea2-ml512-enc32-t2"
     );
     assert_eq!(
         encoder_fingerprint(ModelVariant::TinyKrea2, 16),
-        "tinykrea2-ml16-enc32"
+        "tinykrea2-ml16-enc32-t2"
     );
 }

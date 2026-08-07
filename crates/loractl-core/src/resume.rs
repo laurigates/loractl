@@ -78,16 +78,30 @@ const TIME_KEY: &str = "loractl_adamw_time";
 const LOSS_SCALE_KEY: &str = "loractl_loss_scale";
 /// Consecutive non-overflowing steps at write time (the scale-growth counter).
 const CLEAN_STREAK_KEY: &str = "loractl_clean_streak";
-/// Steps completed at write time — cross-checked against the adapter's
-/// `ss_steps` so a sidecar left over from a *different* run is caught.
+/// Steps completed at write time. Cross-checked against the adapter's
+/// `ss_steps` by [`stale_sidecar`], so a sidecar left over from a *different*
+/// run is caught — the file is written and read, and the check that makes it
+/// mean something lives there, not here.
 const STEPS_DONE_KEY: &str = "loractl_steps_done";
 
-/// Suffixes appended to a site path for its four moment tensors. Chosen to be
-/// torch's AdamW state names rather than anything ending in `.weight`, so no
-/// LoRA loader's key map can match them if this file is ever dropped into a
+/// The two kohya factor names a site path is suffixed with, plus which of the
+/// pair is the `A` (down) factor. The torch AdamW state names (`exp_avg`,
+/// `exp_avg_sq`) are appended *after* these at the `format!` sites in
+/// [`save_optimizer_state`] and [`load_optimizer_state`] — that second suffix
+/// is what keeps a moment key from ending in `.weight`/`.alpha`, so no LoRA
+/// loader's key map can match this file if it is ever dropped into a
 /// `models/loras/` directory (the #137 failure shape: an unmatched key loads
-/// without error and does nothing).
+/// without error and does nothing). [`moment_key`] is the one place that
+/// composition happens.
 const FACTOR_KEYS: [(&str, bool); 2] = [("lora_down", true), ("lora_up", false)];
+
+/// The sidecar key for one moment tensor: site path, kohya factor name, torch
+/// state name. One function rather than four `format!`s so the unit test that
+/// pins the shape of these keys sees the *production* composition rather than
+/// literals it chose itself.
+fn moment_key(target: &str, suffix: &str, kind: &str) -> String {
+    format!("{target}.{suffix}.{kind}")
+}
 
 /// Where the optimizer sidecar for `adapter` lives: beside it, same stem,
 /// `.optim.safetensors`.
@@ -154,8 +168,26 @@ pub struct ResumePlan {
     pub explicit: bool,
     /// What the source's `__metadata__` says (see [`ResumeProvenance`]).
     pub provenance: ResumeProvenance,
-    /// The sidecar beside `source`, when one exists.
+    /// The sidecar beside `source`, when one exists **and belongs to it**
+    /// (see [`stale_sidecar`]).
     pub optim_state: Option<PathBuf>,
+    /// Set instead of [`Self::optim_state`] when a sidecar sits beside the
+    /// source but records a different run's step count. Carried rather than
+    /// dropped so [`resume_message`] can say *why* the moments are missing.
+    pub stale_optim: Option<StaleSidecar>,
+}
+
+/// A sidecar that exists beside the resume source but was left there by a
+/// different run — see [`stale_sidecar`] for how that happens and why it is
+/// skipped rather than restored or refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleSidecar {
+    /// The file that was skipped.
+    pub path: PathBuf,
+    /// Its own [`STEPS_DONE_KEY`].
+    pub steps_done: u64,
+    /// The `ss_steps` the resume source records.
+    pub source_steps_done: u64,
 }
 
 impl ResumePlan {
@@ -231,14 +263,59 @@ pub fn plan_resume(resume: &ResumeConfig, output: &OutputConfig) -> Result<Optio
     }
 
     let sidecar = optim_sidecar_path(&source);
-    let optim_state = sidecar.exists().then_some(sidecar);
+    let (optim_state, stale_optim) = match sidecar.exists() {
+        false => (None, None),
+        true => match stale_sidecar(&sidecar, &provenance) {
+            Some(stale) => (None, Some(stale)),
+            None => (Some(sidecar), None),
+        },
+    };
 
     Ok(Some(ResumePlan {
         source,
         explicit,
         provenance,
         optim_state,
+        stale_optim,
     }))
+}
+
+/// Does the sidecar beside a resume source actually belong to it?
+///
+/// [`save_optimizer_state`] records the writing run's step count in the
+/// sidecar header ([`STEPS_DONE_KEY`]); the adapter records its own in
+/// `ss_steps`. The documented recovery workflow — copy
+/// `checkpoint-N.safetensors` over the final export and resume — moves the
+/// *weights* and leaves the finished run's sidecar in place, so the pair
+/// disagrees while nothing about the tensors can tell: the shapes match, and
+/// the shape guard in [`load_optimizer_state`] passes. Restoring it anyway
+/// pairs step-N weights with step-M moments, bias correction and loss scale,
+/// and the run looks fine — a file written, read, and quietly meaning the
+/// wrong thing (`.claude/rules/burn-optimizer-and-dropout.md` §3).
+///
+/// Skipped rather than fatal, deliberately: the workflow that produces the
+/// mismatch is a *recovery*, and erroring would stop it dead over a file the
+/// operator has no reason to suspect. Re-warming AdamW from zero is a
+/// documented, survivable state; [`resume_message`] names it and names the
+/// file.
+///
+/// Only decidable when both sides recorded a number. `Unrecorded` provenance
+/// (`metadata.embed: false`, or a third-party export) has no `ss_steps` to
+/// compare against, and a sidecar with no [`STEPS_DONE_KEY`] was not written
+/// by this code path — neither is evidence of a mismatch, so neither skips.
+fn stale_sidecar(path: &Path, provenance: &ResumeProvenance) -> Option<StaleSidecar> {
+    let source_steps_done = match provenance {
+        ResumeProvenance::Finished { steps_done }
+        | ResumeProvenance::Unfinished { steps_done, .. } => *steps_done,
+        ResumeProvenance::Unrecorded => return None,
+    };
+    let meta = read_metadata(path).ok()?;
+    let steps_done = meta.get(STEPS_DONE_KEY)?.parse::<u64>().ok()?;
+    (steps_done != source_steps_done).then(|| StaleSidecar {
+        path: path.to_path_buf(),
+        steps_done,
+        source_steps_done,
+    })
 }
 
 /// Classify a header. Split out so it is unit-testable without a file.
@@ -346,11 +423,11 @@ pub fn save_optimizer_state<AB: AutodiffBackend>(
                 ),
             }
             tensors.push((
-                format!("{target}.{suffix}.exp_avg"),
+                moment_key(target, suffix, "exp_avg"),
                 to_owned_f32(momentum.moment_1),
             ));
             tensors.push((
-                format!("{target}.{suffix}.exp_avg_sq"),
+                moment_key(target, suffix, "exp_avg_sq"),
                 to_owned_f32(momentum.moment_2),
             ));
         }
@@ -473,8 +550,8 @@ pub fn load_optimizer_state<AB: AutodiffBackend>(
             } else {
                 (delta.lora_b.weight.id, delta.lora_b.weight.dims())
             };
-            let m1 = read_matrix(&format!("{target}.{suffix}.exp_avg"), dims)?;
-            let m2 = read_matrix(&format!("{target}.{suffix}.exp_avg_sq"), dims)?;
+            let m1 = read_matrix(&moment_key(target, suffix, "exp_avg"), dims)?;
+            let m2 = read_matrix(&moment_key(target, suffix, "exp_avg_sq"), dims)?;
             record.insert(
                 id,
                 AdaptorRecord::<AdamW, AB>::from_state::<2>(AdamWState::new(
@@ -546,20 +623,39 @@ pub fn resume_message(
         }
     }
 
+    // The step counter follows the provenance. On the `Unrecorded` path the
+    // arm above has just said the step count was NOT restored, so claiming it
+    // here contradicts that sentence — and tells a `metadata.embed: false`
+    // operator the batch cursor is somewhere it is not.
+    let counter = match plan.provenance {
+        ResumeProvenance::Unrecorded => "",
+        _ => " and the step counter — so the batch cursor follows it",
+    };
     match optim {
         Some(o) => msg.push_str(&format!(
             ". Restored: adapter weights, AdamW moments for {} parameters at \
-             step {}, the loss scale ({}) and clean streak ({}), and the step \
-             counter — so the batch cursor follows it.",
+             step {}, the loss scale ({}) and clean streak ({}){counter}.",
             o.params, o.time, o.loss_scale, o.clean_streak
         )),
-        None => msg.push_str(
-            ". Restored: adapter weights and the step counter (so the batch \
-             cursor follows it). NOT restored: AdamW's moments — no \
-             optimizer-state sidecar sits beside the source, so the optimizer \
-             re-warms from zero and the loss scale restarts at its initial \
-             value.",
-        ),
+        None => match &plan.stale_optim {
+            Some(stale) => msg.push_str(&format!(
+                ". Restored: adapter weights{counter}. NOT restored: AdamW's \
+                 moments — the sidecar beside the source ({}) records {} steps \
+                 while the source records {}, so it belongs to a different run \
+                 and was skipped rather than paired with these weights; the \
+                 optimizer re-warms from zero and the loss scale restarts at \
+                 its initial value.",
+                stale.path.display(),
+                stale.steps_done,
+                stale.source_steps_done,
+            )),
+            None => msg.push_str(&format!(
+                ". Restored: adapter weights{counter}. NOT restored: AdamW's \
+                 moments — no optimizer-state sidecar sits beside the source, \
+                 so the optimizer re-warms from zero and the loss scale \
+                 restarts at its initial value.",
+            )),
+        },
     }
 
     msg.push_str(&format!(
@@ -621,11 +717,17 @@ mod tests {
     /// The sidecar must never carry a key an ecosystem LoRA loader would match
     /// (#137's failure shape: an unmatched key loads without error and does
     /// nothing — so a *matched* wrong key is worse still).
+    ///
+    /// Built through [`moment_key`], the same function both the writer and the
+    /// reader call: composing the key from literals here would compare the
+    /// test against itself, and rewriting the production suffix to `.weight`
+    /// would leave it green (it did — the only teeth were in the 130 s e2e
+    /// suites' on-disk key enumeration).
     #[test]
     fn moment_keys_cannot_collide_with_an_adapter_export() {
         for (suffix, _) in FACTOR_KEYS {
             for kind in ["exp_avg", "exp_avg_sq"] {
-                let key = format!("transformer_blocks.0.attn.to_q.{suffix}.{kind}");
+                let key = moment_key("transformer_blocks.0.attn.to_q", suffix, kind);
                 assert!(!key.ends_with(".weight"), "{key} looks like a LoRA factor");
                 assert!(!key.ends_with(".alpha"), "{key} looks like a LoRA alpha");
             }
@@ -750,6 +852,82 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A sidecar left behind by a *different* run must not be paired with
+    /// these weights.
+    ///
+    /// The recovery workflow the issue documents produces exactly this: copy
+    /// `checkpoint-2.safetensors` over the final export and resume, and the
+    /// finished run's `krea2-lora.optim.safetensors` (step 4) is still sitting
+    /// beside it. Shapes match, so `load_optimizer_state`'s guard cannot see
+    /// it — only the two recorded step counts can.
+    #[test]
+    fn a_sidecar_from_a_different_run_is_skipped_and_named() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("loractl-stale-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = OutputConfig {
+            dir: dir.clone(),
+            ..Default::default()
+        };
+        let artifact = dir.join("lora.safetensors");
+        let sidecar = dir.join("lora.optim.safetensors");
+
+        // Weights at step 2, moments at step 4: skipped, and the plan keeps
+        // enough to say why. (Finished, so the auto path's unfinished refusal
+        // is not what this test is measuring.)
+        header_only_file(
+            &artifact,
+            &[
+                ("ss_steps", "2"),
+                ("ss_max_train_steps", "4"),
+                ("ss_training_finished_at", "1700000000"),
+            ],
+        );
+        header_only_file(&sidecar, &[(STEPS_DONE_KEY, "4")]);
+        let plan = plan_resume(&ResumeConfig::default(), &output)
+            .unwrap()
+            .expect("a plan");
+        assert!(plan.optim_state.is_none(), "{:?}", plan.optim_state);
+        assert_eq!(
+            plan.stale_optim,
+            Some(StaleSidecar {
+                path: sidecar.clone(),
+                steps_done: 4,
+                source_steps_done: 2,
+            })
+        );
+        let msg = resume_message(&plan, 42, None, 6);
+        assert!(msg.contains("NOT restored: AdamW's moments"), "{msg}");
+        assert!(msg.contains("lora.optim.safetensors"), "{msg}");
+        assert!(msg.contains("records 4 steps"), "{msg}");
+        assert!(msg.contains("the source records 2"), "{msg}");
+
+        // The matching pair is adopted — otherwise the check above would be
+        // passing by refusing every sidecar.
+        header_only_file(&sidecar, &[(STEPS_DONE_KEY, "2")]);
+        let plan = plan_resume(&ResumeConfig::default(), &output)
+            .unwrap()
+            .expect("a plan");
+        assert_eq!(plan.optim_state, Some(sidecar.clone()));
+        assert!(plan.stale_optim.is_none());
+
+        // Nothing to compare against: a `metadata.embed: false` source has no
+        // ss_steps, so its own sidecar must still be adopted.
+        header_only_file(&artifact, &[]);
+        header_only_file(&sidecar, &[(STEPS_DONE_KEY, "4")]);
+        let plan = plan_resume(&ResumeConfig::default(), &output)
+            .unwrap()
+            .expect("a plan");
+        assert_eq!(plan.provenance, ResumeProvenance::Unrecorded);
+        assert_eq!(plan.optim_state, Some(sidecar));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_resume_message_never_implies_bit_exactness() {
         let plan = ResumePlan {
@@ -757,6 +935,7 @@ mod tests {
             explicit: false,
             provenance: ResumeProvenance::Finished { steps_done: 6 },
             optim_state: None,
+            stale_optim: None,
         };
         let without = resume_message(&plan, 42, None, 12);
         assert!(
@@ -779,5 +958,19 @@ mod tests {
         );
         assert!(with.contains("AdamW moments for 84 parameters"), "{with}");
         assert!(with.contains("RNG stream"), "{with}");
+
+        // `Unrecorded` says the step count was NOT restored — so the same
+        // sentence must not then claim the step counter was. (It did: the
+        // clause was appended unconditionally, and the `--no-metadata` test's
+        // `contains("NOT")` was satisfied by the RNG clause, so nothing saw
+        // the contradiction.)
+        let unrecorded = ResumePlan {
+            provenance: ResumeProvenance::Unrecorded,
+            ..plan.clone()
+        };
+        let note = resume_message(&unrecorded, 42, None, 12);
+        assert!(note.contains("was NOT restored"), "{note}");
+        assert!(!note.contains("the step counter"), "{note}");
+        assert!(note.contains("steps 1..=12"), "{note}");
     }
 }

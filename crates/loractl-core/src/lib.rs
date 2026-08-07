@@ -72,6 +72,7 @@ pub mod adapters;
 pub mod bench;
 pub mod block_ckpt;
 pub mod burn_trainer;
+pub mod cache_guard;
 pub mod config;
 pub mod dataset;
 pub mod diffusion_trainer;
