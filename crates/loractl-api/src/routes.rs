@@ -98,10 +98,11 @@ fn error_response(status: StatusCode, error: impl Into<String>) -> Response {
 /// [`require_bearer_token`] above):
 ///
 /// 1. **Path confinement** — the request's `output.dir`/`output.name` become
-///    real filesystem writes, so they are resolved under the server's output
-///    base and rejected (`400`) if they escape it. The config the trainer runs
-///    with carries the *resolved* dir, never the client's raw string, so no
-///    later code path can be handed the unvalidated value by mistake.
+///    real filesystem writes, and its `resume.from` becomes a real file read,
+///    so all three are resolved under the server's output base and rejected
+///    (`400`) if they escape it. The config the trainer runs with carries the
+///    *resolved* paths, never the client's raw strings, so no later code path
+///    can be handed an unvalidated value by mistake.
 /// 2. **Concurrency cap** — each run occupies a blocking thread doing real
 ///    compute; past the cap the request is refused (`429`) rather than queued,
 ///    so a client learns immediately instead of timing out.
@@ -116,6 +117,14 @@ async fn create_run(
     {
         Ok(dir) => config.output.dir = dir,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    }
+    // `resume.from` (#180) is the read twin of `output.dir`: the trainer opens
+    // and parses whatever it names, so it goes through the same confinement.
+    if let Some(from) = config.resume.from.clone() {
+        match crate::paths::confine_resume(&state.output_base, &from) {
+            Ok(path) => config.resume.from = Some(path),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+        }
     }
 
     let Some((id, run)) = state.register_run() else {

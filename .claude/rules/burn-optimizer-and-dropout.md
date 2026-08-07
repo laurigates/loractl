@@ -63,6 +63,46 @@ banking:
   dropout is live). On a plain backend it must be **identity** (eval safety). A
   test that only runs at `prob = 0` proves nothing.
 
+## 3. Persisting optimizer state: the record is `ParamId`-keyed and `hashbrown`-typed
+
+Found while making resume lossless (#180, `crates/loractl-core/src/resume.rs`).
+`Optimizer::to_record`/`load_record` are the only way in or out of an
+`OptimizerAdaptor`'s state, and two properties of that record decide whether a
+persisted copy actually restores anything:
+
+- **`ParamId` is random per construction, not a stable counter.**
+  `ParamId::new()` → `IdGenerator::generate()` → `gen_random::<[u8; 8]>()`
+  (`burn-std`'s `id.rs`), so the ids a fresh module build mints in the next
+  process share nothing with this one's. `Optimizer::Record` is
+  `HashMap<ParamId, AdaptorRecord<O, B>>`, so **a record serialized as-is
+  restores nothing on the next run** — every lookup misses, and it misses
+  *silently*: training proceeds with re-warmed moments and looks fine. Key any
+  on-disk copy by something stable (a module/site path) and rebuild the
+  `ParamId` map against the freshly-built module at load. Also note
+  `Param::from_tensor` mints a **new** id, so anything that replaces a param
+  (an import, a merge) must have its optimizer state read *after* that
+  replacement, not before.
+- **The record's map is `hashbrown::HashMap`, not `std`'s.** Naming
+  `std::collections::HashMap` in your signature is an E0308 whose message reads
+  as if the two were the same type ("similar names, actually distinct types").
+  The fix that needs no new dependency: seed the map from a fresh optimizer's
+  `to_record()` (empty, correctly typed) and `insert` into that. Do **not** add
+  `hashbrown` directly — a version skew from burn's own pin reintroduces the
+  same error.
+- **`AdamWState` is `{ momentum: AdaptiveMomentumState { time, moment_1,
+  moment_2, max_moment_2 } }`**, converted via `AdaptorRecord::into_state::<D>` /
+  `from_state::<D>`. `time` is a scalar step count, and it is **not** implied by
+  the moments: persisting only `moment_1`/`moment_2` silently loses AdamW's bias
+  correction, so the first step after a "lossless" resume is wrong by a factor
+  nobody can see. `max_moment_2` is `None` while `amsgrad` is off
+  (`AdamWConfig::new()`'s default) — assert that rather than assume it, so
+  turning amsgrad on later fails loudly instead of dropping half the state.
+- **Kill-test the round-trip, not the file.** §1's doctrine applies verbatim: a
+  continuation with restored moments must produce **different** weights from one
+  with the sidecar deleted. Asserting the file exists cannot distinguish a
+  working restore from a file that is written and then ignored — which is the
+  failure this whole family produces.
+
 ## Rationale
 
 Both facts share a shape: the default value (`weight_decay = 0`, `dropout = 0`)

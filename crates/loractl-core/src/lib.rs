@@ -90,6 +90,7 @@ pub mod probe;
 pub mod quant;
 pub mod qwen3vl;
 pub mod qwen_vae;
+pub mod resume;
 pub mod sample;
 pub mod train;
 pub mod training_adapter;
@@ -99,7 +100,7 @@ pub use bench::{StepBench, StepWork};
 pub use burn_trainer::BurnTrainer;
 pub use config::{
     BackendKind, ComputeConfig, FlowConfig, MetadataConfig, ModelVariant, Precision, Quant,
-    ShiftMode, TaskKind, TrainConfig,
+    ResumeConfig, ShiftMode, TaskKind, TrainConfig,
 };
 pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
 pub use event::{PhaseCounters, PhaseName, TrainEvent};
@@ -111,6 +112,7 @@ pub use mmdit::{Mmdit, MmditConfig};
 pub use model::LoraMlp;
 pub use qwen_vae::{QwenVae, QwenVaeConfig};
 pub use qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
+pub use resume::{ResumePlan, ResumeProvenance, optim_sidecar_path, plan_resume};
 pub use train::{MockTrainer, Trainer, is_builtin_demo_base, select_trainer};
 
 // Re-exported so `loractl-cli` can name the concrete inference backend/device

@@ -360,8 +360,12 @@ pub fn export_adapters<B: Backend>(
 /// built [`LoraAdapters`] set — the resume path: A/B round-trip through the
 /// export's transposed layout, and each site's `.alpha` is checked against
 /// the set's configured scaling (a drifted config must fail loudly, not
-/// silently train at the wrong scale). Optimizer state is not part of the
-/// export, so a resumed run re-warms its moments from zero.
+/// silently train at the wrong scale), and every factor is checked finite (a
+/// corrupt source must not become a run that trains on NaN).
+///
+/// Optimizer state is deliberately **not** part of the export — it has no
+/// interop consumer, so it round-trips through the separate sidecar
+/// [`crate::resume`] writes beside this file (#180).
 ///
 /// Every target in `set` must be present in the file with matching shapes;
 /// extra tensors in the file are ignored.
@@ -389,6 +393,20 @@ pub fn import_adapters<B: Backend>(
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+        // Checked on the raw f32 bytes, before the tensor exists: a resume
+        // source written by a run that died mid-write, or one whose loss went
+        // NaN before `check_step_loss` could kill it, poisons every subsequent
+        // step silently — the forward still runs and the loss is simply NaN
+        // forever. `adapter.rs` guards its own snapshot round-trip the same
+        // way (`all_finite`); this is that guard at the interop boundary,
+        // which is where a resume actually reads from (ADR-0010).
+        if let Some(bad) = vals.iter().position(|v| !v.is_finite()) {
+            bail!(
+                "tensor {key} is not finite (element {bad} is {}) — refusing to \
+                 resume from a corrupt adapter",
+                vals[bad]
+            );
+        }
         // `from_data` converts to the backend's working float dtype.
         Ok(Tensor::from_data(
             TensorData::new(vals, [shape[0], shape[1]]),

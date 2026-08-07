@@ -331,6 +331,42 @@ GPU (ComfyUI holding 17.6 GB of the card while idle) surfaced as
 surfaced as `ld terminated with signal 7 [Bus error]`. Both are now preflighted
 in `gpu.yml`.
 
+## Explicit, lossless resume (#180, 2026-08-07)
+
+Resume on the diffusion path used to be implicit and lossy: the only trigger was
+"the final artifact happens to exist in `output.dir`", the step counter restarted
+at 1, and AdamW re-warmed its moments from zero.
+
+- **The trigger is named.** `resume: { from, auto, allow_unfinished }`
+  (`crates/loractl-core/src/config.rs`), with `--resume` / `--no-resume` /
+  `--resume-unfinished` on the CLI. `auto: true` is the documented default, so
+  no existing workflow changes shape.
+- **`steps` is a total, not a remainder.** An artifact recording 200 steps
+  resumed with `steps: 500` runs 201..=500 — which matches what
+  `ss_max_train_steps` already meant, and what `Started.total_steps` (emitted
+  before the resume source is opened) already reported. Re-running an
+  already-complete config therefore trains **zero** further steps.
+- **Provenance is read, not assumed.** The `__metadata__` header this repo
+  already writes has three states, not two: finished (`ss_training_finished_at`
+  present), unfinished (every mid-run checkpoint, by construction), and
+  unrecorded (`metadata.embed: false`, or a third-party file). The `auto` path
+  refuses an unfinished artifact by name — the final export is only ever written
+  on a completed run, so one there means a checkpoint was copied into place —
+  and `resume.allow_unfinished` is the documented way through. `resume.from` is
+  explicit and never subject to that check.
+- **Optimizer state round-trips through a sidecar** (`{name}.optim.safetensors`,
+  `crates/loractl-core/src/resume.rs`), keyed by **site path** rather than
+  `ParamId` — burn's ids are random per construction, so a `ParamId`-keyed dump
+  would silently restore nothing in the next process. The kohya artifact is
+  byte-shape unchanged; `tests/krea2_lora_keys.rs` and `tests/lora_export.rs`
+  are untouched.
+- **Not restored: the RNG stream.** burn 0.21 exposes no save/restore, so a
+  resumed run is a continuation and not a bit-identical replay. The single
+  resume `Warning` says so.
+- **The synthetic/`BurnTrainer` path has no resume, deliberately** — see the
+  comment in its training loop for the three reasons, pinned by
+  `tests/resume.rs::the_synthetic_trainer_does_not_resume`.
+
 ## A note on the text side
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern

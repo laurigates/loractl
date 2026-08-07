@@ -339,6 +339,14 @@ impl Trainer for DiffusionTrainer {
             );
         }
 
+        // Resolve the resume plan HERE purely to fail fast (#180). The real
+        // one is built in `run_training`, after the adapters exist; this call
+        // is discarded. Without it a typo'd `resume.from`, or an unfinished
+        // artifact at the auto path, would not surface until after the dataset
+        // encode and a multi-gigabyte MMDiT load — minutes on the real model,
+        // for an error that is a config read and two file stats.
+        crate::resume::plan_resume(&config.resume, &config.output)?;
+
         // Started frames the whole run, encode phase included, so SSE/bar
         // consumers see the run begin before the (potentially long) one-time
         // dataset encode rather than after it.
@@ -1461,20 +1469,29 @@ where
         .dir
         .join(format!("{}.safetensors", config.output.name));
 
-    // Resume: an existing final artifact is loaded back into the fresh
-    // adapters and training continues from it — running the same config
-    // again extends the adapter rather than restarting it. (The export
-    // carries no optimizer state, so AdamW re-warms its moments.)
-    if adapter_path.exists() {
-        let loaded = import_adapters(&mut set, ExportFormat::Krea2Diffusers, &adapter_path)
-            .with_context(|| format!("resuming from {}", adapter_path.display()))?;
-        sink(TrainEvent::Warning {
-            message: format!(
-                "resuming from existing adapter {} ({loaded} deltas loaded)",
-                adapter_path.display()
-            ),
-        });
+    // Resume (#180). `config.resume` decides *what* is resumed and whether an
+    // unfinished artifact is acceptable; this site only carries it out. The
+    // historical trigger — "the final artifact exists" — survives as
+    // `resume.auto: true`, the documented default, because removing it would
+    // silently break every workflow that re-runs a config to extend an
+    // adapter. `plan_resume` refuses a typo'd `resume.from` and an unfinished
+    // auto-target rather than starting over in silence; see
+    // [`crate::resume`] for why the two paths have different policies.
+    //
+    // The announcement is deferred until after the optimizer exists, so a
+    // single Warning can name what WAS and was NOT restored. Nothing between
+    // here and there can fail without the whole run failing.
+    let plan = crate::resume::plan_resume(&config.resume, &config.output)?;
+    let mut resume_deltas = 0usize;
+    if let Some(plan) = &plan {
+        resume_deltas = import_adapters(&mut set, ExportFormat::Krea2Diffusers, &plan.source)
+            .with_context(|| format!("resuming from {}", plan.source.display()))?;
     }
+    // `steps` is a TOTAL, not a remainder (`ResumeConfig`'s docs): an artifact
+    // at step 200 resumed with `steps: 500` runs 201..=500. The batch cursor
+    // below is derived from `step`, so continuing the counter also restores
+    // the position in the epoch for free.
+    let start_step = plan.as_ref().map(|p| p.start_step()).unwrap_or(1);
 
     // The interop metadata (#154) every export below carries: trigger words,
     // the training record, and the dataset's bucket/tag frequencies. Built
@@ -1520,12 +1537,35 @@ where
     let mut clean_streak = 0u32;
     let checkpoint_every = config.output.checkpoint_every.max(1);
 
+    // Optimizer state must be loaded AFTER `import_adapters`, which replaces
+    // every factor and so mints fresh `ParamId`s — the ids the optimizer will
+    // route by are the post-import ones (`crate::resume`).
+    if let Some(plan) = &plan {
+        let restored = match &plan.optim_state {
+            Some(sidecar) => {
+                let (next, restored) =
+                    crate::resume::load_optimizer_state(optim, &set, sidecar, &device)
+                        .with_context(|| {
+                            format!("restoring optimizer state from {}", sidecar.display())
+                        })?;
+                optim = next;
+                loss_scale = restored.loss_scale;
+                clean_streak = restored.clean_streak;
+                Some(restored)
+            }
+            None => None,
+        };
+        sink(TrainEvent::Warning {
+            message: crate::resume::resume_message(plan, resume_deltas, restored.as_ref(), total),
+        });
+    }
+
     // #134: the block-checkpointed step runs the frozen denoiser on the
     // plain inner backend. `valid()` is an Arc rewrap (no copy) and the base
     // never changes, so hoist it once. `None` when the knob is off.
     let mmdit_inner = config.compute.grad_checkpointing.then(|| mmdit.valid());
 
-    for step in 1..=total {
+    for step in start_step..=total {
         let batch = &batches[((step - 1) as usize) % batches.len()];
         let [b, z, h, w] = batch.latents.dims();
         let flat = z * h * w;
@@ -1685,6 +1725,17 @@ where
                 &path,
             )
             .with_context(|| format!("writing checkpoint at step {step}"))?;
+            crate::resume::save_optimizer_state(
+                &optim,
+                &set,
+                crate::resume::OptimProgress {
+                    steps_done: step,
+                    loss_scale,
+                    clean_streak,
+                },
+                &crate::resume::optim_sidecar_path(&path),
+            )
+            .with_context(|| format!("writing optimizer state at step {step}"))?;
             sink(TrainEvent::Checkpoint { step, path });
         }
     }
@@ -1692,13 +1743,29 @@ where
     // The final artifact IS the interop artifact: a kohya-ss export, carrying
     // the `__metadata__` header a ComfyUI/Civitai-style consumer reads its
     // trigger words and training record from.
+    // `steps_done` for the final artifact is the run's high-water mark, not
+    // `total`: re-running an already-complete config (`start_step > total`,
+    // zero steps executed) must not rewrite the header to claim FEWER steps
+    // than the file it resumed from.
+    let steps_done = total.max(start_step - 1);
     export_adapters(
         &set,
         ExportFormat::Krea2Diffusers,
-        Some(&metadata_for(total, true)),
+        Some(&metadata_for(steps_done, true)),
         &adapter_path,
     )
     .context("writing the final adapter export")?;
+    crate::resume::save_optimizer_state(
+        &optim,
+        &set,
+        crate::resume::OptimProgress {
+            steps_done,
+            loss_scale,
+            clean_streak,
+        },
+        &crate::resume::optim_sidecar_path(&adapter_path),
+    )
+    .context("writing the final optimizer state")?;
     sink(TrainEvent::Finished {
         adapter_path: adapter_path.clone(),
     });

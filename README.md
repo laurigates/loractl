@@ -118,6 +118,16 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   base — with a JSON sidecar carrying the seed/shape to reconstruct the base,
   and (on the diffusion path) an embedded `__metadata__` header carrying the
   trigger words and training record (see [below](#adapter-metadata--trigger-words-and-the-training-record)).
+- **Resume** (diffusion path). Re-running a config against an output dir that
+  already holds an adapter *continues* it: `steps` is a **total**, not a
+  remainder, so a 200-step artifact re-run with `steps: 500` executes
+  201..=500. AdamW's moments, the loss scale and the step counter round-trip
+  through a `{name}.optim.safetensors` sidecar that no LoRA loader keys on; the
+  RNG stream is not restored, so a resumed run is a continuation and not a
+  bit-identical replay, and the run says so. `--resume <file>` names a source
+  explicitly (any `checkpoint-N.safetensors` works), `--no-resume` forces a
+  fresh start, and an artifact whose `__metadata__` says its run did not finish
+  is refused by name unless `--resume-unfinished` is passed.
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box

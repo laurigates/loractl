@@ -63,6 +63,28 @@ seed: 42
 output:
   dir: output/krea2-lora
   name: krea2-lora
+# Resume (#180). Optional — omitting this block keeps the historical
+# behaviour: if `{output.dir}/{output.name}.safetensors` already exists it is
+# loaded and training CONTINUES from it.
+#
+# `steps` above is a TOTAL, not a remainder: resuming an artifact that records
+# 200 steps with `steps: 500` executes steps 201..=500. Re-running an
+# already-complete config therefore trains zero further steps rather than
+# adding another `steps` worth.
+#
+# AdamW's moments, the loss scale and the step counter round-trip through a
+# `{name}.optim.safetensors` sidecar written beside every checkpoint. It is
+# ours alone — no LoRA loader keys on it — and it is looked for beside the
+# SOURCE, so recovering into a clean output dir still restores the optimizer.
+# The RNG stream is NOT restored, so a resumed run is a continuation and not a
+# bit-identical replay of an uninterrupted one.
+# resume:
+#   from: output/krea2-lora/checkpoint-400.safetensors      # explicit source; skips `auto`
+#   auto: true            # false (or --no-resume) forces a fresh start
+#   allow_unfinished: false # true (or --resume-unfinished) lets `auto` take an
+#                           # artifact whose __metadata__ says its run did not
+#                           # finish — e.g. a checkpoint copied over the final
+#                           # file after a crash. `from` never needs it.
 
 # The numerically-clean GPU route on a 24 GB NVIDIA card: cuda f32 + int4
 # frozen-base quantization (int4 reclaims to ~10.1 GB resident; int8's

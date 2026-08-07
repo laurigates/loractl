@@ -327,6 +327,27 @@ struct TrainCmd {
     /// timestamps, no run details).
     #[arg(long)]
     no_metadata: bool,
+
+    /// Override `resume.from`: resume from this adapter (a previous final
+    /// export or any `checkpoint-N.safetensors`) instead of whatever sits in
+    /// `output.dir`. Naming a file is a statement of intent, so an explicit
+    /// target is accepted even when it comes from a run that did not finish.
+    /// `steps` stays a TOTAL: resuming a 200-step artifact with `--steps 500`
+    /// runs steps 201..=500.
+    #[arg(long, value_name = "FILE")]
+    resume: Option<PathBuf>,
+
+    /// Override `resume.auto: false`: start fresh even though `output.dir`
+    /// already holds an adapter, instead of continuing it.
+    #[arg(long, conflicts_with = "resume")]
+    no_resume: bool,
+
+    /// Override `resume.allow_unfinished`: let the automatic path resume an
+    /// artifact whose `__metadata__` says the run that wrote it did not
+    /// finish. Only needed after a checkpoint has been copied over the final
+    /// artifact, or an interrupted write — `--resume` does not need it.
+    #[arg(long)]
+    resume_unfinished: bool,
 }
 
 #[derive(Args)]
@@ -487,6 +508,18 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     }
     if cmd.no_metadata {
         config.metadata.embed = false;
+    }
+    // Resume overrides (#180). `--resume` names a source and, being explicit,
+    // does not consult `resume.auto`; `--no-resume` is the way to force a
+    // fresh run into a directory that already holds an adapter.
+    if let Some(from) = &cmd.resume {
+        config.resume.from = Some(from.clone());
+    }
+    if cmd.no_resume {
+        config.resume.auto = false;
+    }
+    if cmd.resume_unfinished {
+        config.resume.allow_unfinished = true;
     }
     Ok(config)
 }
@@ -897,6 +930,9 @@ mod tests {
             tokenizer: None,
             trigger_words: Vec::new(),
             no_metadata: false,
+            resume: None,
+            no_resume: false,
+            resume_unfinished: false,
         }
     }
 

@@ -179,6 +179,19 @@ Three properties a client should rely on, all pinned by tests:
   first `step`. Consumers that measure step timing (the bench harness) ignore
   them for exactly this reason — they never contaminate a measured step.
 
+`warning` carries any non-fatal advisory the trainer wants an operator to see:
+a config that leaves the measured fit envelope, an f16 gradient overflow that
+skipped a step, or — with no ordering guarantee relative to `phase`/`step` — a
+**resume announcement** (#180). A resumed run emits exactly one `warning`
+naming the source it continued, the step it continues *from*, and explicitly
+what was and was **not** restored (AdamW's moments and the loss scale, when a
+`.optim.safetensors` sidecar sits beside the source; never the RNG stream, so
+a resumed run is a continuation and not a bit-identical replay). It carries no
+machine-readable fields by design — a client that needs the step number reads
+it from the `step` events, whose numbering continues rather than restarting.
+Note the consequence for progress: `started.total_steps` is the run's **total**
+target, so a resumed run emits fewer `step` events than that number.
+
 The eighth type is the API-layer terminal event, produced by `loractl-api`
 itself (in `crates/loractl-api/src/state.rs`, not by core) when a run fails —
 whether the trainer returned an error or panicked:
@@ -228,7 +241,11 @@ data: {"type":"finished","adapter_path":"output/lora.safetensors"}
    server-side by `{"type":"warning","message":"unserializable event"}`.
 6. Caveats: run ids are process-local and **not stable across server
    restarts**; two runs sharing the same `output.dir` clobber each other's
-   checkpoints (a pre-existing `TrainConfig` property, not an API one).
+   checkpoints *and each other's `.optim.safetensors` resume sidecars*, and
+   with `resume.auto` on (the default) the second will **continue** the first
+   rather than start over (a pre-existing `TrainConfig` property, not an API
+   one). `resume.from` is confined under the output base exactly as
+   `output.dir` is, so a request cannot name a file outside it.
 7. A run's history is **not retained forever** — see [Run retention](#run-retention).
 
 ## Run retention
