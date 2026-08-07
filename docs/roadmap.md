@@ -101,7 +101,10 @@ VAE, and text encoder were all greenfield in burn.
   pre-norm residuals) and loads Krea-2-Raw's own `text_encoder/` text-only (a
   `^language_model\.` filter drops the vision tower; first 35 decoder layers
   load). `Qwen3VlConditioner` adds the exact chat template + tokenizer and
-  emits the conditioning stack `[b, s, 12, 2560]` + mask the MMDiT consumes.
+  emits the conditioning stack `[b, max_length, 12, 2560]` (512 for Krea 2) +
+  mask the MMDiT consumes — a length the conditioner now guarantees by
+  deriving the template's token lengths from the loaded tokenizer
+  ([#163](https://github.com/laurigates/loractl/issues/163)).
   Proven by staged parity vs transformers on a checked-in tiny fixture
   (including a right-padded row) plus an opt-in real-weights + tokenizer-parity
   proof.

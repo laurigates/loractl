@@ -122,6 +122,12 @@ REAL_PREFIX = (
     "background:<|im_end|>\n<|im_start|>user\n"
 )
 REAL_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
+# The template's token lengths under the real Krea-2-Raw tokenizer. These are
+# the DOCUMENTED values (`REAL_PROMPT_PREFIX_LEN`/`REAL_PROMPT_SUFFIX_LEN` in
+# src/qwen3vl.rs), not the ones this generator uses: since #163 both sides
+# derive the lengths from the tokenizer they loaded, and these are asserted
+# against that derivation below. A transcribed pair on both sides could only
+# ever agree with itself.
 REAL_PREFIX_IDX = 34
 REAL_SUFFIX_START_IDX = 5
 REAL_SELECT_LAYERS = (2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35)
@@ -149,6 +155,27 @@ def real_mode(args):
     model = model.to(torch.float32).eval()
     tokenizer = AutoTokenizer.from_pretrained("krea/Krea-2-Raw", subfolder="tokenizer")
 
+    # #163: measure the template through the tokenizer that was just loaded.
+    # `add_special_tokens=False` mirrors the Rust conditioner's
+    # `encode(.., false)`; the third assert pins that transformers' default
+    # agrees, since the body below is tokenized with the default and the Rust
+    # test compares ids element for element.
+    prefix_len = len(tokenizer(REAL_PREFIX, add_special_tokens=False)["input_ids"])
+    suffix_len = len(tokenizer(REAL_SUFFIX, add_special_tokens=False)["input_ids"])
+    assert prefix_len == REAL_PREFIX_IDX, (
+        f"the real tokenizer now makes {prefix_len} tokens of the template prefix, "
+        f"not the documented {REAL_PREFIX_IDX} — update REAL_PROMPT_PREFIX_LEN "
+        "in src/qwen3vl.rs and say what moved"
+    )
+    assert suffix_len == REAL_SUFFIX_START_IDX, (
+        f"the real tokenizer now makes {suffix_len} tokens of the template suffix, "
+        f"not the documented {REAL_SUFFIX_START_IDX}"
+    )
+    assert len(tokenizer(REAL_SUFFIX)["input_ids"]) == suffix_len, (
+        "this tokenizer adds special tokens by default, so the reference's body "
+        "and the Rust conditioner are tokenizing under different conventions"
+    )
+
     save_dir = os.path.join(args.out, "qwen3vl-real")
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, safe_serialization=True)
@@ -164,7 +191,7 @@ def real_mode(args):
         return_length=False,
         return_overflowing_tokens=False,
         padding="max_length",
-        max_length=REAL_MAX_LENGTH + REAL_PREFIX_IDX - REAL_SUFFIX_START_IDX,
+        max_length=REAL_MAX_LENGTH + prefix_len - suffix_len,
         return_tensors="pt",
     )
     suffix = tokenizer(text=[REAL_SUFFIX], return_tensors="pt")
@@ -178,9 +205,9 @@ def real_mode(args):
             output_hidden_states=True,
         )
     hiddens = torch.stack([out.hidden_states[i] for i in REAL_SELECT_LAYERS], dim=2)[
-        :, REAL_PREFIX_IDX:
+        :, prefix_len:
     ]
-    mask_sliced = mask[:, REAL_PREFIX_IDX:]
+    mask_sliced = mask[:, prefix_len:]
 
     # The conditioning stack is too large for JSON — safetensors carries the
     # tensors; JSON carries the ids/shapes/provenance the Rust test needs.
@@ -203,7 +230,8 @@ def real_mode(args):
                 "input_shape": list(input_ids.shape),
                 "attention_mask": mask.flatten().tolist(),
                 "select_layers": list(REAL_SELECT_LAYERS),
-                "prefix_idx": REAL_PREFIX_IDX,
+                "prefix_len": prefix_len,
+                "suffix_len": suffix_len,
                 "max_length": REAL_MAX_LENGTH,
                 "conditioning_shape": list(hiddens.shape),
                 "safetensors_keys": keys,

@@ -4,8 +4,9 @@
 //! (`krea-ai/krea-2`'s `encoder.py`) is a **frozen Qwen3-VL** multimodal LLM
 //! run **text-only**: tokenize a templated caption, forward the decoder trunk,
 //! and hand the MMDiT a **stack of 12 intermediate hidden states**
-//! (`select_layers = 2, 5, 8, …, 35`) sliced past the 34-token template
-//! prefix. There is *no* fusion stage in the encoder — the MMDiT itself
+//! (`select_layers = 2, 5, 8, …, 35`) sliced past the template prefix (34
+//! tokens under the real tokenizer, but *measured* from the loaded one —
+//! #163). There is *no* fusion stage in the encoder — the MMDiT itself
 //! consumes the 12-layer stack (its config has `txtlayers = 12`,
 //! `txtdim = 2560`).
 //!
@@ -547,19 +548,44 @@ pub struct Qwen3VlConditioner<B: Backend> {
     pub encoder: Qwen3VlEncoder<B>,
     tokenizer: tokenizers::Tokenizer,
     max_length: usize,
+    /// [`PROMPT_PREFIX`] measured through *this* tokenizer at construction
+    /// (#163) — the index the conditioning slice starts at.
+    prefix_len: usize,
+    /// [`PROMPT_SUFFIX`]'s ids, encoded once at construction: they are
+    /// concatenated after the padded body of every row.
+    suffix_ids: Vec<i64>,
+    /// [`PAD_TOKEN`]'s id in *this* tokenizer.
+    pad_id: i64,
 }
 
 /// `encoder.py`'s prompt template, verbatim.
-pub(crate) const PROMPT_PREFIX: &str = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n";
+pub const PROMPT_PREFIX: &str = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n";
 /// The assistant-turn suffix appended (as separately-tokenized ids) *after*
 /// the right-padded body — pad tokens sit between caption and suffix.
-pub(crate) const PROMPT_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n";
-/// Token length of [`PROMPT_PREFIX`]; the conditioning slice starts here.
-pub(crate) const PROMPT_PREFIX_LEN: usize = 34;
-/// Token length of [`PROMPT_SUFFIX`] (folded into the body's pad budget).
-pub(crate) const PROMPT_SUFFIX_LEN: usize = 5;
+pub const PROMPT_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n";
 /// The pad token (Qwen vocabulary).
-pub(crate) const PAD_TOKEN: &str = "<|endoftext|>";
+pub const PAD_TOKEN: &str = "<|endoftext|>";
+
+/// [`PROMPT_PREFIX`]'s token length under the **real** Krea-2-Raw tokenizer,
+/// as transcribed from `encoder.py`.
+///
+/// **Documentation only — not load-bearing.** Until #163 this was the
+/// hardcoded slice offset in [`Qwen3VlConditioner::encode_captions`]; it is
+/// now derived from the tokenizer that was actually loaded
+/// ([`Qwen3VlConditioner::prefix_len`]), so a template or vocabulary change
+/// can no longer silently misalign the conditioning. The constant survives as
+/// the value the opt-in `tests/qwen3vl_real.rs` asserts the real tokenizer
+/// still produces — the only place the claim can be *tested* rather than
+/// assumed, since the real Qwen vocabulary is a multi-GB download.
+pub const REAL_PROMPT_PREFIX_LEN: usize = 34;
+/// [`PROMPT_SUFFIX`]'s token length under the **real** Krea-2-Raw tokenizer.
+///
+/// Same status as [`REAL_PROMPT_PREFIX_LEN`]: documentation, asserted by the
+/// opt-in real test. `encoder.py` spends this number as the *suffix start
+/// index* subtracted from the body's pad budget, never as a slice length;
+/// deriving both from `suffix_ids.len()` is the claim that the two coincide,
+/// which is exactly what makes the emitted length equal `max_length`.
+pub const REAL_PROMPT_SUFFIX_LEN: usize = 5;
 
 impl<B: Backend> Qwen3VlConditioner<B> {
     /// Wrap a loaded encoder with the tokenizer at `tokenizer_json`
@@ -572,31 +598,81 @@ impl<B: Backend> Qwen3VlConditioner<B> {
     ) -> anyhow::Result<Self> {
         let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_json)
             .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
+        // #163: measure the template through the tokenizer that was just
+        // loaded instead of trusting the 34/5 transcribed from `encoder.py`.
+        // The prefix length cancels out of the emitted length (`+prefix` in
+        // the body budget, `-prefix` in the slice), so a wrong value used to
+        // produce a right-shaped stack whose leading positions were still
+        // template text — a failure no shape assertion could see. Measured on
+        // the checked-in stub tokenizer, the transcribed pair was already
+        // wrong (36/7, not 34/5), leaving two template tokens ahead of every
+        // caption in the offline tiny-krea2 path.
+        let prefix_len = tokenizer
+            .encode(PROMPT_PREFIX, false)
+            .map_err(|e| anyhow::anyhow!("tokenizing the template prefix: {e}"))?
+            .get_ids()
+            .len();
+        let suffix_ids: Vec<i64> = tokenizer
+            .encode(PROMPT_SUFFIX, false)
+            .map_err(|e| anyhow::anyhow!("tokenizing the template suffix: {e}"))?
+            .get_ids()
+            .iter()
+            .map(|&i| i as i64)
+            .collect();
+        // Resolved here rather than per-batch so an unusable tokenizer fails
+        // at construction, where the path that named it is still in scope.
+        let pad_id = tokenizer
+            .token_to_id(PAD_TOKEN)
+            .ok_or_else(|| anyhow::anyhow!("tokenizer lacks the {PAD_TOKEN} pad token"))?
+            as i64;
+        // With the lengths derived, `body_len` below is no longer a
+        // compile-time constant, so a tokenizer whose suffix outruns the
+        // caption budget would underflow its usize subtraction.
+        // `max_length >= suffix_len` is exactly `body_len >= prefix_len`:
+        // the padded body still has room for the template it starts with.
+        anyhow::ensure!(
+            max_length >= suffix_ids.len(),
+            "max_length {max_length} is below the {} template-suffix tokens this tokenizer emits",
+            suffix_ids.len()
+        );
         Ok(Self {
             encoder,
             tokenizer,
             max_length,
+            prefix_len,
+            suffix_ids,
+            pad_id,
         })
+    }
+
+    /// [`PROMPT_PREFIX`]'s length in tokens of the **loaded** tokenizer — the
+    /// index [`encode_captions`](Self::encode_captions) slices the
+    /// conditioning at ([`REAL_PROMPT_PREFIX_LEN`] for the real Krea 2
+    /// tokenizer).
+    pub fn prefix_len(&self) -> usize {
+        self.prefix_len
+    }
+
+    /// [`PROMPT_SUFFIX`]'s length in tokens of the **loaded** tokenizer
+    /// ([`REAL_PROMPT_SUFFIX_LEN`] for the real Krea 2 tokenizer).
+    pub fn suffix_len(&self) -> usize {
+        self.suffix_ids.len()
     }
 
     /// Tokenize captions through the template exactly like the reference:
     /// `prefix + caption` truncated/right-padded to
-    /// `max_length + PREFIX_LEN - SUFFIX_LEN`, then the suffix ids
-    /// concatenated *after* the padding. Returns `(ids, mask)` as row-major
-    /// `[b, s]` vectors.
+    /// [`max_length + prefix_len - suffix_len`](Self::prefix_len), then the
+    /// suffix ids concatenated *after* the padding. Returns `(ids, mask)` as
+    /// row-major `[b, s]` vectors.
+    ///
+    /// `s == max_length + prefix_len` by construction (#163), which is the
+    /// whole point of deriving the two lengths: whatever the tokenizer does
+    /// with the template, [`encode_captions`](Self::encode_captions)'s slice
+    /// past the prefix is exactly `max_length` positions.
     pub fn tokenize(&self, captions: &[&str]) -> anyhow::Result<(Vec<i64>, Vec<i64>, [usize; 2])> {
-        let body_len = self.max_length + PROMPT_PREFIX_LEN - PROMPT_SUFFIX_LEN;
-        let pad_id = self
-            .tokenizer
-            .token_to_id(PAD_TOKEN)
-            .ok_or_else(|| anyhow::anyhow!("tokenizer lacks the {PAD_TOKEN} pad token"))?
-            as i64;
-
-        let suffix = self
-            .tokenizer
-            .encode(PROMPT_SUFFIX, false)
-            .map_err(|e| anyhow::anyhow!("tokenizing suffix: {e}"))?;
-        let suffix_ids: Vec<i64> = suffix.get_ids().iter().map(|&i| i as i64).collect();
+        let suffix_ids = &self.suffix_ids;
+        let pad_id = self.pad_id;
+        let body_len = self.max_length + self.prefix_len - suffix_ids.len();
 
         let s = body_len + suffix_ids.len();
         let mut ids = Vec::with_capacity(captions.len() * s);
@@ -612,7 +688,7 @@ impl<B: Backend> Qwen3VlConditioner<B> {
             let live = row.len();
             row.resize(body_len, pad_id);
             ids.extend_from_slice(&row);
-            ids.extend_from_slice(&suffix_ids);
+            ids.extend_from_slice(suffix_ids);
             mask.extend(std::iter::repeat_n(1i64, live));
             mask.extend(std::iter::repeat_n(0i64, body_len - live));
             mask.extend(std::iter::repeat_n(1i64, suffix_ids.len()));
@@ -620,9 +696,12 @@ impl<B: Backend> Qwen3VlConditioner<B> {
         Ok((ids, mask, [captions.len(), s]))
     }
 
-    /// Captions → the conditioning stack
-    /// `[b, s - PREFIX_LEN, n_select, hidden]` plus the matching sliced 0/1
-    /// mask `[b, s - PREFIX_LEN]` the MMDiT consumes.
+    /// Captions → the conditioning stack `[b, max_length, n_select, hidden]`
+    /// plus the matching sliced 0/1 mask `[b, max_length]` the MMDiT
+    /// consumes. The slice starts at [`prefix_len`](Self::prefix_len), so the
+    /// first emitted position is the first *caption* token for any tokenizer
+    /// (#163), and the emitted length is `max_length` by construction —
+    /// which is what ADR-0008's 512-text-token sizing assumes.
     pub fn encode_captions(
         &self,
         captions: &[&str],
@@ -633,8 +712,8 @@ impl<B: Backend> Qwen3VlConditioner<B> {
         let mask = Tensor::<B, 2, Int>::from_data(TensorData::new(mask, [b, s]), device);
         let conditioning = self
             .encoder
-            .forward_conditioning(ids, mask.clone(), PROMPT_PREFIX_LEN);
-        let mask_sliced = mask.narrow(1, PROMPT_PREFIX_LEN, s - PROMPT_PREFIX_LEN);
+            .forward_conditioning(ids, mask.clone(), self.prefix_len);
+        let mask_sliced = mask.narrow(1, self.prefix_len, s - self.prefix_len);
         Ok((conditioning, mask_sliced))
     }
 }

@@ -281,6 +281,16 @@ const SCALE_GROWTH_INTERVAL: u32 = 50;
 /// the same `base`), so their caches are interchangeable — and the emitted
 /// strings stay byte-identical to the pre-M15 `{variant:?}`-derived form,
 /// keeping existing caches valid.
+///
+/// It deliberately does **not** encode the caption template's token offsets,
+/// which #163 turned from hardcoded constants into values derived from the
+/// loaded tokenizer. For the real variants that is a no-op — the opt-in
+/// `tests/qwen3vl_real.rs` pins that the real tokenizer still yields the
+/// historical 34/5 — so bumping the marker would invalidate large, expensive
+/// caches for nothing. The offline `tinykrea2` stub *does* move (its
+/// `Whitespace` pre-tokenizer makes 36/7 of the template), so a pre-#163
+/// `.loractl-cache/` on that path must be deleted; every test stages the
+/// dataset into a temp dir, so none carry one.
 pub fn encoder_fingerprint(variant: ModelVariant, max_length: usize) -> String {
     let arch = match variant {
         ModelVariant::Krea2 | ModelVariant::Krea2Turbo => "krea2",
