@@ -211,6 +211,14 @@ echo "  disk:    ${free_gib} GiB free"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${OUT:-tmp/residency-matrix/$STAMP}"
 mkdir -p "$OUT"
+# ABSOLUTE from here on. Every arm runs with cwd set to its worktree, so a
+# relative path in the rendered config resolves against the wrong tree. This is
+# not hypothetical and it does not fail cleanly: figment's `Format::file()`
+# searches PARENT directories, so a relative config path is still found by
+# walking up from the worktree to the repo root -- while `dataset.path`, read by
+# a plain `read_dir`, is not. The 2026-08-07 run lost all eight arms to exactly
+# that split (config loaded, dataset ENOENT).
+OUT="$(cd "$OUT" && pwd)"
 SUMMARY="$OUT/summary.txt"
 
 # Shared target dir so the two worktrees do not each build burn/cubecl from
@@ -237,6 +245,23 @@ encode_wall() {
 
 # `peak_mib=` from the greppable STEP_PROBE_SUMMARY line.
 probe_peak() { sed -n 's/.*peak_mib=\([0-9]*\).*/\1/p' "$1" | tail -1; }
+
+# Did the arm actually run its steps? `yes` only when STEP_PROBE_SUMMARY reports
+# steps=N/N with N > 0.
+#
+# THIS IS THE GUARD THAT STOPS THE HARNESS LYING. step_probe prints its summary
+# on FAILURE too (deliberately -- a partial run is the measurement when a config
+# OOMs), so a run that died before step 1 still emits a well-formed
+# `peak_mib=<baseline>`. Without this check the verdict logic saw four non-empty
+# peaks, computed a slope over four baselines, and printed
+# `STATUS=COMPLETE ... SLOPE=0.00` -- the exact shape of a clean pass, from a
+# matrix in which nothing ran at all. Observed 2026-08-07 across all eight arms.
+probe_steps_ok() {
+    local s
+    s="$(sed -n 's/.*STEP_PROBE_SUMMARY.* steps=\([0-9]*\)\/\([0-9]*\) .*/\1 \2/p' "$1" | tail -1)"
+    [ -n "$s" ] || { echo no; return; }
+    awk -v a="${s% *}" -v b="${s#* }" 'BEGIN { print (a > 0 && a == b) ? "yes" : "no" }'
+}
 
 # The last `vram peak so far:` ratchet. Recorded for EVERY arm, because on a
 # genuine OOM the process aborts before the summary prints and this is then the
@@ -318,6 +343,10 @@ for side in before after; do
         run_arm "$worktree" step_probe "$side-$size-cold" "$cfg"
         run_arm "$worktree" step_probe "$side-$size-warm" "$cfg"
 
+        # Recorded BEFORE the numbers, so a reader sees whether the arm ran
+        # before seeing anything derived from it.
+        kv "ARM_OK_${side}_${size}_cold" "$(probe_steps_ok "$OUT/$side-$size-cold.log")"
+        kv "ARM_OK_${side}_${size}_warm" "$(probe_steps_ok "$OUT/$side-$size-warm.log")"
         kv "ENCODE_WALL_S_${side}_${size}" "$(encode_wall "$OUT/$side-$size-cold.log")"
         kv "PEAK_MIB_${side}_${size}" "$(probe_peak "$OUT/$side-$size-warm.log")"
         kv "RATCHET_MIB_${side}_${size}" "$(probe_ratchet "$OUT/$side-$size-warm.log")"
@@ -342,7 +371,17 @@ before_large="$(sed -n 's/^PEAK_MIB_before_large=//p' "$SUMMARY" | tail -1)"
 after_small="$(sed -n 's/^PEAK_MIB_after_small=//p' "$SUMMARY" | tail -1)"
 after_large="$(sed -n 's/^PEAK_MIB_after_large=//p' "$SUMMARY" | tail -1)"
 
-if [ -n "$before_small$before_large$after_small$after_large" ] &&
+# A peak is only a measurement if its arm completed its steps. Requiring
+# `steps=N/N` is what separates "the fix works" from "nothing ran" -- both of
+# which otherwise present as four well-formed peaks and a 0.00 slope.
+arms_ok=1
+for side in before after; do
+    for size in small large; do
+        [ "$(sed -n "s/^ARM_OK_${side}_${size}_warm=//p" "$SUMMARY" | tail -1)" = yes ] || arms_ok=0
+    done
+done
+
+if [ "$arms_ok" -eq 1 ] &&
    [ -n "$before_small" ] && [ -n "$before_large" ] &&
    [ -n "$after_small" ] && [ -n "$after_large" ]; then
     kv "PEAK_SLOPE_MIB_PER_EXAMPLE_before" \
@@ -353,10 +392,13 @@ if [ -n "$before_small$before_large$after_small$after_large" ] &&
             'BEGIN { printf "%.2f", (b - a) / (m - n) }')"
     kv "STATUS" "COMPLETE"
 else
-    # A missing peak is usually an OOM abort on a `before` arm, which is the
-    # #175 bug demonstrating itself. Say so rather than print a slope over a
-    # hole -- the last `vram peak so far` ratchet in that arm's log is the
-    # measurement in that case.
+    # No slope is printed here ON PURPOSE. An incomplete arm most often means
+    # either a harness fault (nothing ran) or an OOM abort on a `before` arm --
+    # the latter being the #175 bug demonstrating itself, whose measurement is
+    # the last `vram peak so far` ratchet in that arm's log, not a slope.
+    # Emitting a number over a hole is how a failed matrix reads as a pass.
+    echo "arms that did not complete their steps:"
+    grep -E '^ARM_OK_.*=no$' "$SUMMARY" || echo "  (none -- a peak was missing instead)"
     kv "STATUS" "INCOMPLETE_SEE_LOGS"
 fi
 
