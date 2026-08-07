@@ -24,6 +24,14 @@ model:
   denoiser: diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
   text_encoder: text_encoders/qwen/qwen3vl_4b_fp8_scaled.safetensors
   vae: vae/qwen/qwen_image_vae.safetensors
+  # Pinned explicitly so the matrix is hermetic. A ComfyUI layout ships no
+  # tokenizer, so without this the trainer falls back to fetching one from
+  # `krea/Krea-2-Raw` -- which is now GATED (`gated: "auto"`, verified
+  # 2026-08-07; `hf.rs` still calls it ungated). That fetch 401s, and it does
+  # so ~9 minutes in, AFTER the 4.9 GiB text encoder has loaded, once per arm.
+  # An override naming a missing file is a hard error rather than a silent
+  # fetch, which is the behaviour a measurement wants.
+  tokenizer: "@TOKENIZER@"
 
 dataset:
   path: "@DATASET@"

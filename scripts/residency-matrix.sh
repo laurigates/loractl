@@ -95,6 +95,7 @@ while [ $# -gt 0 ]; do
         --small) N_SMALL="$2"; shift 2 ;;
         --large) N_LARGE="$2"; shift 2 ;;
         --models-root) MODELS_ROOT="$2"; shift 2 ;;
+        --tokenizer) TOKENIZER="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --stop-service) STOP_SERVICE="$2"; shift 2 ;;
         --free-endpoint) FREE_ENDPOINT="$2"; shift 2 ;;
@@ -131,6 +132,42 @@ done <<EOF
 $(grep -oE '(diffusion_models|text_encoders|vae)/[^ ]+\.safetensors' "$TEMPLATE" | sort -u)
 EOF
 [ "$missing" -eq 0 ] || die "one or more checkpoints are missing under $MODELS_ROOT"
+
+# Resolve the Qwen3-VL tokenizer up front, and refuse without one.
+#
+# A ComfyUI layout ships no tokenizer, so the trainer would fall back to
+# fetching it from `krea/Krea-2-Raw` -- gated since at least 2026-08-07, so the
+# fetch 401s. It does so AFTER loading the 4.9 GiB text encoder, ~9 minutes
+# into each arm, which is how the 2026-08-07 run burned eight arms discovering
+# the same thing eight times. Checking a hash here costs milliseconds.
+#
+# `hf.rs` pins the file's SHA-256, so ANY byte-identical copy is provably the
+# right tokenizer -- there is no "is this the correct one?" judgement to make.
+# That is why this verifies the hash rather than trusting a path.
+TOKENIZER_SHA256="be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506"
+if [ -z "${TOKENIZER:-}" ]; then
+    # Portable locations only -- `hf.rs::cache_dir` writes to $HF_HOME/loractl,
+    # else $XDG_CACHE_HOME/loractl, else ~/.cache/loractl. A copy anywhere else
+    # is what `--tokenizer` is for; a host-specific path does not belong in a
+    # committed script.
+    for cand in \
+        "${HF_HOME:-}/loractl/qwen3vl-4b-tokenizer.json" \
+        "${XDG_CACHE_HOME:-}/loractl/qwen3vl-4b-tokenizer.json" \
+        "$HOME/.cache/loractl/qwen3vl-4b-tokenizer.json" \
+        "$MODELS_ROOT/tokenizer/tokenizer.json"; do
+        [ -f "$cand" ] || continue
+        [ "$(sha256sum "$cand" | cut -d' ' -f1)" = "$TOKENIZER_SHA256" ] || continue
+        TOKENIZER="$cand"
+        break
+    done
+fi
+[ -n "${TOKENIZER:-}" ] || die "no Qwen3-VL tokenizer found matching the pinned SHA-256.
+  loractl fetches it from krea/Krea-2-Raw, which is now GATED -- accept the terms at
+  https://huggingface.co/krea/Krea-2-Raw and re-run, or pass --tokenizer <path> to a
+  copy whose sha256 is $TOKENIZER_SHA256"
+[ "$(sha256sum "$TOKENIZER" | cut -d' ' -f1)" = "$TOKENIZER_SHA256" ] \
+    || die "--tokenizer $TOKENIZER does not match the pinned SHA-256 $TOKENIZER_SHA256"
+TOKENIZER="$(cd "$(dirname "$TOKENIZER")" && pwd)/$(basename "$TOKENIZER")"
 
 command -v cargo >/dev/null || die "cargo not on PATH"
 command -v nvidia-smi >/dev/null || die "nvidia-smi not on PATH -- this matrix needs the GPU host"
@@ -205,6 +242,7 @@ echo "  after:   $AFTER_REV ($AFTER_SHA)"
 echo "  dataset: $DATASET_KEY, arms of $N_SMALL and $N_LARGE examples"
 echo "  gpu:     ${gpu_used} MiB used of ${gpu_total} MiB"
 echo "  disk:    ${free_gib} GiB free"
+echo "  tokenizer: $TOKENIZER (sha256 verified)"
 
 [ "$DRY_RUN" -eq 1 ] && { echo "STATUS=DRY_RUN_OK"; exit 0; }
 
@@ -278,6 +316,7 @@ render_config() {
     local dataset="$1" outdir="$2" dest="$3"
     sed -e "s|@MODELS_ROOT@|$MODELS_ROOT|g" \
         -e "s|@DATASET@|$dataset|g" \
+        -e "s|@TOKENIZER@|$TOKENIZER|g" \
         -e "s|@OUT@|$outdir|g" \
         "$TEMPLATE" > "$dest"
 }
