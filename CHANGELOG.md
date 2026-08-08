@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.0](https://github.com/laurigates/loractl/compare/v0.19.1...v0.20.0) (2026-08-08)
+
+
+### Features
+
+* **bench:** harness for the two on-box acceptance criteria PR [#197](https://github.com/laurigates/loractl/issues/197) could not claim ([c192d16](https://github.com/laurigates/loractl/commit/c192d16c11d88b85ae6bd08f87dd6289ac4e38ed))
+
+
+### Bug Fixes
+
+* **bench:** absolute paths per arm, and refuse to score a matrix that never ran ([de5c6d8](https://github.com/laurigates/loractl/commit/de5c6d88d58e598e24cd84ce283cd74429fc3b48))
+* **bench:** encode phases interleave — the wall-time extractor measured 17ms of a 78min phase ([d45f295](https://github.com/laurigates/loractl/commit/d45f295f317286dc5c2e539a009f66850116ce41))
+* **bench:** pin the tokenizer per arm — krea/Krea-2-Raw is gated now ([260c53f](https://github.com/laurigates/loractl/commit/260c53f8db69bab3d48e1c3d03083cb324c6622f))
+* **core:** explicit resume, a measured-fit advisory, and tokenizer-derived caption lengths ([#199](https://github.com/laurigates/loractl/issues/199)) ([073f23b](https://github.com/laurigates/loractl/commit/073f23b1b8e24cc95a0db37e1ec32ac7689d9d30))
+
 ## [0.19.1](https://github.com/laurigates/loractl/compare/v0.19.0...v0.19.1) (2026-08-04)
 
 
