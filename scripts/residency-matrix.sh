@@ -22,11 +22,25 @@
 #         bench arm is what stops that trade being assumed rather than paid.
 #
 #   #178  "Cold-cache encode-phase wall time before/after (>=40 images)"
-#         Bracketed by the `encode` phase events the trainer already emits --
-#         stdout is line-timestamped here, so no Rust change is needed to time
-#         it. Note the encode report is emitted BEFORE each entry is processed
-#         (dataset.rs::DatasetProgress), so the phase ENDS at the first
-#         non-encode line, not at the last encode line.
+#         RECORDED BUT NOT INFORMATIVE, and the criterion should be re-scoped
+#         rather than believed. Measured on this box 2026-08-07: encode work
+#         runs ~8.5 min/image (the 4B text encoder), while the decode + Lanczos
+#         resize that #178 parallelized is ~36 ms/image -- 0.007% of the phase.
+#         No decode speedup, however large, is separable from run-to-run noise
+#         at that ratio. The decode fraction needs its own probe.
+#
+# COST, measured rather than guessed (RTX 4090, 512px, int4):
+#
+#   cold arm  ~8.5 min/image  + ~10 min of lazy model loads
+#   warm arm  ~1.8 min        <- the #175 measurement itself is CHEAP
+#
+# So essentially all the wall time is cache fill, and a 56-image pair of sides
+# is ~19 h. Before scaling this up, consider that the encode cache is
+# shareable between the two revisions: the key format is byte-identical across
+# them and the expensive half (conditioning) is keyed
+# `{stem}.{fingerprint}.cond` with NO bucket, so it hits even if bucket
+# assignment differs. Encoding once and pointing both sides at it roughly
+# halves the run.
 #
 # WHAT IT DOES NOT MEASURE
 #
@@ -271,13 +285,50 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 # makes the encode phase timeable without touching the trainer.
 stamp() { while IFS= read -r line; do printf '%s %s\n' "$(date +%s.%N)" "$line"; done; }
 
-# Wall seconds spanned by the `encode` phase in a stamped log: from the first
-# encode report to the first line after the phase. Empty when the phase never
-# appeared (a fully warm cache reports no encode work).
+# Wall seconds spanned by the `encode` phase, first encode report to the first
+# `dataset:` report (the phase that strictly follows it).
+#
+# The obvious definition -- "ends at the first non-encode line" -- is WRONG, and
+# wrong in a way that reads as a plausible number rather than an error. Phases
+# INTERLEAVE: the VAE and text encoder are loaded lazily from inside the encode
+# phase, so the real sequence is
+#     encode: scanning ... | load: VAE | load: text encoder | encode: 1/N | ...
+# and the naive rule terminated the phase at the `load: VAE` line 17 ms in,
+# reporting 0.0 s for a phase that actually ran 78 minutes (observed
+# 2026-08-07). `dataset:` is the correct terminator because reading the prepared
+# cache back cannot begin until every entry is encoded.
+# How many entries were actually ENCODED (as opposed to served from cache). The
+# phase reports `encode: encoding <name>` on a miss and `encode: cached <name>`
+# on a hit, so this is also the direct on-hardware evidence for #175's
+# "warm-epoch no-encoder guarantee" box: a warm arm must report 0.
+encoded_count() { grep -c ' encode: encoding ' "$1" || true; }
+
 encode_wall() {
+    # Empty when nothing was encoded. A warm arm still opens the phase to scan
+    # the directory and check cache keys (~0.6 s for 8 entries), and reporting
+    # that as "encode wall" would invite comparing it against a cold arm's
+    # minutes-per-image as though they measured the same thing.
+    [ "$(encoded_count "$1")" -gt 0 ] || return 0
     awk '
-        !seen && $0 ~ / encode: / { seen = 1; start = $1; next }
-        seen && $0 !~ / encode: / && !done { printf "%.1f", $1 - start; done = 1; exit }
+        !start && $0 ~ / encode: / { start = $1 }
+        start && $0 ~ / dataset: / { printf "%.1f", $1 - start; exit }
+    ' "$1"
+}
+
+# Wall seconds of encode WORK only -- from the last lazy `load:` inside the
+# phase to its end. The difference from encode_wall is the model-load cost,
+# which is a fixed ~10 min on this stack and identical on both sides, so it
+# dilutes a before/after comparison without informing it.
+#
+# Neither of these can answer #178. Measured 2026-08-07: encode work runs
+# ~8.5 min/image (4B text encoder), while the decode+resize this phase's
+# parallelization targets is ~36 ms/image -- 0.007% of the span. The decode
+# fraction needs its own probe; see the note on issue #178.
+encode_work() {
+    awk '
+        $0 ~ / load: / && !ended { lastload = $1 }
+        lastload && $0 ~ / encode: / && !first { first = $1 }
+        first && $0 ~ / dataset: / { printf "%.1f", $1 - first; ended = 1; exit }
     ' "$1"
 }
 
@@ -387,6 +438,10 @@ for side in before after; do
         kv "ARM_OK_${side}_${size}_cold" "$(probe_steps_ok "$OUT/$side-$size-cold.log")"
         kv "ARM_OK_${side}_${size}_warm" "$(probe_steps_ok "$OUT/$side-$size-warm.log")"
         kv "ENCODE_WALL_S_${side}_${size}" "$(encode_wall "$OUT/$side-$size-cold.log")"
+        kv "ENCODE_WORK_S_${side}_${size}" "$(encode_work "$OUT/$side-$size-cold.log")"
+        kv "ENCODED_COUNT_${side}_${size}_cold" "$(encoded_count "$OUT/$side-$size-cold.log")"
+        # Must be 0 -- the warm-epoch no-encoder guarantee, measured on hardware.
+        kv "ENCODED_COUNT_${side}_${size}_warm" "$(encoded_count "$OUT/$side-$size-warm.log")"
         kv "PEAK_MIB_${side}_${size}" "$(probe_peak "$OUT/$side-$size-warm.log")"
         kv "RATCHET_MIB_${side}_${size}" "$(probe_ratchet "$OUT/$side-$size-warm.log")"
         kv "EXAMPLES_${side}_${size}" "$n"
