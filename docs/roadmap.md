@@ -331,11 +331,122 @@ GPU (ComfyUI holding 17.6 GB of the card while idle) surfaced as
 surfaced as `ld terminated with signal 7 [Bus error]`. Both are now preflighted
 in `gpu.yml`.
 
+## Caption-template lengths are derived, not transcribed (#163, 2026-08-07)
+
+M10's conditioner wrapped every caption in Krea 2's chat template and then
+sliced the template back off using two **hardcoded** lengths — 34 prefix
+tokens, 5 suffix tokens — transcribed from the reference encoder and checked by
+nothing. `Qwen3VlConditioner::new` now encodes `PROMPT_PREFIX` and
+`PROMPT_SUFFIX` through the tokenizer it has just loaded and keeps the result
+(`crates/loractl-core/src/qwen3vl.rs`), so the body budget and the slice offset
+are the *same* derived value rather than two literals that can disagree.
+
+- **Both failure modes become unrepresentable, not merely unlikely.** The
+  emitted length is `max_length` by construction (`s = max_length +
+  prefix_len`), and the slice offset is the value that budget was computed
+  from, so a right-shaped-but-shifted stack cannot be produced.
+  `tests/qwen3vl_template_length.rs` pins both over two tokenizers ×
+  `max_length ∈ {8, 16, 33}`. Five kill-tests were run and reverted; the one
+  that matters is a **shape-preserving** off-by-one, which every `dims()` check
+  passes and only the mask-content assertions catch.
+- **The offline path was already wrong, not merely unprotected.** Measured, not
+  inferred: the checked-in tiny-krea2 stub tokenizer makes **36/7** of the same
+  template, so every offline tiny run had been feeding the MMDiT two leftover
+  template tokens ahead of the caption. The tiny path's conditioning length
+  moves 18 → 16 and its loss values move with it; nothing pinned the old
+  numbers, and they should not be restored.
+- **The 34/5 claim is still not verifiable offline, deliberately.** Checking the
+  numbers needs the real Qwen BPE vocabulary; the always-run tests pin the
+  *invariant* instead. The opt-in `tests/qwen3vl_real.rs` asserts the derived
+  pair equals both the golden's and the documented `(34, 5)`, and
+  `reference/qwen3vl_reference.py` derives them from the real tokenizer and
+  hard-asserts them before writing the golden — a transcribed pair drifts
+  silently, a derived one fails loud. **That golden has to be regenerated
+  before this is proven** (`just qwen3vl-real-reference && just
+  test-qwen3vl-real`, network + GPU box): it gained `prefix_len`/`suffix_len`
+  fields the old file does not carry.
+- **The encoder cache fingerprint was bumped** (`enc32` → `enc32-t2`,
+  `diffusion_trainer.rs::encoder_fingerprint`) because the change provably
+  moves the conditioning the tiny path produces while the cache reader
+  validated only tensor *rank* — a warm pre-#163 `.loractl-cache/` would have
+  been accepted and trained on the old alignment with no error and no shape
+  mismatch. Belt-and-braces beside it: `src/cache_guard.rs` refuses any cached
+  stack whose length is not the variant's `max_length`, which is also the only
+  thing that catches a half-warm cache mixing two alignments inside one run.
+  Both `prepare_dataset` call sites are wired to it; `dataset.rs` is untouched.
+
+The residual assumption, stated rather than fixed: the slice lands on the first
+caption token only if `encode(prefix ++ caption)` begins with `encode(prefix)`.
+Nothing enforces that — `tokenize` encodes the joint string while `prefix_len`
+is measured on the prefix alone. It holds for every tokenizer in the repo
+(captions are trimmed and `PROMPT_PREFIX` ends in a newline that closes the
+pre-tokenizer), and it is recorded at the two places a reader would ask.
+
+## The measured fit envelope is advisory, not enforced (#179, 2026-08-07)
+
+Everything this repo says about a Krea 2 step *fitting* says it about one
+point: 512px, int4, block-level gradient checkpointing, 24 GB RTX 4090, 19.4 GB
+peak (ADR-0005 Addendum 3, corroborated to ~1% by #110's `vram_peak_mib=19691`
+above). Every other resolution is arithmetic. Nothing checked a config against
+that, so a `resolution: 1024` edit — one line, no flag — bought a 3× trunk
+sequence and found out at OOM time, minutes into an encode phase.
+
+`crates/loractl-core/src/envelope.rs` is the check, and it is **advisory, never
+fatal**: a large resolution is legal, merely unmeasured. It emits one
+`TrainEvent::Warning` — no new variant, so no wire-contract change — naming
+what changes and by how much, then handing over to `just step-probe`.
+
+- **It says what moved, never a predicted peak.** For 1024px + int4 it names
+  the trunk sequence at both resolutions (4608 vs 1536), the retained
+  block-input set at both (~1.06 GB → ~3.17 GB at batch 1, reproducing
+  ADR-0008's table), labels them **derived**, and quotes the 19.4 GB as an
+  anchor with its two still-open ambiguities (GB-vs-GiB, total-vs-above-
+  baseline) attached. Restating an inference as a measurement is the thing
+  ADR-0005's provenance sweep exists to prevent.
+- **The second half is dataset residency**, the fit finding ADR-0010 recorded
+  and the memory work had not accounted for: `prepare_dataset` keeps every
+  example's conditioning device-resident for the whole run at a fixed 60 MiB
+  (`[1, 512, 12, 2560]` f32 — derived from `select_layers`' 12 entries ×
+  2560 × 512 × 4 B, exactly ADR-0010 ledger #5), so 49 images pin 2.87 GiB
+  against ~4 GB of headroom.
+- **The token derivation is now shared, not copied.** `mmdit::token_geometry`
+  plus `mmdit::SEQUENCE_PAD` are the single home of `resolution / compression /
+  patch` and the pad-to-256; `bench::StepWork::for_config` was switched onto
+  it, and the bench's own three pre-existing tests are the behaviour-preserving
+  proof (they fail when `token_geometry` is sabotaged). `token_geometry`
+  deliberately has **no `max(1)` clamp** — the bench relies on seeing a derived
+  `0` to refuse a degenerate denominator rather than print `tok_s=0.0000` as if
+  it were a measurement.
+- **It is delivered before the phase it warns about.** The advisory is emitted
+  ahead of the first `encode` phase event, and so ahead of the ~16 GB text
+  encoder, the VAE, every image decode, the MMDiT load and step 1
+  (`diffusion_trainer.rs::encode_phase`, pinned by
+  `the_fit_advisory_reaches_the_sink_before_the_encode_phase`). It costs one
+  extra dataset scan — image headers and caption files, no decode — against a
+  phase that costs minutes per cache miss.
+- **Not noise.** One message, never a list. It is gated on the real Krea 2
+  variants (the tiny fixture never fires), on `quant != none`, on `> 512` and
+  not `>=`, and the residency half additionally on a non-`ndarray` backend. A
+  test enumerates `config/examples/*.yaml` from the directory — rather than a
+  hand-picked quiet subset — and asserts every shipped 512px example stays
+  silent. There is deliberately **no knob to silence it**: a switch on an
+  advisory is an invitation to turn it off.
+
+Consciously not done: the eight lines of emit glue are exercised by one
+integration test on the real `encode_phase`, but the pure function under it
+carries the rest of the coverage, and 12 kill-tests were run and reverted
+against it. `RESIDENCY_ADVISORY_MIB = 2048` is a **judgement call, not a
+measurement** — half the ~4 GB headroom read as GiB, tripping at ~35 examples
+against ADR-0010's ~65-example exhaustion — and it is pinned in both directions
+so it cannot drift unnoticed.
+
 ## Explicit, lossless resume (#180, 2026-08-07)
 
 Resume on the diffusion path used to be implicit and lossy: the only trigger was
 "the final artifact happens to exist in `output.dir`", the step counter restarted
-at 1, and AdamW re-warmed its moments from zero.
+at 1, and AdamW re-warmed its moments from zero. The decisions below — and the
+alternatives they were chosen over — are
+[ADR-0012](adrs/0012-diffusion-resume-semantics.md).
 
 - **The trigger is named.** `resume: { from, auto, allow_unfinished }`
   (`crates/loractl-core/src/config.rs`), with `--resume` / `--no-resume` /

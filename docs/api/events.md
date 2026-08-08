@@ -182,7 +182,19 @@ Three properties a client should rely on, all pinned by tests:
 `warning` carries any non-fatal advisory the trainer wants an operator to see:
 a config that leaves the measured fit envelope, an f16 gradient overflow that
 skipped a step, or — with no ordering guarantee relative to `phase`/`step` — a
-**resume announcement** (#180). A resumed run emits exactly one `warning`
+**resume announcement** (#180).
+
+The **fit-envelope advisory** (#179) is the one warning with an ordering
+guarantee, because its whole value is being early: on the diffusion path it is
+emitted *before* the run's first `encode` phase event, and so before the text
+encoder and VAE load, before any image is decoded, and long before the MMDiT.
+It fires when a config leaves the one configuration this repo has measured
+(512px, int4, block-level gradient checkpointing) — naming the derived trunk
+sequence at both resolutions, the retained block-input set at both, and `just
+step-probe` — or when the dataset's device-resident conditioning is large
+enough to matter on its own. It is exactly one `warning` however many of those
+apply, it is advisory rather than a refusal, and there is deliberately no
+config key to suppress it. A resumed run emits exactly one `warning`
 naming the source it continued, the step it continues *from*, and explicitly
 what was and was **not** restored (AdamW's moments and the loss scale, when a
 `.optim.safetensors` sidecar sits beside the source *and records the same step

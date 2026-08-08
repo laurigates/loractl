@@ -319,6 +319,14 @@ for the configuration it holds for and what it does not license. It is **not**
 comparable to other trainers' published `s/it`: a step time belongs to the
 model and config, not the trainer.
 
+**512px is the only point any of that was measured at.** A config that leaves
+it — a larger `dataset.resolution`, or a dataset big enough that its cached
+conditioning alone eats the headroom — now gets one warning *before* the encode
+phase, naming what changed and by how much (the trunk sequence at both
+resolutions, the retained block inputs at both) and pointing at `just
+step-probe`. It is advisory, not a refusal: a large resolution is legal, merely
+unmeasured. There is no knob to silence it.
+
 ## Observability (GlitchTip / Sentry)
 
 `loractl` reports errors and panics to a [GlitchTip](https://glitchtip.com) /
