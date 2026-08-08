@@ -353,31 +353,58 @@ fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
         "the rerun must hit the cache, not re-encode it"
     );
 
-    // Resume: re-running against run 1's output dir loads the existing
-    // adapter (announced via a Warning) and continues from it — the loss
-    // stream must DIFFER from the fresh-start stream (the adapters no
-    // longer begin at B = 0), and the export must stay loadable.
+    // Resume (#180): re-running against run 1's output dir loads the existing
+    // adapter (announced via a Warning) and CONTINUES it — `steps` is a total,
+    // so a 12-step artifact re-run with `steps: 24` executes 13..=24.
+    //
+    // The old shape of this assertion was `assert_ne!(losses, losses3)` at the
+    // same `steps`, which passed even if the resumed run trained nothing at
+    // all (the starting weights differ, so the losses differ regardless) —
+    // and under step continuation it went further and passed *vacuously*, with
+    // `losses3` empty. Assert the step NUMBERS instead: they are the only
+    // thing that can tell continuation from restart.
     let mut config3 = config(&out, dataset.clone());
     config3.model.base = stripped.to_string_lossy().into_owned();
-    let mut resumed = false;
-    let mut losses3 = Vec::new();
+    config3.steps = STEPS * 2;
+    let mut resume_note: Option<String> = None;
+    let mut steps3 = Vec::new();
     let adapter3 = DiffusionTrainer
         .train(&config3, &mut |event| match event {
-            TrainEvent::Warning { message } if message.contains("resuming") => resumed = true,
-            TrainEvent::Step { loss, .. } => losses3.push(loss),
+            TrainEvent::Warning { message } if message.contains("resuming") => {
+                resume_note = Some(message)
+            }
+            TrainEvent::Step { step, .. } => steps3.push(step),
             _ => {}
         })
         .expect("the resume run completes");
-    assert!(resumed, "the resume path must announce itself");
-    assert_ne!(
-        losses, losses3,
-        "a resumed run continues from trained adapters, not from scratch"
+    let note = resume_note.expect("the resume path must announce itself");
+    // The event must name what was and was not restored — a resumed run is a
+    // continuation, not a bit-identical replay.
+    assert!(note.contains("AdamW moments"), "{note}");
+    assert!(note.contains("RNG stream"), "{note}");
+    assert_eq!(
+        steps3,
+        (STEPS + 1..=STEPS * 2).collect::<Vec<_>>(),
+        "a resumed run continues the step counter, it does not restart it"
     );
     assert_eq!(
         kohya_keys(&adapter3),
         keys,
         "resumed export layout unchanged"
     );
+    // The interop artifact is unchanged: the optimizer state rides in a
+    // SIDECAR that no LoRA loader keys on.
+    let sidecar = adapter3.with_file_name("krea2-lora.optim.safetensors");
+    assert!(
+        sidecar.exists(),
+        "the optimizer sidecar is written beside the adapter"
+    );
+    for key in kohya_keys(&sidecar) {
+        assert!(
+            !key.ends_with(".weight") && !key.ends_with(".alpha"),
+            "sidecar key {key} could be matched by a LoRA loader"
+        );
+    }
 }
 
 /// M15 (#82): the `model.checkpoint` override routes the SAME e2e run

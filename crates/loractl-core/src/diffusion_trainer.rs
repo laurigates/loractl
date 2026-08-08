@@ -112,7 +112,9 @@ use burn::backend::{Cuda, cuda::CudaDevice};
 /// the variant → denoiser-architecture mapping (Turbo is architecturally
 /// identical to Krea2; the variants differ only in the default denoiser
 /// filename).
-fn variant_configs(variant: ModelVariant) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
+pub(crate) fn variant_configs(
+    variant: ModelVariant,
+) -> (MmditConfig, Qwen3VlConfig, QwenVaeConfig, usize) {
     let mmdit = MmditConfig::for_variant(variant);
     match variant {
         ModelVariant::Krea2 | ModelVariant::Krea2Turbo => (
@@ -278,15 +280,33 @@ const SCALE_GROWTH_INTERVAL: u32 = 50;
 /// earlier (numerically broken) reduced-precision encode path carry the old
 /// unmarked fingerprint and are invalidated by this rename. Turbo maps onto
 /// the `krea2` fingerprint: it shares Krea2's encoders (the same files in
-/// the same `base`), so their caches are interchangeable — and the emitted
-/// strings stay byte-identical to the pre-M15 `{variant:?}`-derived form,
-/// keeping existing caches valid.
+/// the same `base`), so their caches are interchangeable — a variant-derived
+/// arch string would force a pointless re-encode when switching raw ↔ turbo.
+///
+/// The `-t2` marker records the second template derivation: #163 turned the
+/// caption template's prefix/suffix token offsets from hardcoded constants
+/// into values read from the loaded tokenizer, which **changes the tensor**
+/// under an unchanged `ml{max_length}` — on the offline `tinykrea2` stub the
+/// emitted stack went from 18 positions (two of them template text) to 16.
+/// The cache reader validates rank, not length, so without this bump a
+/// pre-#163 `.loractl-cache/` is accepted and trained on: the exact silent
+/// misalignment #163 exists to remove, mitigated by nothing but a doc comment
+/// telling a human to delete a directory.
+///
+/// It is bumped for the real variants too, whose caches are the expensive
+/// ones. `tests/qwen3vl_real.rs` pins that the real tokenizer still yields the
+/// historical 34/5, which would make this a no-op there — but that test cannot
+/// run until its golden is regenerated on a network box, so "no-op" is
+/// currently an expectation, not a measurement, and an unverified expectation
+/// is not a reason to keep a cache that may be misaligned. The cost is one
+/// re-encode; a half-warm cache mixing two alignments inside one run has no
+/// cost the operator can see at all.
 pub fn encoder_fingerprint(variant: ModelVariant, max_length: usize) -> String {
     let arch = match variant {
         ModelVariant::Krea2 | ModelVariant::Krea2Turbo => "krea2",
         ModelVariant::TinyKrea2 => "tinykrea2",
     };
-    format!("{arch}-ml{max_length}-enc32")
+    format!("{arch}-ml{max_length}-enc32-t2")
 }
 
 /// The Krea 2 LoRA trainer — see the [module docs](self).
@@ -326,6 +346,14 @@ impl Trainer for DiffusionTrainer {
                  lora.dropout: 0.0 or disable compute.grad_checkpointing"
             );
         }
+
+        // Resolve the resume plan HERE purely to fail fast (#180). The real
+        // one is built in `run_training`, after the adapters exist; this call
+        // is discarded. Without it a typo'd `resume.from`, or an unfinished
+        // artifact at the auto path, would not surface until after the dataset
+        // encode and a multi-gigabyte MMDiT load — minutes on the real model,
+        // for an error that is a config read and two file stats.
+        crate::resume::plan_resume(&config.resume, &config.output)?;
 
         // Started frames the whole run, encode phase included, so SSE/bar
         // consumers see the run begin before the (potentially long) one-time
@@ -518,6 +546,24 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
             counters,
         });
     };
+    // #179: the fit advisory goes out BEFORE the first Encode event, and so
+    // before everything expensive behind it — the ~16 GB f32 text encoder, the
+    // VAE, every image decode, the MMDiT load, step 1. It needs the example
+    // count (the residency half), which is why the scan happens here instead
+    // of the count being read out of `prepare_dataset`'s progress callback:
+    // emitting from inside that closure put the advisory *after* the phase it
+    // warns about, and made its delivery depend on when another module's
+    // callback fires relative to its own per-entry work — an invariant nothing
+    // pinned. The cost is one extra scan (image headers and caption files, no
+    // decode) against a phase that costs minutes per cache miss.
+    let entries = crate::dataset::scan_dataset(
+        &config.dataset.path,
+        &crate::dataset::generate_buckets(config.dataset.resolution)?,
+    )?;
+    if let Some(message) = crate::envelope::preflight_advisory(config, Some(entries.len())) {
+        (sink.borrow_mut())(TrainEvent::Warning { message });
+    }
+
     emit(
         PhaseName::Encode,
         format!("scanning {}", config.dataset.path.display()),
@@ -528,7 +574,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     let mut encoded = 0u64;
     let mut vae: Option<QwenVae<B>> = None;
     let mut conditioner: Option<Qwen3VlConditioner<B>> = None;
-    prepare_dataset::<B>(
+    let prepared = prepare_dataset::<B>(
         &config.dataset,
         &fingerprint,
         &device,
@@ -624,6 +670,16 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 );
             }
         },
+    )?;
+    // Rank is all the cache reader checks, so a stack written under a
+    // different conditioning build reads back clean and misaligned
+    // (`crate::cache_guard`). Checked here as well as in the training phase:
+    // this is the pass that would otherwise *write* the mixed cache.
+    crate::cache_guard::check_conditioning_lengths(
+        prepared.items.iter().map(|i| i.conditioning.dims()[1]),
+        max_length,
+        &config.dataset.path,
+        &fingerprint,
     )?;
     emit(
         PhaseName::Encode,
@@ -1309,6 +1365,15 @@ where
             },
         )?
     };
+    // The encode phase checked this too, but a run can reach here without one
+    // (a warm `.loractl-cache/` from an older build, the very case the rank
+    // check misses — `crate::cache_guard`).
+    crate::cache_guard::check_conditioning_lengths(
+        prepared.items.iter().map(|i| i.conditioning.dims()[1]),
+        max_length,
+        &config.dataset.path,
+        &fingerprint,
+    )?;
     let batches = prepared.batches(config.dataset.batch_size.max(1) as usize);
     if batches.is_empty() {
         bail!("the dataset produced no batches");
@@ -1435,20 +1500,29 @@ where
         .dir
         .join(format!("{}.safetensors", config.output.name));
 
-    // Resume: an existing final artifact is loaded back into the fresh
-    // adapters and training continues from it — running the same config
-    // again extends the adapter rather than restarting it. (The export
-    // carries no optimizer state, so AdamW re-warms its moments.)
-    if adapter_path.exists() {
-        let loaded = import_adapters(&mut set, ExportFormat::Krea2Diffusers, &adapter_path)
-            .with_context(|| format!("resuming from {}", adapter_path.display()))?;
-        sink(TrainEvent::Warning {
-            message: format!(
-                "resuming from existing adapter {} ({loaded} deltas loaded)",
-                adapter_path.display()
-            ),
-        });
+    // Resume (#180). `config.resume` decides *what* is resumed and whether an
+    // unfinished artifact is acceptable; this site only carries it out. The
+    // historical trigger — "the final artifact exists" — survives as
+    // `resume.auto: true`, the documented default, because removing it would
+    // silently break every workflow that re-runs a config to extend an
+    // adapter. `plan_resume` refuses a typo'd `resume.from` and an unfinished
+    // auto-target rather than starting over in silence; see
+    // [`crate::resume`] for why the two paths have different policies.
+    //
+    // The announcement is deferred until after the optimizer exists, so a
+    // single Warning can name what WAS and was NOT restored. Nothing between
+    // here and there can fail without the whole run failing.
+    let plan = crate::resume::plan_resume(&config.resume, &config.output)?;
+    let mut resume_deltas = 0usize;
+    if let Some(plan) = &plan {
+        resume_deltas = import_adapters(&mut set, ExportFormat::Krea2Diffusers, &plan.source)
+            .with_context(|| format!("resuming from {}", plan.source.display()))?;
     }
+    // `steps` is a TOTAL, not a remainder (`ResumeConfig`'s docs): an artifact
+    // at step 200 resumed with `steps: 500` runs 201..=500. The batch cursor
+    // below is derived from `step`, so continuing the counter also restores
+    // the position in the epoch for free.
+    let start_step = plan.as_ref().map(|p| p.start_step()).unwrap_or(1);
 
     // The interop metadata (#154) every export below carries: trigger words,
     // the training record, and the dataset's bucket/tag frequencies. Built
@@ -1494,12 +1568,35 @@ where
     let mut clean_streak = 0u32;
     let checkpoint_every = config.output.checkpoint_every.max(1);
 
+    // Optimizer state must be loaded AFTER `import_adapters`, which replaces
+    // every factor and so mints fresh `ParamId`s — the ids the optimizer will
+    // route by are the post-import ones (`crate::resume`).
+    if let Some(plan) = &plan {
+        let restored = match &plan.optim_state {
+            Some(sidecar) => {
+                let (next, restored) =
+                    crate::resume::load_optimizer_state(optim, &set, sidecar, &device)
+                        .with_context(|| {
+                            format!("restoring optimizer state from {}", sidecar.display())
+                        })?;
+                optim = next;
+                loss_scale = restored.loss_scale;
+                clean_streak = restored.clean_streak;
+                Some(restored)
+            }
+            None => None,
+        };
+        sink(TrainEvent::Warning {
+            message: crate::resume::resume_message(plan, resume_deltas, restored.as_ref(), total),
+        });
+    }
+
     // #134: the block-checkpointed step runs the frozen denoiser on the
     // plain inner backend. `valid()` is an Arc rewrap (no copy) and the base
     // never changes, so hoist it once. `None` when the knob is off.
     let mmdit_inner = config.compute.grad_checkpointing.then(|| mmdit.valid());
 
-    for step in 1..=total {
+    for step in start_step..=total {
         let batch = &batches[((step - 1) as usize) % batches.len()];
         let [b, z, h, w] = batch.latents.dims();
         let flat = z * h * w;
@@ -1659,6 +1756,17 @@ where
                 &path,
             )
             .with_context(|| format!("writing checkpoint at step {step}"))?;
+            crate::resume::save_optimizer_state(
+                &optim,
+                &set,
+                crate::resume::OptimProgress {
+                    steps_done: step,
+                    loss_scale,
+                    clean_streak,
+                },
+                &crate::resume::optim_sidecar_path(&path),
+            )
+            .with_context(|| format!("writing optimizer state at step {step}"))?;
             sink(TrainEvent::Checkpoint { step, path });
         }
     }
@@ -1666,13 +1774,29 @@ where
     // The final artifact IS the interop artifact: a kohya-ss export, carrying
     // the `__metadata__` header a ComfyUI/Civitai-style consumer reads its
     // trigger words and training record from.
+    // `steps_done` for the final artifact is the run's high-water mark, not
+    // `total`: re-running an already-complete config (`start_step > total`,
+    // zero steps executed) must not rewrite the header to claim FEWER steps
+    // than the file it resumed from.
+    let steps_done = total.max(start_step - 1);
     export_adapters(
         &set,
         ExportFormat::Krea2Diffusers,
-        Some(&metadata_for(total, true)),
+        Some(&metadata_for(steps_done, true)),
         &adapter_path,
     )
     .context("writing the final adapter export")?;
+    crate::resume::save_optimizer_state(
+        &optim,
+        &set,
+        crate::resume::OptimProgress {
+            steps_done,
+            loss_scale,
+            clean_streak,
+        },
+        &crate::resume::optim_sidecar_path(&adapter_path),
+    )
+    .context("writing the final optimizer state")?;
     sink(TrainEvent::Finished {
         adapter_path: adapter_path.clone(),
     });
@@ -1842,6 +1966,174 @@ mod tests {
             .expect("probe native fixture"),
             "the ComfyUI-native-keyed fixture must be detected as native"
         );
+    }
+
+    /// The cache reader checks rank, not length, so a conditioning stack
+    /// written by a different template build reads back clean and misaligned
+    /// (`crate::cache_guard`, and #163's 18-vs-16 as the worked example). The
+    /// fingerprint bump is the primary defence; this pins that the mechanical
+    /// one is actually wired into the phase that reads the cache.
+    ///
+    /// The first pass writes a real cache with the tiny fixture's own
+    /// encoders; only its *contents* are then rewritten, so the file name,
+    /// fingerprint hashing and rank all stay exactly what the pipeline
+    /// produces — a hand-built cache path would pin this test to a private
+    /// naming scheme instead.
+    #[test]
+    fn a_conditioning_cache_of_the_wrong_length_is_refused_by_the_encode_phase() {
+        use crate::config::DatasetConfig;
+        use crate::export::OwnedF32Tensor;
+        use burn::backend::NdArray;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "loractl-stale-cache-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbImage::from_fn(32, 32, |x, y| image::Rgb([(x * 4) as u8, (y * 4) as u8, 9]))
+            .save(dir.join("a.png"))
+            .unwrap();
+        std::fs::write(dir.join("a.txt"), "a tiny gradient").unwrap();
+
+        let config = TrainConfig {
+            model: ModelConfig {
+                base: "tests/fixtures/tiny-krea2".into(),
+                variant: ModelVariant::TinyKrea2,
+                ..Default::default()
+            },
+            dataset: DatasetConfig {
+                path: dir.clone(),
+                resolution: 32,
+                batch_size: 1,
+            },
+            ..Default::default()
+        };
+        encode_phase::<NdArray>(&config, Default::default(), &mut |_| {})
+            .expect("the tiny fixture encodes offline");
+
+        // The pre-#163 shape: the template's two leading positions still in
+        // the stack. Rank 4, right dtype, wrong length.
+        let cond = std::fs::read_dir(dir.join(".loractl-cache"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.to_string_lossy().ends_with(".cond.safetensors"))
+            .expect("the encode pass wrote a conditioning cache");
+        let stale = OwnedF32Tensor {
+            shape: vec![1, 18, 2, 32],
+            bytes: vec![0u8; 18 * 2 * 32 * 4],
+        };
+        let mask = OwnedF32Tensor {
+            shape: vec![1, 18],
+            bytes: vec![0u8; 18 * 4],
+        };
+        safetensors::serialize_to_file(
+            vec![("conditioning", &stale), ("mask", &mask)],
+            None,
+            &cond,
+        )
+        .unwrap();
+
+        let err = encode_phase::<NdArray>(&config, Default::default(), &mut |_| {})
+            .expect_err("a 18-position stack cannot serve a 16-position run");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("18 positions"), "{msg}");
+        assert!(msg.contains("emits 16"), "{msg}");
+        assert!(msg.contains(".loractl-cache"), "{msg}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #179's *delivery*, not just its decision: the advisory has to reach the
+    /// sink, and it has to get there before the first `Encode` event — which is
+    /// what makes it precede the ~16 GB text-encoder load, the VAE, and every
+    /// image decode behind that phase.
+    ///
+    /// Driven through the real `encode_phase`, because the wiring is the part
+    /// no other test could see: `preflight_advisory` returns `None` for
+    /// `TinyKrea2` by design, and every test that drives this trainer uses
+    /// `TinyKrea2`, so the emit site was dead in the whole workspace — deleting
+    /// it failed nothing.
+    ///
+    /// The call then fails (there is no model under `model.base`), and that is
+    /// the assertion's point rather than a wart: the warning is already out
+    /// before anything tries to load a checkpoint.
+    #[test]
+    fn the_fit_advisory_reaches_the_sink_before_the_encode_phase() {
+        use crate::config::{ComputeConfig, DatasetConfig, Quant};
+        use burn::backend::NdArray;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("loractl-advisory-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbImage::from_fn(8, 8, |x, y| image::Rgb([(x * 8) as u8, (y * 8) as u8, 7]))
+            .save(dir.join("a.png"))
+            .unwrap();
+        std::fs::write(dir.join("a.txt"), "a tiny gradient").unwrap();
+
+        let config = TrainConfig {
+            model: ModelConfig {
+                // Deliberately absent: the run must not get far enough to care.
+                base: dir.join("no-such-bundle").to_string_lossy().into_owned(),
+                variant: ModelVariant::Krea2,
+                ..Default::default()
+            },
+            dataset: DatasetConfig {
+                path: dir.clone(),
+                resolution: 1024,
+                batch_size: 1,
+            },
+            compute: ComputeConfig {
+                quant: Quant::Int4,
+                grad_checkpointing: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut events: Vec<TrainEvent> = Vec::new();
+        let err = encode_phase::<NdArray>(&config, Default::default(), &mut |e| events.push(e))
+            .expect_err("there is no model to encode with");
+        // Named so a future refactor that makes this Ok(()) — and quietly stops
+        // exercising the ordering below — fails here instead.
+        assert!(
+            format!("{err:#}").contains("no-such-bundle/vae/"),
+            "expected the missing VAE checkpoint to be what fails: {err:#}"
+        );
+
+        let warning = events
+            .iter()
+            .position(|e| matches!(e, TrainEvent::Warning { .. }))
+            .expect("the 1024px int4 config must be warned about");
+        let encode = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    TrainEvent::Phase {
+                        name: PhaseName::Encode,
+                        ..
+                    }
+                )
+            })
+            .expect("the encode phase announces itself");
+        assert!(
+            warning < encode,
+            "the advisory must precede the encode phase: {events:#?}"
+        );
+        let TrainEvent::Warning { message } = &events[warning] else {
+            unreachable!()
+        };
+        assert!(message.contains("4608"), "{message}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 

@@ -133,6 +133,7 @@ fn config() -> TrainConfig {
             checkpoint_every: 5,
             sample_every: 0,
         },
+        resume: Default::default(),
         compute: ComputeConfig {
             precision: Precision::F32,
             quant: Quant::Int4,

@@ -111,6 +111,41 @@ fn validate_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// Resolves a request's `resume.from` under `base`, with the same rules
+/// [`confine_output`] applies to `output.dir` (#180).
+///
+/// `resume.from` is the *read* twin of `output.dir`: an unauthenticated
+/// `POST /runs` names a file the server then opens and parses, and the parse
+/// errors describe tensor names and shapes. Without this it is an
+/// arbitrary-file-read oracle over anything the process can reach — a hole in
+/// a boundary that is otherwise sealed. `output.name`'s single-component rule
+/// deliberately does NOT apply: resuming `checkpoints/run-3/checkpoint-50.safetensors`
+/// from a sibling run's directory is the recovery workflow this exists for.
+pub fn confine_resume(base: &Path, from: &Path) -> Result<PathBuf, String> {
+    let relative = relative_components(from).map_err(|e| e.replace("output.dir", "resume.from"))?;
+    if relative.as_os_str().is_empty() {
+        return Err(String::from(
+            "resume.from must name a file, not an empty path",
+        ));
+    }
+    let resolved = base.join(relative);
+    if !resolved.starts_with(base) {
+        return Err(resume_escape_message());
+    }
+    let anchor = deepest_existing_ancestor(&resolved);
+    let canonical_anchor = anchor
+        .canonicalize()
+        .map_err(|e| format!("resolving resume.from {}: {e}", from.display()))?;
+    if !canonical_anchor.starts_with(base) {
+        return Err(resume_escape_message());
+    }
+    Ok(resolved)
+}
+
+fn resume_escape_message() -> String {
+    String::from("resume.from must stay within the server's output base directory")
+}
+
 /// The deepest ancestor of `path` that exists on disk.
 ///
 /// `symlink_metadata` (not `exists()`) so a **dangling** symlink counts as
@@ -138,6 +173,24 @@ mod tests {
             std::thread::current().id()
         ));
         canonical_base(&dir).expect("temp base")
+    }
+
+    /// `resume.from` is a *read* path but the same confinement applies: a
+    /// request that could name `/etc/shadow` would get its parse error back as
+    /// a 400 body. Mirrors `absolute_dir_is_rejected` / `parent_traversal_is_rejected`.
+    #[test]
+    fn resume_from_is_confined_like_the_output_dir() {
+        let base = base();
+        let resolved =
+            confine_resume(&base, Path::new("run-1/checkpoint-50.safetensors")).expect("accepted");
+        assert_eq!(resolved, base.join("run-1/checkpoint-50.safetensors"));
+
+        for bad in ["/etc/shadow", "../../../etc/shadow", ".."] {
+            let error = confine_resume(&base, Path::new(bad))
+                .expect_err("{bad} must be rejected as a resume source");
+            assert!(error.contains("resume.from"), "{bad}: {error}");
+        }
+        assert!(confine_resume(&base, Path::new("")).is_err());
     }
 
     #[test]

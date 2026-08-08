@@ -162,6 +162,7 @@ fn config() -> TrainConfig {
             checkpoint_every: 50,
             sample_every: 0,
         },
+        resume: Default::default(),
         compute: Default::default(),
         flow: Default::default(),
         metadata: MetadataConfig {

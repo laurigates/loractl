@@ -25,8 +25,9 @@ mod wgpu_main {
         KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
     };
     use loractl_core::CastFloatsAdapter;
-    use loractl_core::config::DatasetConfig;
+    use loractl_core::config::{DatasetConfig, ModelVariant};
     use loractl_core::dataset::prepare_dataset;
+    use loractl_core::diffusion_trainer::encoder_fingerprint;
     use loractl_core::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
     use std::path::PathBuf;
 
@@ -59,7 +60,11 @@ mod wgpu_main {
                 resolution: 256,
                 batch_size: 1,
             },
-            "krea2-ml512-enc32",
+            // Derived, not transcribed: the marker moves whenever the
+            // encode path changes (`enc32-t2` — #163's template offsets),
+            // and a stale literal here would read a cache the trainer no
+            // longer writes and report "cold cache" instead.
+            &encoder_fingerprint(ModelVariant::Krea2, 512),
             &device,
             |_| bail!("cold latent cache — run the trainer's encode phase first"),
             |_| bail!("cold cond cache — run the trainer's encode phase first"),
