@@ -344,14 +344,20 @@ dataset-fetch key="" out="" n="0":
     [ -n "$out" ] || out="tmp/datasets/{{key}}-{{n}}"
     ./scripts/fetch_dataset.py --dataset "{{key}}" --out "$out" --limit "{{n}}"
 
-# The #175/#178 on-box acceptance matrix: peak VRAM at two dataset sizes and
-# cold-encode wall time, on BOTH sides of a revision pair, plus a bench arm so
-# the per-step read the lazy loader added is priced rather than assumed.
+# The #175/#178 on-box acceptance matrix: peak VRAM across several dataset
+# sizes on BOTH sides of a revision pair, plus a bench arm so the per-step read
+# the lazy loader added is priced rather than assumed.
 #
 # This is the measurement PR #197 explicitly did not claim — it needs the real
 # 24 GB card and the multi-GB checkpoints, and #175's criterion is a SCALING
 # claim ("peak no longer scales with example count"), which a single
-# before/after pair cannot answer. Hence two sizes per side.
+# before/after pair cannot answer. Default is three sizes (8,24,40): two points
+# always fit a line exactly, so only a third can test the linearity an
+# O(dataset) bug predicts. `--sizes` overrides.
+#
+# Cost is one cold encode at the largest size (~8.5 min/image, measured) plus
+# ~2 min per warm arm — the encode cache is shared across revisions and reused
+# for every prefix, so the third point is nearly free.
 #
 # The card must be idle: the probe reads whole-GPU nvidia-smi, so a resident
 # ComfyUI is added to every peak. The script refuses rather than report a
