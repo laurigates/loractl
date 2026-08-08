@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.0](https://github.com/laurigates/loractl/compare/v0.20.0...v0.21.0) (2026-08-08)
+
+
+### Features
+
+* **bench:** N-point scaling arms for the residency matrix — three points for the price of two ([#205](https://github.com/laurigates/loractl/issues/205)) ([cc611de](https://github.com/laurigates/loractl/commit/cc611ded4f289339015721859025b8bd70663629))
+* **bench:** N-point scaling arms, one shared cold encode — three points for the price of two ([cc611de](https://github.com/laurigates/loractl/commit/cc611ded4f289339015721859025b8bd70663629)), closes [#175](https://github.com/laurigates/loractl/issues/175)
+
 ## [0.20.0](https://github.com/laurigates/loractl/compare/v0.19.1...v0.20.0) (2026-08-08)
 
 
