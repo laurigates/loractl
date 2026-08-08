@@ -479,6 +479,14 @@ alternatives they were chosen over — are
   nothing else can see it. It is skipped and named in the resume `Warning`
   rather than restored, since re-warming AdamW is survivable and erroring would
   stop a recovery dead.
+- **Both halves of a resume are checked for finiteness, not just the weights.**
+  `import_adapters` refuses a non-finite factor by tensor name; the sidecar read
+  refuses a non-finite *moment* by key, and says "sidecar". The asymmetry
+  mattered: a NaN moment restores cleanly and kills the run one step later
+  inside `check_step_loss`, whose message blames f16 range unconditionally —
+  so without the guard the operator is sent to `compute.precision` instead of to
+  the file. `save_optimizer_state` writes in place with no temp-and-rename, so a
+  truncated sidecar is reachable rather than hypothetical.
 - **Not restored: the RNG stream.** burn 0.21 exposes no save/restore, so a
   resumed run is a continuation and not a bit-identical replay. The single
   resume `Warning` says so.

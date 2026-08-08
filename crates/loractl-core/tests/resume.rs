@@ -429,6 +429,51 @@ fn a_corrupt_resume_source_is_refused_by_tensor_name() {
     assert!(message.contains("not finite"), "{message}");
 }
 
+/// The sidecar twin of the test above: a non-finite *moment* is refused by key,
+/// not merely a non-finite weight.
+///
+/// The asymmetry is what makes this worth its own test. `import_adapters`
+/// guards the weights, so a corrupt adapter dies at the read with the tensor
+/// named. A corrupt moment restores cleanly, poisons the first update, and the
+/// run dies one step later inside `check_step_loss` — whose message blames f16
+/// range unconditionally (`.claude/rules/gpu-runner-failure-signatures.md`),
+/// sending the operator to `compute.precision` instead of to this file. The
+/// source is reachable: `save_optimizer_state` writes in place with no
+/// temp-and-rename, so an interrupted write leaves a structurally valid file
+/// with garbage in it.
+#[test]
+fn a_corrupt_optimizer_sidecar_is_refused_by_key() {
+    const BASE: u64 = 2;
+    let _lock = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("resume-corrupt-optim");
+    let dataset = staged_dataset(&out);
+
+    let dir = out.0.join("out");
+    run(&config(dir.clone(), dataset.clone(), BASE));
+
+    // The sidecar is keyed by SITE PATH (`blocks.0.attn.wq`), where the export
+    // is keyed by kohya name (`transformer_blocks.0.attn.to_q`) — that
+    // difference is deliberate (`save_optimizer_state`: this file is ours
+    // alone), so this is PROBE's site-path twin rather than PROBE itself.
+    let moment = "blocks.0.attn.wq.lora_up.exp_avg";
+    let sidecar = dir.join("krea2-lora.optim.safetensors");
+    poison_first_element(&sidecar, moment, f32::NAN);
+
+    let mut resumed = config(dir.clone(), dataset.clone(), BASE + 1);
+    resumed.resume.allow_unfinished = true;
+    let err = DiffusionTrainer
+        .train(&resumed, &mut |_| {})
+        .expect_err("a NaN moment must not be resumed from");
+    let message = format!("{err:#}");
+    assert!(message.contains(moment), "{message}");
+    assert!(message.contains("not finite"), "{message}");
+    // Named as the sidecar, not as the adapter: the whole point is that the
+    // operator is sent to the right file.
+    assert!(message.contains("sidecar"), "{message}");
+}
+
 /// `resume.auto: false` (`--no-resume`) forces a fresh start into a directory
 /// that already holds an adapter — the surprise the implicit trigger used to
 /// have no answer for.

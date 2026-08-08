@@ -535,6 +535,21 @@ pub fn load_optimizer_state<AB: AutodiffBackend>(
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+        // The same finiteness guard `import_adapters` applies to the weights
+        // (`export.rs`), at the moment side of the resume. Without it a NaN
+        // moment restores cleanly, poisons the first update, and the run dies
+        // one step later inside `check_step_loss` — whose message blames f16
+        // range unconditionally (`.claude/rules/gpu-runner-failure-signatures.md`),
+        // pointing the operator at `compute.precision` rather than at this
+        // file. `save_optimizer_state` writes in place with no temp-and-rename,
+        // so a truncated or half-rewritten sidecar is a reachable source.
+        if let Some(bad) = vals.iter().position(|v| !v.is_finite()) {
+            bail!(
+                "optimizer state {key} is not finite (element {bad} is {}) — \
+                 refusing to resume from a corrupt sidecar",
+                vals[bad]
+            );
+        }
         Ok(Tensor::from_data(TensorData::new(vals, expected), device))
     };
 

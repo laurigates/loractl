@@ -13,6 +13,11 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainConfig {
     /// Number of optimization steps to run.
+    ///
+    /// A **total**, not an increment — this matters on a resume (#180). A run
+    /// that continues a 200-step artifact with `steps: 500` runs steps
+    /// 201..=500, and re-running an already-complete config trains *zero*
+    /// steps rather than another full pass. See [`ResumeConfig`].
     #[serde(default = "defaults::steps")]
     pub steps: u64,
 
