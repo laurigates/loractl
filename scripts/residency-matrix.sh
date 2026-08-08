@@ -11,11 +11,22 @@
 # WHAT IT MEASURES
 #
 #   #175  "Peak VRAM no longer scales with example count"
-#         A scaling claim, so it needs two dataset sizes per revision, not one
-#         before/after pair. Pre-#175 code holds every example's conditioning
-#         device-resident at [1, 512, 12, 2560] f32 = 60 MiB, so the `before`
-#         arms should show peak(large) - peak(small) ~= (large-small) * 60 MiB
-#         and the `after` arms ~= 0.
+#         A scaling claim, so it needs SEVERAL dataset sizes per revision, not
+#         one before/after pair. Pre-#175 code holds every example's
+#         conditioning device-resident at [1, 512, 12, 2560] f32 = 62,914,560 B
+#         = exactly 60 MiB, so `before` should fit ~60 MiB/example and `after`
+#         ~0.
+#
+#         Three points by default, because 60 MiB/example is a POINT PREDICTION
+#         and the claim is about linearity: an O(dataset) bug predicts a
+#         straight line, and two points always fit a line exactly, so a
+#         two-point run cannot fail the check it exists to perform. The summary
+#         reports a least-squares slope AND every consecutive-pair slope; when
+#         the segments disagree the fitted slope is summarizing something that
+#         is not a line. (Worked example: peaks that saturate after the middle
+#         point fit as 30 MiB/example -- readable as "half as bad as predicted"
+#         -- while the segments read 60 then 0, which is a different mechanism
+#         entirely.)
 #
 #   #175  "`just bench` before/after, so the per-step read cost is priced"
 #         The lazy read trades disk + H2D per step for the residency win. The
@@ -34,13 +45,21 @@
 #   cold arm  ~8.5 min/image  + ~10 min of lazy model loads
 #   warm arm  ~1.8 min        <- the #175 measurement itself is CHEAP
 #
-# So essentially all the wall time is cache fill, and a 56-image pair of sides
-# is ~19 h. Before scaling this up, consider that the encode cache is
-# shareable between the two revisions: the key format is byte-identical across
-# them and the expensive half (conditioning) is keyed
-# `{stem}.{fingerprint}.cond` with NO bucket, so it hits even if bucket
-# assignment differs. Encoding once and pointing both sides at it roughly
-# halves the run.
+# So essentially all the wall time is cache fill. That is why there is exactly
+# ONE cold encode per run -- at the largest size, on the `before` side -- and
+# every other arm is warm:
+#
+#   * The cache is shareable ACROSS REVISIONS (identical key format; the
+#     expensive half, conditioning, is keyed `{stem}.{fingerprint}.cond` with
+#     NO bucket, so it hits even if bucket assignment differs).
+#   * The cache is keyed PER FILE, so the cache for N images already contains
+#     the cache for any prefix -- and fetch_dataset.py materializes in filename
+#     order, so every smaller arm IS a prefix.
+#
+# Net: the default 8/24/40 run costs one 40-image encode (~6 h) plus six warm
+# arms (~12 min), rather than 19 h. Neither property is taken on trust --
+# ENCODED_COUNT is reported for every warm arm and must be 0, so a cache that
+# failed to transfer surfaces as a number rather than as a slow run.
 #
 # WHAT IT DOES NOT MEASURE
 #
@@ -81,8 +100,17 @@ cd "$REPO_ROOT"
 BEFORE_REV="origin/main"
 AFTER_REV="origin/claude/open-issues-ultracode-m2eu5a"
 DATASET_KEY="tuxemon"
-N_SMALL=8
-N_LARGE=56
+# Three points, not two. An O(dataset) bug predicts a STRAIGHT line, and two
+# points always fit a line perfectly -- they cannot fail that check, so they
+# cannot test the very property #175 claims. Three can. Because the encode cache
+# is keyed per file, the extra point is free: one cold encode of the largest set
+# already contains the cache for every prefix.
+#
+# 8/24/40 also keeps the `before` arm clear of the ceiling. Predicted peak is
+# 20,008 + (N-8)x60 MiB, so N=40 lands ~21.9 GB with ~2.6 GB of margin on a
+# 24.5 GB card, where N=56 lands ~22.9 GB and risks losing the very arm that
+# demonstrates the bug to an OOM (the probe's gate is a ZERO-PANIC run).
+SIZES="8,24,40"
 MODELS_ROOT="${LORACTL_MODELS_ROOT:-}"
 OUT=""
 STOP_SERVICE=""
@@ -106,8 +134,7 @@ while [ $# -gt 0 ]; do
         --before) BEFORE_REV="$2"; shift 2 ;;
         --after) AFTER_REV="$2"; shift 2 ;;
         --dataset) DATASET_KEY="$2"; shift 2 ;;
-        --small) N_SMALL="$2"; shift 2 ;;
-        --large) N_LARGE="$2"; shift 2 ;;
+        --sizes) SIZES="$2"; shift 2 ;;
         --models-root) MODELS_ROOT="$2"; shift 2 ;;
         --tokenizer) TOKENIZER="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
@@ -132,6 +159,18 @@ log() { printf '\n=== %s ===\n' "$*"; }
 
 TEMPLATE="config/probes/residency-matrix.yaml.in"
 [ -f "$TEMPLATE" ] || die "missing $TEMPLATE"
+
+# Sizes: ascending, distinct, >=2 points. Ascending matters because every
+# smaller arm is derived as a PREFIX of the largest one's cache.
+SIZE_LIST="$(tr ',' ' ' <<<"$SIZES")"
+N_MAX=0; count=0; prev=0
+for n in $SIZE_LIST; do
+    case "$n" in ''|*[!0-9]*) die "--sizes: '$n' is not a positive integer" ;; esac
+    [ "$n" -gt 0 ] || die "--sizes: sizes must be > 0"
+    [ "$n" -gt "$prev" ] || die "--sizes must be strictly ascending; got '$SIZES'"
+    prev="$n"; N_MAX="$n"; count=$((count + 1))
+done
+[ "$count" -ge 2 ] || die "--sizes needs at least 2 points to fit a slope; got '$SIZES'"
 
 # The three checkpoints the template names. Checked here so a two-hour matrix
 # does not die on a missing file at the first model load.
@@ -253,7 +292,7 @@ fi
 echo "preflight OK"
 echo "  before:  $BEFORE_REV ($BEFORE_SHA)"
 echo "  after:   $AFTER_REV ($AFTER_SHA)"
-echo "  dataset: $DATASET_KEY, arms of $N_SMALL and $N_LARGE examples"
+echo "  dataset: $DATASET_KEY, arms at $SIZES examples (one cold encode at $N_MAX)"
 echo "  gpu:     ${gpu_used} MiB used of ${gpu_total} MiB"
 echo "  disk:    ${free_gib} GiB free"
 echo "  tokenizer: $TOKENIZER (sha256 verified)"
@@ -391,66 +430,106 @@ run_arm() {
 
 # ------------------------------------------------------------------ datasets --
 
-log "materializing datasets"
-DS_SMALL="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_SMALL}"
-DS_LARGE="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_LARGE}"
-./scripts/fetch_dataset.py --dataset "$DATASET_KEY" --out "$DS_SMALL" --limit "$N_SMALL"
-./scripts/fetch_dataset.py --dataset "$DATASET_KEY" --out "$DS_LARGE" --limit "$N_LARGE"
+log "materializing the dataset ($N_MAX images, the largest arm)"
+DS_ROOT="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_MAX}"
+./scripts/fetch_dataset.py --dataset "$DATASET_KEY" --out "$DS_ROOT" --limit "$N_MAX"
 
 : > "$SUMMARY"
 {
     echo "# residency matrix $STAMP"
     echo "# before=$BEFORE_REV ($BEFORE_SHA)  after=$AFTER_REV ($AFTER_SHA)"
-    echo "# dataset=$DATASET_KEY small=$N_SMALL large=$N_LARGE"
+    echo "# dataset=$DATASET_KEY sizes=$SIZES"
     echo "# host_gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 } >> "$SUMMARY"
 
-# ---------------------------------------------------------------------- arms --
+# --------------------------------------------------------------- build sides --
 
 for side in before after; do
     if [ "$side" = before ]; then rev="$BEFORE_REV"; sha="$BEFORE_SHA"; else rev="$AFTER_REV"; sha="$AFTER_SHA"; fi
     worktree="$REPO_ROOT/tmp/residency-matrix/worktrees/$side"
-
     log "$side: worktree at $sha"
     git worktree remove --force "$worktree" 2>/dev/null || true
     git worktree add --detach --force "$worktree" "$rev" >/dev/null
     ( cd "$worktree" && cargo build --release -p loractl-core --features cuda \
         --example step_probe --example bench_step ) || die "$side: build failed at $sha"
+done
 
-    for size in small large; do
-        if [ "$size" = small ]; then n="$N_SMALL"; src="$DS_SMALL"; else n="$N_LARGE"; src="$DS_LARGE"; fi
+# ------------------------------------------------------- one cold encode only --
+#
+# The encode is the entire cost of this matrix (~8.5 min/image against a ~1.8
+# min warm arm), so it runs ONCE, at the largest size, on the `before` side --
+# not once per side and not once per size.
+#
+# Two properties make that sound rather than a shortcut:
+#
+#   * The cache is shareable across the revisions. Its key format is identical
+#     on both, and the expensive half -- conditioning -- is keyed
+#     `{stem}.{fingerprint}.cond` with NO bucket component, so it hits even if
+#     bucket assignment differs.
+#   * The cache is keyed PER FILE, so the cache for N images already contains
+#     the cache for any prefix of them. Since fetch_dataset.py materializes in
+#     filename order, every smaller arm IS a prefix.
+#
+# This is not taken on trust: every warm arm reports ENCODED_COUNT, so a cache
+# that failed to transfer shows up as a non-zero count on that arm rather than
+# as a silently slower run. Sharing is what makes a three-point line cost the
+# same as a two-point delta.
 
-        # A fresh copy is what makes the cold arm cold: the encode cache is
-        # written INTO the dataset directory, so reusing one across revisions
-        # would silently serve the other revision's latents.
-        data="$OUT/data/$side/$size"
-        rm -rf "$data"; mkdir -p "$data"
-        cp "$src"/*.jpg "$src"/*.txt "$data"/
+COLD_SIDE=before
+COLD_WT="$REPO_ROOT/tmp/residency-matrix/worktrees/$COLD_SIDE"
+SHARED="$OUT/data/shared"
+rm -rf "$SHARED"; mkdir -p "$SHARED"
+cp "$DS_ROOT"/*.jpg "$DS_ROOT"/*.txt "$SHARED"/
 
-        cfg="$OUT/config-$side-$size.yaml"
-        render_config "$data" "$OUT/run/$side-$size" "$cfg"
+log "cold encode: $N_MAX images on $COLD_SIDE (the slow part -- ~8.5 min/image)"
+render_config "$SHARED" "$OUT/run/cold" "$OUT/config-cold.yaml"
+run_arm "$COLD_WT" step_probe "cold-$N_MAX" "$OUT/config-cold.yaml"
+kv "ARM_OK_cold" "$(probe_steps_ok "$OUT/cold-$N_MAX.log")"
+kv "ENCODED_COUNT_cold" "$(encoded_count "$OUT/cold-$N_MAX.log")"
+kv "ENCODE_WALL_S_cold" "$(encode_wall "$OUT/cold-$N_MAX.log")"
+kv "ENCODE_WORK_S_cold" "$(encode_work "$OUT/cold-$N_MAX.log")"
+[ "$(probe_steps_ok "$OUT/cold-$N_MAX.log")" = yes ] \
+    || die "the cold encode arm did not complete -- every warm arm below would
+  measure an incomplete cache. See $OUT/cold-$N_MAX.log"
 
-        run_arm "$worktree" step_probe "$side-$size-cold" "$cfg"
-        run_arm "$worktree" step_probe "$side-$size-warm" "$cfg"
+# ---------------------------------------------------------------------- arms --
+#
+# Warm arms only, ~1.8 min each. Each size gets its own directory holding the
+# first N images plus THEIR cache entries, copied out of the shared encode. Both
+# cache filename forms -- `{file_name}.{w}x{h}.{fp}.latent` and
+# `{stem}.{fp}.cond` -- begin with the stem, so one glob per image takes both.
+
+for side in before after; do
+    worktree="$REPO_ROOT/tmp/residency-matrix/worktrees/$side"
+    log "$side: warm arms at sizes $SIZES"
+
+    for n in $SIZE_LIST; do
+        data="$OUT/data/$side/$n"
+        rm -rf "$data"; mkdir -p "$data/.loractl-cache"
+        i=0
+        for img in $(cd "$SHARED" && ls *.jpg | sort); do
+            i=$((i + 1)); [ "$i" -le "$n" ] || break
+            stem="${img%.jpg}"
+            cp "$SHARED/$img" "$SHARED/$stem.txt" "$data"/
+            cp "$SHARED"/.loractl-cache/"$stem".* "$data"/.loractl-cache/ 2>/dev/null || true
+        done
+
+        cfg="$OUT/config-$side-$n.yaml"
+        render_config "$data" "$OUT/run/$side-$n" "$cfg"
+        run_arm "$worktree" step_probe "$side-$n-warm" "$cfg"
 
         # Recorded BEFORE the numbers, so a reader sees whether the arm ran
         # before seeing anything derived from it.
-        kv "ARM_OK_${side}_${size}_cold" "$(probe_steps_ok "$OUT/$side-$size-cold.log")"
-        kv "ARM_OK_${side}_${size}_warm" "$(probe_steps_ok "$OUT/$side-$size-warm.log")"
-        kv "ENCODE_WALL_S_${side}_${size}" "$(encode_wall "$OUT/$side-$size-cold.log")"
-        kv "ENCODE_WORK_S_${side}_${size}" "$(encode_work "$OUT/$side-$size-cold.log")"
-        kv "ENCODED_COUNT_${side}_${size}_cold" "$(encoded_count "$OUT/$side-$size-cold.log")"
-        # Must be 0 -- the warm-epoch no-encoder guarantee, measured on hardware.
-        kv "ENCODED_COUNT_${side}_${size}_warm" "$(encoded_count "$OUT/$side-$size-warm.log")"
-        kv "PEAK_MIB_${side}_${size}" "$(probe_peak "$OUT/$side-$size-warm.log")"
-        kv "RATCHET_MIB_${side}_${size}" "$(probe_ratchet "$OUT/$side-$size-warm.log")"
-        kv "EXAMPLES_${side}_${size}" "$n"
+        kv "ARM_OK_${side}_${n}" "$(probe_steps_ok "$OUT/$side-$n-warm.log")"
+        # Must be 0: the warm-epoch no-encoder guarantee measured on hardware,
+        # AND the check that the shared cache transferred to this side.
+        kv "ENCODED_COUNT_${side}_${n}" "$(encoded_count "$OUT/$side-$n-warm.log")"
+        kv "PEAK_MIB_${side}_${n}" "$(probe_peak "$OUT/$side-$n-warm.log")"
+        kv "RATCHET_MIB_${side}_${n}" "$(probe_ratchet "$OUT/$side-$n-warm.log")"
     done
 
     if [ "$SKIP_BENCH" -eq 0 ]; then
-        # Warm cache by now (the large arms just ran), so this times steps
-        # rather than the encode phase.
-        run_arm "$worktree" bench_step "$side-bench" "$OUT/config-$side-large.yaml" \
+        run_arm "$worktree" bench_step "$side-bench" "$OUT/config-$side-$N_MAX.yaml" \
             --steps "$BENCH_STEPS"
         grep -E '^(RESULT|SANITY|MODEL)' "$OUT/$side-bench.log" \
             | sed "s/^/BENCH_${side} /" >> "$SUMMARY" || true
@@ -460,30 +539,57 @@ done
 # ------------------------------------------------------------------- verdict --
 
 log "summary"
-before_small="$(sed -n 's/^PEAK_MIB_before_small=//p' "$SUMMARY" | tail -1)"
-before_large="$(sed -n 's/^PEAK_MIB_before_large=//p' "$SUMMARY" | tail -1)"
-after_small="$(sed -n 's/^PEAK_MIB_after_small=//p' "$SUMMARY" | tail -1)"
-after_large="$(sed -n 's/^PEAK_MIB_after_large=//p' "$SUMMARY" | tail -1)"
 
 # A peak is only a measurement if its arm completed its steps. Requiring
 # `steps=N/N` is what separates "the fix works" from "nothing ran" -- both of
-# which otherwise present as four well-formed peaks and a 0.00 slope.
+# which otherwise present as well-formed peaks and a 0.00 slope.
 arms_ok=1
 for side in before after; do
-    for size in small large; do
-        [ "$(sed -n "s/^ARM_OK_${side}_${size}_warm=//p" "$SUMMARY" | tail -1)" = yes ] || arms_ok=0
+    for n in $SIZE_LIST; do
+        [ "$(sed -n "s/^ARM_OK_${side}_${n}=//p" "$SUMMARY" | tail -1)" = yes ] || arms_ok=0
+        [ -n "$(sed -n "s/^PEAK_MIB_${side}_${n}=//p" "$SUMMARY" | tail -1)" ] || arms_ok=0
     done
 done
 
-if [ "$arms_ok" -eq 1 ] &&
-   [ -n "$before_small" ] && [ -n "$before_large" ] &&
-   [ -n "$after_small" ] && [ -n "$after_large" ]; then
-    kv "PEAK_SLOPE_MIB_PER_EXAMPLE_before" \
-       "$(awk -v a="$before_small" -v b="$before_large" -v n="$N_SMALL" -v m="$N_LARGE" \
-            'BEGIN { printf "%.2f", (b - a) / (m - n) }')"
-    kv "PEAK_SLOPE_MIB_PER_EXAMPLE_after" \
-       "$(awk -v a="$after_small" -v b="$after_large" -v n="$N_SMALL" -v m="$N_LARGE" \
-            'BEGIN { printf "%.2f", (b - a) / (m - n) }')"
+# Least-squares slope over ALL points, plus every consecutive-pair slope.
+#
+# The pairwise slopes are the linearity check and the reason for a third point:
+# an O(dataset) residency bug predicts a straight line, so the segments should
+# agree. If they disagree materially the fitted slope is a summary of something
+# that is not a line, and the model of the bug -- not just its magnitude -- is
+# in question. A two-point run cannot surface that, because two points always
+# fit a line exactly.
+fit_slope() {  # args: "n1:peak1 n2:peak2 ..."
+    awk -v pts="$1" 'BEGIN {
+        k = split(pts, a, " ")
+        for (i = 1; i <= k; i++) { split(a[i], p, ":"); x = p[1]; y = p[2]
+            sx += x; sy += y; sxy += x * y; sxx += x * x }
+        d = k * sxx - sx * sx
+        if (d == 0) { print "undefined"; exit }
+        printf "%.2f", (k * sxy - sx * sy) / d
+    }'
+}
+
+if [ "$arms_ok" -eq 1 ]; then
+    for side in before after; do
+        pts=""
+        for n in $SIZE_LIST; do
+            pts="$pts $n:$(sed -n "s/^PEAK_MIB_${side}_${n}=//p" "$SUMMARY" | tail -1)"
+        done
+        kv "PEAK_SLOPE_MIB_PER_EXAMPLE_${side}" "$(fit_slope "${pts# }")"
+
+        prev_n=""; prev_p=""
+        for n in $SIZE_LIST; do
+            p="$(sed -n "s/^PEAK_MIB_${side}_${n}=//p" "$SUMMARY" | tail -1)"
+            [ -n "$prev_n" ] && kv "SEGMENT_SLOPE_${side}_${prev_n}_to_${n}" \
+                "$(awk -v a="$prev_p" -v b="$p" -v n="$prev_n" -v m="$n" \
+                     'BEGIN { printf "%.2f", (b - a) / (m - n) }')"
+            prev_n="$n"; prev_p="$p"
+        done
+    done
+    # 60 MiB/example is arithmetic, not a fitted expectation:
+    # [1, 512, 12, 2560] f32 = 512*12*2560*4 = 62,914,560 B = exactly 60 MiB.
+    kv "PREDICTED_SLOPE_MIB_PER_EXAMPLE_before" "60.00"
     kv "STATUS" "COMPLETE"
 else
     # No slope is printed here ON PURPOSE. An incomplete arm most often means
