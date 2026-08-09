@@ -118,6 +118,7 @@ FREE_ENDPOINT=""
 ALLOW_BUSY_GPU=0
 SKIP_BENCH=0
 DRY_RUN=0
+ENCODE_THREADS=1
 BENCH_STEPS=8
 # Free-VRAM floor for a trustworthy baseline. The probe's own baseline read is
 # taken before the run, so a few hundred MiB of desktop compositor is tolerable;
@@ -143,6 +144,7 @@ while [ $# -gt 0 ]; do
         --bench-steps) BENCH_STEPS="$2"; shift 2 ;;
         --allow-busy-gpu) ALLOW_BUSY_GPU=1; shift ;;
         --skip-bench) SKIP_BENCH=1; shift ;;
+        --no-encode-threads) ENCODE_THREADS=0; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -444,12 +446,56 @@ DS_ROOT="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_MAX}"
 
 # --------------------------------------------------------------- build sides --
 
+# Re-enable burn-ndarray's DEFAULT `multi-threads` (rayon +
+# `matrixmultiply/threading`) in the worktree being built.
+#
+# loractl-core declares the burn umbrella with `default-features = false`, which
+# silently drops it, so the encode phase -- which `diffusion_trainer.rs` forces
+# onto the ndarray CPU backend on purpose (f16 overflows the Qwen encoders and
+# burn 0.21's wgpu f32 corrupted sequential encoder outputs) -- runs the 4B text
+# encoder on ONE core of 24.
+#
+# MEASURED on this box, same two images, cold cache:
+#     without: 598.7 s/image  (5 consecutive gaps: 628 637 576 576 577)
+#     with:    120.8 s/image
+#   -> ~5x, turning a 40-image encode from ~6.7 h into ~1.4 h.
+#
+# This is a BUILD-CONFIG change applied identically to both sides, not a change
+# to the revisions under test, and it cannot move the measured quantity: peak
+# VRAM is sampled during the cuda training loop, which happens after the encode
+# and shares nothing with burn-ndarray's host-side threading. It is applied here
+# rather than committed to the revisions so `--before`/`--after` keep naming the
+# real commits.
+#
+# `--no-encode-threads` opts out. The knob exists because the threaded GEMM
+# reassociates float sums, so latent bytes are not identical to a serial encode
+# -- irrelevant to a VRAM measurement, but if a future arm ever compares latent
+# VALUES it must be turned off.
+enable_ndarray_threads() {
+    local wt="$1" manifest="$1/crates/loractl-core/Cargo.toml"
+    grep -q '^burn-ndarray = .*multi-threads' "$manifest" && return 0
+    python3 - "$manifest" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+anchor = 'burn-store = { version = "0.21.0"'
+if anchor not in s:
+    sys.exit(f"residency-matrix: cannot find the [dependencies] anchor in {p}")
+dep = ('burn-ndarray = { version = "0.21", default-features = false, features = '
+       '["std", "multi-threads", "simd"] }\n')
+p.write_text(s.replace(anchor, dep + anchor, 1))
+PY
+}
+
 for side in before after; do
     if [ "$side" = before ]; then rev="$BEFORE_REV"; sha="$BEFORE_SHA"; else rev="$AFTER_REV"; sha="$AFTER_SHA"; fi
     worktree="$REPO_ROOT/tmp/residency-matrix/worktrees/$side"
     log "$side: worktree at $sha"
     git worktree remove --force "$worktree" 2>/dev/null || true
     git worktree add --detach --force "$worktree" "$rev" >/dev/null
+    if [ "$ENCODE_THREADS" -eq 1 ]; then
+        enable_ndarray_threads "$worktree" || die "$side: could not enable ndarray threads"
+        echo "  build config: burn-ndarray multi-threads ON (~5x encode; see the header)"
+    fi
     ( cd "$worktree" && cargo build --release -p loractl-core --features cuda \
         --example step_probe --example bench_step ) || die "$side: build failed at $sha"
 done
@@ -480,6 +526,17 @@ COLD_WT="$REPO_ROOT/tmp/residency-matrix/worktrees/$COLD_SIDE"
 SHARED="$OUT/data/shared"
 rm -rf "$SHARED"; mkdir -p "$SHARED"
 cp "$DS_ROOT"/*.jpg "$DS_ROOT"/*.txt "$SHARED"/
+
+# Seed from a cache left in the dataset root, so an interrupted encode RESUMES
+# instead of starting over. At ~2 min/image (~10 without threading) a run killed
+# 6 images in used to throw that away entirely. The fingerprint is encoder
+# identity and carries nothing about the build, so entries written by an earlier
+# run -- including one built without `multi-threads` -- are still valid hits.
+# Copy a cache here to reuse it:  cp -a <old-run>/data/shared/.loractl-cache tmp/datasets/<key>-<N>/
+if [ -d "$DS_ROOT/.loractl-cache" ]; then
+    cp -a "$DS_ROOT/.loractl-cache" "$SHARED"/
+    echo "seeded $(ls "$SHARED"/.loractl-cache | wc -l) cache entries from $DS_ROOT"
+fi
 
 log "cold encode: $N_MAX images on $COLD_SIDE (the slow part -- ~8.5 min/image)"
 render_config "$SHARED" "$OUT/run/cold" "$OUT/config-cold.yaml"
