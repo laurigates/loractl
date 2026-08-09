@@ -467,6 +467,13 @@ DS_ROOT="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_MAX}"
 # rather than committed to the revisions so `--before`/`--after` keep naming the
 # real commits.
 #
+# `simd` is deliberately NOT included. It breaks
+# `grad_checkpointing::checkpointing_is_numerically_identical_to_stored_activations`
+# (SIMD reduction order makes a checkpoint replay differ in the 7th significant
+# digit) and it is the smaller lever anyway -- 78.8 vs 94.2 ms/matmul, against
+# 32.0 for multi-threads. Isolated by feature: multi-threads alone passes that
+# test, simd alone fails it, at any thread count.
+#
 # `--no-encode-threads` opts out. The knob exists because the threaded GEMM
 # reassociates float sums, so latent bytes are not identical to a serial encode
 # -- irrelevant to a VRAM measurement, but if a future arm ever compares latent
@@ -481,7 +488,7 @@ anchor = 'burn-store = { version = "0.21.0"'
 if anchor not in s:
     sys.exit(f"residency-matrix: cannot find the [dependencies] anchor in {p}")
 dep = ('burn-ndarray = { version = "0.21", default-features = false, features = '
-       '["std", "multi-threads", "simd"] }\n')
+       '["std", "multi-threads"] }\n')
 p.write_text(s.replace(anchor, dep + anchor, 1))
 PY
 }
