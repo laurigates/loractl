@@ -410,29 +410,70 @@ fn tiny_krea2_int8_trains_end_to_end_and_exports_kohya() {
         .sum();
     assert!(sum > 0.0, "lora_up must have moved off its zero init");
 
-    // Resume: re-running against the same output dir loads the existing adapter
-    // (announced via a Warning) and continues from it — the loss stream differs
-    // from a fresh int8 start and the export layout is unchanged.
-    let mut cfg_resume = config(&out, dataset, STEPS);
+    // Resume (#180): re-running against the same output dir continues the
+    // existing adapter. `steps` is a TOTAL, so a 12-step artifact re-run with
+    // `steps: 18` executes 13..=18.
+    //
+    // This assertion used to be `assert_ne!(losses, losses_resume)` at the same
+    // `steps`, which passes even when the resumed run trains NOTHING (the
+    // starting weights differ, so the losses differ either way). Step numbers
+    // are what distinguishes continuation from restart, so assert those.
+    let mut cfg_resume = config(&out, dataset, STEPS + 6);
     cfg_resume.compute.quant = Quant::Int8;
-    let mut resumed = false;
-    let mut losses_resume = Vec::new();
+    let mut resume_note: Option<String> = None;
+    let mut steps_resume = Vec::new();
     let adapter_resume = DiffusionTrainer
         .train(&cfg_resume, &mut |event| match event {
-            TrainEvent::Warning { message } if message.contains("resuming") => resumed = true,
-            TrainEvent::Step { loss, .. } => losses_resume.push(loss),
+            TrainEvent::Warning { message } if message.contains("resuming") => {
+                resume_note = Some(message)
+            }
+            TrainEvent::Step { step, .. } => steps_resume.push(step),
             _ => {}
         })
         .expect("the int8 resume run completes");
-    assert!(resumed, "the int8 resume path must announce itself");
-    assert_ne!(
-        losses, losses_resume,
-        "a resumed int8 run continues from trained adapters, not from scratch"
+    let note = resume_note.expect("the int8 resume path must announce itself");
+    assert_eq!(
+        steps_resume,
+        (STEPS + 1..=STEPS + 6).collect::<Vec<_>>(),
+        "a resumed int8 run continues the step counter, it does not restart it"
     );
+    // The event names what WAS and what was NOT restored.
+    assert!(note.contains("AdamW moments for"), "{note}");
+    assert!(note.contains("RNG stream"), "{note}");
+    assert!(note.contains("resume.auto"), "{note}");
     assert_eq!(
         kohya_keys(&adapter_resume),
         keys,
         "resumed int8 export layout unchanged"
+    );
+    // The interop artifact carries no optimizer state: the moments ride in a
+    // sidecar whose keys no LoRA loader can match (the #137 failure shape).
+    let sidecar = adapter_resume.with_file_name("krea2-lora.optim.safetensors");
+    let sidecar_keys = kohya_keys(&sidecar);
+    assert_eq!(
+        sidecar_keys.len(),
+        keys.len() / 3 * 4,
+        "two moments per factor, two factors per site"
+    );
+    for key in &sidecar_keys {
+        assert!(
+            !key.ends_with(".weight") && !key.ends_with(".alpha"),
+            "sidecar key {key} could be matched by a LoRA loader"
+        );
+    }
+
+    // A rank change against the same output dir must fail LOUDLY, naming the
+    // site — a silent partial load would train at the wrong scale.
+    let mut cfg_rank = config(&out, cfg_resume.dataset.path.clone(), STEPS + 6);
+    cfg_rank.compute.quant = Quant::Int8;
+    cfg_rank.lora.rank = 8;
+    let err = DiffusionTrainer
+        .train(&cfg_rank, &mut |_| {})
+        .expect_err("a rank change must not resume silently");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("blocks.0.attn.") && message.contains("lora.rank"),
+        "the mismatch must name the site and the knob, got: {message}"
     );
 }
 

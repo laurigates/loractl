@@ -3693,7 +3693,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-api"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3712,11 +3712,11 @@ dependencies = [
 
 [[package]]
 name = "loractl-bench"
-version = "0.19.1"
+version = "0.20.0"
 
 [[package]]
 name = "loractl-cli"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3732,7 +3732,7 @@ dependencies = [
 
 [[package]]
 name = "loractl-core"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "burn",

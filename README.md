@@ -118,6 +118,16 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   base — with a JSON sidecar carrying the seed/shape to reconstruct the base,
   and (on the diffusion path) an embedded `__metadata__` header carrying the
   trigger words and training record (see [below](#adapter-metadata--trigger-words-and-the-training-record)).
+- **Resume** (diffusion path). Re-running a config against an output dir that
+  already holds an adapter *continues* it: `steps` is a **total**, not a
+  remainder, so a 200-step artifact re-run with `steps: 500` executes
+  201..=500. AdamW's moments, the loss scale and the step counter round-trip
+  through a `{name}.optim.safetensors` sidecar that no LoRA loader keys on; the
+  RNG stream is not restored, so a resumed run is a continuation and not a
+  bit-identical replay, and the run says so. `--resume <file>` names a source
+  explicitly (any `checkpoint-N.safetensors` works), `--no-resume` forces a
+  fresh start, and an artifact whose `__metadata__` says its run did not finish
+  is refused by name unless `--resume-unfinished` is passed.
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box
@@ -388,6 +398,14 @@ What that route costs in time: on an **RTX 4090**, Krea 2 at 512px with
 for the configuration it holds for and what it does not license. It is **not**
 comparable to other trainers' published `s/it`: a step time belongs to the
 model and config, not the trainer.
+
+**512px is the only point any of that was measured at.** A config that leaves
+it — a larger `dataset.resolution`, or a dataset big enough that its cached
+conditioning alone eats the headroom — now gets one warning *before* the encode
+phase, naming what changed and by how much (the trunk sequence at both
+resolutions, the retained block inputs at both) and pointing at `just
+step-probe`. It is advisory, not a refusal: a large resolution is legal, merely
+unmeasured. There is no knob to silence it.
 
 ## Observability (GlitchTip / Sentry)
 

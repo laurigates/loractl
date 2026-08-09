@@ -251,7 +251,10 @@ struct TrainCmd {
     #[arg(long)]
     lr: Option<f64>,
 
-    /// Override the number of steps from the config.
+    /// Override the number of steps from the config. A TOTAL, not an
+    /// increment: resuming a 200-step artifact with `--steps 500` runs steps
+    /// 201..=500, and re-running an already-complete config trains no steps
+    /// at all. Use `--no-resume` to start over instead.
     #[arg(long)]
     steps: Option<u64>,
 
@@ -327,6 +330,27 @@ struct TrainCmd {
     /// timestamps, no run details).
     #[arg(long)]
     no_metadata: bool,
+
+    /// Override `resume.from`: resume from this adapter (a previous final
+    /// export or any `checkpoint-N.safetensors`) instead of whatever sits in
+    /// `output.dir`. Naming a file is a statement of intent, so an explicit
+    /// target is accepted even when it comes from a run that did not finish.
+    /// `steps` stays a TOTAL: resuming a 200-step artifact with `--steps 500`
+    /// runs steps 201..=500.
+    #[arg(long, value_name = "FILE")]
+    resume: Option<PathBuf>,
+
+    /// Override `resume.auto: false`: start fresh even though `output.dir`
+    /// already holds an adapter, instead of continuing it.
+    #[arg(long, conflicts_with = "resume")]
+    no_resume: bool,
+
+    /// Override `resume.allow_unfinished`: let the automatic path resume an
+    /// artifact whose `__metadata__` says the run that wrote it did not
+    /// finish. Only needed after a checkpoint has been copied over the final
+    /// artifact, or an interrupted write — `--resume` does not need it.
+    #[arg(long)]
+    resume_unfinished: bool,
 }
 
 #[derive(Args)]
@@ -487,6 +511,18 @@ fn resolve_config(cmd: &TrainCmd) -> Result<TrainConfig> {
     }
     if cmd.no_metadata {
         config.metadata.embed = false;
+    }
+    // Resume overrides (#180). `--resume` names a source and, being explicit,
+    // does not consult `resume.auto`; `--no-resume` is the way to force a
+    // fresh run into a directory that already holds an adapter.
+    if let Some(from) = &cmd.resume {
+        config.resume.from = Some(from.clone());
+    }
+    if cmd.no_resume {
+        config.resume.auto = false;
+    }
+    if cmd.resume_unfinished {
+        config.resume.allow_unfinished = true;
     }
     Ok(config)
 }
@@ -897,6 +933,9 @@ mod tests {
             tokenizer: None,
             trigger_words: Vec::new(),
             no_metadata: false,
+            resume: None,
+            no_resume: false,
+            resume_unfinished: false,
         }
     }
 
@@ -1005,6 +1044,66 @@ mod tests {
             assert_eq!(
                 config.model.tokenizer.as_deref(),
                 Some(std::path::Path::new("flag/tokenizer.json"))
+            );
+            Ok(())
+        });
+    }
+
+    /// The #180 resume flags, pinned for the same reason as everything above:
+    /// they are applied by mutating the struct *after* figment extraction, so
+    /// moving that block above `load_config` — or renaming a `ResumeConfig`
+    /// field — would silently drop the override with nothing else to catch it.
+    ///
+    /// The three knobs need three different shapes of proof. `--resume` is a
+    /// value, so it can be layered against both a file and an env var and must
+    /// win. `--no-resume` and `--resume-unfinished` are booleans that push in
+    /// one direction only, so each is set against a *file and env layer that
+    /// already says the opposite* — otherwise the assertion would pass on a
+    /// flag that does nothing.
+    #[test]
+    fn resume_flags_beat_env_and_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                "steps: 10\n\
+                 model:\n  base: synthetic\n\
+                 dataset:\n  path: unused\n\
+                 lora: {}\n\
+                 optim:\n  lr: 0.0001\n\
+                 resume:\n  from: file.safetensors\n  auto: true\n  allow_unfinished: false\n",
+            )?;
+            jail.set_env("LORACTL_RESUME__FROM", "env.safetensors");
+            jail.set_env("LORACTL_RESUME__AUTO", "true");
+            jail.set_env("LORACTL_RESUME__ALLOW_UNFINISHED", "false");
+
+            // First: with no flags, the env layer must beat the file — this is
+            // what makes the flag assertions below meaningful rather than a
+            // comparison against a value nothing else was setting.
+            let env_only = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(
+                env_only.resume.from.as_deref(),
+                Some(std::path::Path::new("env.safetensors")),
+                "env must win over the file"
+            );
+
+            let mut cmd = cmd_for("config.yaml");
+            cmd.resume = Some("flag.safetensors".into());
+            cmd.no_resume = true; // against auto: true in BOTH lower layers
+            cmd.resume_unfinished = true; // against allow_unfinished: false in both
+
+            let config = resolve_config(&cmd).expect("resolve");
+            assert_eq!(
+                config.resume.from.as_deref(),
+                Some(std::path::Path::new("flag.safetensors")),
+                "flag must win over env and file"
+            );
+            assert!(
+                !config.resume.auto,
+                "--no-resume must beat `auto: true` from the file and the env layer"
+            );
+            assert!(
+                config.resume.allow_unfinished,
+                "--resume-unfinished must beat `allow_unfinished: false` from both"
             );
             Ok(())
         });

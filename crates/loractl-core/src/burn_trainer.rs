@@ -429,6 +429,27 @@ fn run_classification<B: AutodiffBackend>(
 
     let batches = select_batches::<B>(config, &device, sink);
 
+    // No resume on this path, deliberately (#180). `config.resume` is read by
+    // `DiffusionTrainer` only, and this loop always starts at step 1 even when
+    // `output.dir` already holds an adapter. Three reasons, none of them
+    // "nobody got to it":
+    //
+    // 1. What this path writes is the burn-native snapshot (`crate::adapter`),
+    //    not the kohya export the diffusion resume round-trips — a different
+    //    format with a different reconstruction contract.
+    // 2. `adapter::load_adapter` regenerates the FROZEN base from the seed, and
+    //    `.claude/rules/burn-lazy-param-init.md` records that burn 0.21's lazy
+    //    `Param` init makes that depend on the RNG *history*, not the seed
+    //    alone. A warm start here would silently reconstruct a different frozen
+    //    base and train on top of it.
+    // 3. `metadata:` is documented as a no-op on this path
+    //    (`config.rs`'s `MetadataConfig`), so there is no `ss_steps` to honour
+    //    — resume would have nothing to key its step counter on.
+    //
+    // These runs are the synthetic/MNIST demos: seconds to minutes, where
+    // restarting costs nothing and a silently-wrong warm start costs a
+    // debugging session. Pinned by `tests/resume.rs`.
+    //
     // AdamW (decoupled weight decay) so `optim.weight_decay` is honored; at the
     // default `0.0` this is numerically identical to plain Adam, so the numerics
     // goldens are unaffected. `AdamWConfig`'s own default decay is 1e-4, so we

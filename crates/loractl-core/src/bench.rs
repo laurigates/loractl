@@ -345,8 +345,17 @@ impl StepWork {
 
         let cfg = MmditConfig::for_variant(config.model.variant);
         let batch = config.dataset.batch_size as usize;
-        let latent = (config.dataset.resolution as usize) / 8;
-        let image_tokens = (latent / cfg.patch).pow(2);
+        // The shared derivation (`mmdit::token_geometry`), with
+        // `caption_tokens: 0` on purpose: this model's contract is
+        // image-only and says so via `seq_len_source=derived_image_only`,
+        // so folding the caption block in here would silently move every
+        // `tok_s=`/`tflops=` the bench has ever printed. The f8 downsample
+        // is likewise passed literally rather than read off the variant's
+        // VAE — `TinyKrea2`'s is f4, and modelling it would change the
+        // fixture-only numbers this module's tests pin.
+        let geometry = crate::mmdit::token_geometry(config.dataset.resolution, 8, cfg.patch, 0);
+        let latent = geometry.latent;
+        let image_tokens = geometry.image_tokens;
         let (seq_len, source) = match seq_len_flag {
             Some(n) => (n, "declared"),
             None => (image_tokens, "derived_image_only"),

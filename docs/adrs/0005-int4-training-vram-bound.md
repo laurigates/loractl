@@ -367,8 +367,10 @@ pinned here and a re-run should fix that by pasting the literal
 
 Neither ambiguity threatens the verdict — the discriminator was always
 zero-panic vs OOM, not a specific byte count — but the number is quoted
-downstream (README, roadmap, example configs), so its basis should be pinned
-on the next probe run.
+downstream (README, roadmap, example configs, and since #179 in code —
+`crates/loractl-core/src/envelope.rs` carries it as `MEASURED_PEAK_GB` /
+`MEASURED_HEADROOM_GB` and prints it in the pre-flight advisory), so its basis
+should be pinned on the next probe run.
 
 Numerics: `tests/block_ckpt.rs` pins the checkpointed loss and **every**
 per-`ParamId` adapter gradient bit-identical to the monolithic path on the

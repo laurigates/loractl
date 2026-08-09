@@ -63,7 +63,10 @@ Sequence length is **not** proportional to pixel area: the trunk concatenates
 text and image tokens and zero-pads the result to a multiple of 256
 (`crates/loractl-core/src/mmdit.rs:1388-1399`), and the text side is a fixed
 512-token block — `tokenize` truncates *and* right-pads every caption to the
-same `body_len` (`crates/loractl-core/src/qwen3vl.rs:611-618`), and
+same `body_len` (`crates/loractl-core/src/qwen3vl.rs:687-694`; since #163 that
+length is derived, `body_len + suffix_len == max_length + prefix_len`, which is
+what makes the emitted stack exactly `max_length` rather than assumed to be),
+and
 `variant_configs` passes `512` for Krea 2
 (`crates/loractl-core/src/diffusion_trainer.rs:121`), so the text contribution
 is exactly 512 for any caption, not merely capped at it. That makes the

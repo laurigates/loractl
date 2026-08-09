@@ -1,0 +1,78 @@
+# Template for the #175/#178 dataset-residency matrix (scripts/residency-matrix.sh).
+#
+# NOT runnable as-is: the script substitutes @MODELS_ROOT@, @DATASET@ and
+# @OUT@ per arm and writes the result next to that arm's log. The knobs that
+# define the measurement live HERE rather than in a shell heredoc, so a review
+# of what was measured is a review of a checked-in file.
+#
+# Every key below exists on BOTH revisions under comparison. That is a hard
+# constraint, not a style choice: the matrix runs the same config against
+# pre-#175 and post-#175 code, so a key the PR introduces (`dataset.no_upscale`,
+# `dataset.bucketing`) would make the "before" arm fail to parse and turn a
+# comparison into a crash. Keep it that way when editing.
+#
+# `steps: 3` matches the ADR-0005 step-probe convention: the fit question is
+# "does a real step fit", and peak VRAM is reached within the first backward.
+# The bench arm overrides this on the command line (a throughput number needs
+# more windows -- see config/probes/tiny-bench.yaml for the floor).
+
+task: flow-matching
+
+model:
+  base: "@MODELS_ROOT@"
+  variant: krea2
+  denoiser: diffusion_models/krea2/krea2_raw_fp8_scaled.safetensors
+  text_encoder: text_encoders/qwen/qwen3vl_4b_fp8_scaled.safetensors
+  vae: vae/qwen/qwen_image_vae.safetensors
+  # Pinned explicitly so the matrix is hermetic. A ComfyUI layout ships no
+  # tokenizer, so without this the trainer falls back to fetching one from
+  # `krea/Krea-2-Raw` -- which is now GATED (`gated: "auto"`, verified
+  # 2026-08-07; `hf.rs` still calls it ungated). That fetch 401s, and it does
+  # so ~9 minutes in, AFTER the 4.9 GiB text encoder has loaded, once per arm.
+  # An override naming a missing file is a hard error rather than a silent
+  # fetch, which is the behaviour a measurement wants.
+  tokenizer: "@TOKENIZER@"
+
+dataset:
+  path: "@DATASET@"
+  # 512 is the resolution ADR-0005 Addendum 3 measured the 19.4 GB / ~4 GB
+  # headroom fit at. The whole point of #175 is that dataset residency eats
+  # that headroom, so the arms must sit at the same resolution the headroom
+  # was established at.
+  resolution: 512
+  batch_size: 1
+
+lora:
+  rank: 16
+  alpha: 16.0
+  targets:
+    # Every MMDiT trunk projection (196 sites) -- the Addendum 3 configuration.
+    # Site count is NOT a memory lever (Addendum 1 item 1), so this is chosen to
+    # match the recorded fit rather than to influence the result.
+    - pattern: 'blocks\.'
+
+optim:
+  lr: 1.0e-4
+
+steps: 3
+seed: 42
+
+output:
+  dir: "@OUT@"
+  name: residency-matrix
+  # Past any step count the matrix runs, so no checkpoint export lands mid-run.
+  # On the bench arm a checkpoint would contaminate a timed window; on the
+  # step-probe arms it would add a VRAM excursion that is not the step's.
+  checkpoint_every: 100000
+
+# The 24 GB-card route: cuda f32 + int4 frozen base + block-level gradient
+# checkpointing (ADR-0005). Changing any of these invalidates comparison
+# against the recorded 19.4 GB peak.
+compute:
+  backend: cuda
+  precision: f32
+  quant: int4
+  grad_checkpointing: true
+
+flow:
+  shift_mode: resolution

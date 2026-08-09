@@ -13,6 +13,11 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainConfig {
     /// Number of optimization steps to run.
+    ///
+    /// A **total**, not an increment — this matters on a resume (#180). A run
+    /// that continues a 200-step artifact with `steps: 500` runs steps
+    /// 201..=500, and re-running an already-complete config trains *zero*
+    /// steps rather than another full pass. See [`ResumeConfig`].
     #[serde(default = "defaults::steps")]
     pub steps: u64,
 
@@ -41,6 +46,13 @@ pub struct TrainConfig {
     /// Output/checkpointing settings (has sensible defaults).
     #[serde(default)]
     pub output: OutputConfig,
+
+    /// Where a run picks training back up from (#180). Defaults to the
+    /// historical behaviour — auto-resume from `output.dir/output.name` when
+    /// that file already exists — so a config with no `resume:` block runs
+    /// exactly as before.
+    #[serde(default)]
+    pub resume: ResumeConfig,
 
     /// Compute backend + device (defaults to the ndarray CPU backend, so an
     /// existing config with no `compute:` block runs exactly as before).
@@ -84,6 +96,7 @@ impl Default for TrainConfig {
             dataset: DatasetConfig::default(),
             optim: OptimConfig::default(),
             output: OutputConfig::default(),
+            resume: ResumeConfig::default(),
             compute: ComputeConfig::default(),
             flow: FlowConfig::default(),
             metadata: MetadataConfig::default(),
@@ -536,6 +549,64 @@ impl Default for OutputConfig {
             name: String::from("lora"),
             checkpoint_every: 250,
             sample_every: 0,
+        }
+    }
+}
+
+/// Where a run resumes from, and under what provenance (#180).
+///
+/// Resume is an **input** to a run, so it lives at the top level rather than
+/// hanging off [`OutputConfig`] (which describes the artifacts a run *writes*).
+///
+/// `steps` is a **total, not a remainder**: a run resuming an artifact whose
+/// `ss_steps` is 200 with `steps: 500` executes steps 201..=500. That matches
+/// what the exported `ss_max_train_steps` has always meant
+/// ([`crate::metadata`]) and what `Started.total_steps` already reports — the
+/// `Started` event is emitted before the resume source is even opened, so it
+/// could not report a remainder without changing what an SSE consumer sees
+/// mid-stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResumeConfig {
+    /// An explicit artifact to resume from — a previous final export or any
+    /// `checkpoint-N.safetensors`. When set, `auto` is not consulted.
+    ///
+    /// Naming a file is a statement of intent, so an explicit target is
+    /// accepted even when its metadata says the run that wrote it did not
+    /// finish (every mid-run checkpoint is unfinished by construction).
+    ///
+    /// The optimizer sidecar is looked for **beside the source**, not beside
+    /// the destination — resuming into a clean `output.dir` still restores
+    /// AdamW's moments.
+    pub from: Option<PathBuf>,
+
+    /// Resume from `output.dir/output.name.safetensors` when it already
+    /// exists. `true` by default: this is the behaviour the diffusion path
+    /// has always had, and silently changing it would strand every workflow
+    /// that relies on re-running a config to extend an adapter. Set `false`
+    /// (or pass `--no-resume`) to force a fresh start into a directory that
+    /// already holds an adapter.
+    pub auto: bool,
+
+    /// Let the `auto` path accept an artifact whose `__metadata__` says the
+    /// run that wrote it did not finish (no `ss_training_finished_at`).
+    ///
+    /// Off by default and a hard error rather than a warning: the final
+    /// export is *only* ever written with a finish timestamp, so an unfinished
+    /// file at that path means someone copied a checkpoint over it or a write
+    /// was interrupted — and a warning scrolls past inside a multi-hour run
+    /// whose whole cost is what the mistake wastes. An operator who knows the
+    /// file is good sets this (or passes `--resume-unfinished`). It does not
+    /// apply to `from`, which is explicit already.
+    pub allow_unfinished: bool,
+}
+
+impl Default for ResumeConfig {
+    fn default() -> Self {
+        Self {
+            from: None,
+            auto: true,
+            allow_unfinished: false,
         }
     }
 }

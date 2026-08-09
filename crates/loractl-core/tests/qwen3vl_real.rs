@@ -1,7 +1,8 @@
 //! Opt-in conditioning parity against the **real** Krea-2-Raw text encoder —
 //! the exact shipped Qwen3-VL weights + tokenizer Krea 2 conditions on
 //! (M10, #21 acceptance: real weights load with `errors`/`missing` empty +
-//! caption → embedding parity).
+//! caption → embedding parity), and — since #163 — the only place the
+//! template's real token lengths (34/5) are asserted rather than assumed.
 //!
 //! Gated behind the `qwen3vl-real` feature AND `#[ignore]`. The fixtures
 //! (~18 GB f32 re-save + goldens) are **not** checked in; produce them with:
@@ -24,7 +25,10 @@ mod common;
 
 use burn::backend::NdArray;
 use common::{cosine, max_abs_diff};
-use loractl_core::qwen3vl::{Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder};
+use loractl_core::qwen3vl::{
+    Qwen3VlConditioner, Qwen3VlConfig, Qwen3VlEncoder, REAL_PROMPT_PREFIX_LEN,
+    REAL_PROMPT_SUFFIX_LEN,
+};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -43,6 +47,10 @@ struct Golden {
     attention_mask: Vec<i64>,
     select_layers: Vec<usize>,
     max_length: usize,
+    /// The template's token lengths as the **real** tokenizer produces them
+    /// (#163) — derived by `reference/qwen3vl_reference.py`, not transcribed.
+    prefix_len: usize,
+    suffix_len: usize,
     conditioning_shape: Vec<usize>,
     safetensors_keys: Vec<String>,
 }
@@ -120,6 +128,24 @@ fn real_qwen3vl_conditioning_matches_transformers_golden() {
     // reproduce the reference's exact ids and mask for the same caption.
     let conditioner = Qwen3VlConditioner::new(model, Path::new(TOKENIZER), golden.max_length)
         .expect("load tokenizer");
+
+    // #163: the conditioner derives the template's token lengths from the
+    // tokenizer it loaded, so the always-run tests can only pin the
+    // *invariant* (emitted == max_length) — they have no real vocabulary.
+    // This is the one place the historical 34/5 can be checked against the
+    // real one, in both directions: against the reference generator's own
+    // derivation, and against the documented constants.
+    assert_eq!(
+        (conditioner.prefix_len(), conditioner.suffix_len()),
+        (golden.prefix_len, golden.suffix_len),
+        "the Rust tokenizer disagrees with transformers on the template's length"
+    );
+    assert_eq!(
+        (conditioner.prefix_len(), conditioner.suffix_len()),
+        (REAL_PROMPT_PREFIX_LEN, REAL_PROMPT_SUFFIX_LEN),
+        "the real tokenizer no longer yields the documented template lengths — \
+         Krea 2 repacked its tokenizer or edited the template"
+    );
     let (ids, mask, [b, s]) = conditioner
         .tokenize(&[golden.caption.as_str()])
         .expect("tokenize caption");
@@ -135,6 +161,13 @@ fn real_qwen3vl_conditioning_matches_transformers_golden() {
         .encode_captions(&[golden.caption.as_str()], &device)
         .expect("encode caption");
     assert_eq!(conditioning.dims().to_vec(), golden.conditioning_shape);
+    // The invariant itself, on the real path: exactly `max_length` text
+    // positions reach the MMDiT (what ADR-0008's sizing assumes).
+    assert_eq!(
+        conditioning.dims()[1],
+        golden.max_length,
+        "emitted conditioning must be exactly max_length positions"
+    );
     let got = conditioning
         .into_data()
         .convert::<f32>()
