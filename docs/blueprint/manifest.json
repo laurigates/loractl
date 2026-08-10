@@ -1,7 +1,7 @@
 {
-  "format_version": "3.3.0",
+  "format_version": "3.4.0",
   "created_at": "2026-07-04T04:52:01Z",
-  "updated_at": "2026-07-11T07:07:44Z",
+  "updated_at": "2026-08-10T11:19:35Z",
   "created_by": {
     "blueprint_plugin": "3.38.0"
   },
@@ -216,5 +216,24 @@
       }
     },
     "github_issues": {}
-  }
+  },
+  "automation": {
+    "autonomy_level": 1,
+    "interaction_mode": "normal",
+    "work_orders": {
+      "auto_draft": false,
+      "auto_execute": false
+    }
+  },
+  "upgrade_history": [
+    {
+      "from": "3.3.0",
+      "to": "3.4.0",
+      "date": "2026-08-10T11:19:35Z",
+      "changes": [
+        "Added automation block (autonomy_level=1, interaction_mode=normal, work_orders auto_draft/auto_execute=false)",
+        "task_registry auto_run/schedule contract now executed by blueprint-autorun"
+      ]
+    }
+  ]
 }
