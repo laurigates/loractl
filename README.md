@@ -236,6 +236,10 @@ dataset:
   path: /path/to/my-images   # images + same-stem .txt captions
   resolution: 512            # must be a multiple of 16
   batch_size: 1              # per bucket — batches never mix buckets
+  # Optional (both default off — see "Bucketing knobs" below):
+  # no_upscale: false        # never enlarge an image to fill its bucket
+  # bucketing: aspects       # aspects | grid
+  # min_bucket_resolution:   # grid only; defaults to resolution / 2
 ```
 
 - **Any size and aspect ratio is accepted — no pre-processing needed.** Each
@@ -243,7 +247,7 @@ dataset:
   aspect-ratio buckets (1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16), each sized to
   roughly `resolution²` pixels. That crop is **lossy at the edges**: an image
   far from every bucket's aspect loses the overflow, so crop it yourself when
-  the subject sits near a border.
+  the subject sits near a border — or see `bucketing: grid` below.
 - **`.png`, `.jpg`, `.jpeg` only** — every other extension is skipped
   *silently*. A folder of `.webp` therefore reads as empty and fails fast (`no
   .png/.jpg/.jpeg images found in …`); a folder with a few of them quietly
@@ -251,12 +255,88 @@ dataset:
 - **`resolution` must be a multiple of 16** (Krea 2's compression × patch
   grid). An unaligned value is a config error, not a panic.
 
+#### Bucketing knobs
+
+Two opt-in knobs change *which* box an image is fitted to. Both are
+YAML + env only (`LORACTL_DATASET__NO_UPSCALE`, `LORACTL_DATASET__BUCKETING`,
+`LORACTL_DATASET__MIN_BUCKET_RESOLUTION`) — there is no CLI flag, because
+these are properties of a dataset, not of an invocation. **The knob names are
+exact**: an unknown `dataset:` key is ignored silently, so a typo'd
+`no_upscaled:` leaves the default in place with nothing to read.
+
+`no_upscale: true` stops a small image being enlarged to fill its bucket.
+Instead of Lanczos-inventing detail, it gets a smaller 16-px-aligned box of
+the same aspect that fits inside the source (a 40×40 thumbnail in a 512px
+dataset trains as a 32×32 box, which is visible in the exported
+`ss_bucket_info` and is a near-useless example either way). Images that
+already cover their bucket are untouched. **One exception, by construction:**
+boxes are floored at 16×16, since a zero-sided bucket is not a bucket — so a
+source under 16 px on a side is still scaled up into a 16×16 box. Nothing
+else is.
+
+`bucketing: grid` replaces the seven fixed ratios with a kohya-style
+symmetric 2-D grid: every aligned box whose area fits inside `resolution²`
+and whose shorter side is at least `min_bucket_resolution` (default
+`resolution / 2`), plus each box's transpose — 65 buckets at 512/256. The
+trade, measured offline over the whole 0.25–4.0 aspect range:
+
+| source | `aspects` (default) | `grid` (512 / 256) |
+|---|---|---|
+| worst case over 0.25–4.0 | **55.2 %** discarded | **3.8 %** discarded |
+| 4:1 banner (1600×400) | 688×384, 55.2 % lost | 1024×256, **0 %** |
+| 3:1 (3000×1000) | 688×384, 40.3 % lost | 864×288, **0 %** |
+| 4:3 photo (1024×768) | 592×448, **0.9 %** lost | 592×432, 2.7 % lost |
+
+Read the last row before switching: **grid mode is a large win for extreme
+aspects and a small loss for ordinary 4:3/3:2 photography**, because the
+hand-picked list nails exactly the ratios it was built for while the 16-px
+grid quantizes aspect to ~3 %. That is why `aspects` stays the default.
+
+Two consequences worth planning for:
+
+- **More buckets means more partial batches.** Batches never mix buckets, so
+  65 grid buckets over a 20-image folder leaves most batches at size 1:
+  `batch_size` quietly stops being honored, and the exported
+  `ss_num_batches_per_epoch` / `ss_num_epochs` change with it. The encode
+  phase reports the bucket and batch counts it actually produced — read that
+  line. Grid mode earns its keep on aspect-diverse datasets, not small ones.
+- **The bucket count scales with `resolution`, not just with
+  `min_bucket_resolution`.** 65 buckets is the count at 512/256; the same
+  ratio at 1024 gives 129, and the lowest `min_bucket_resolution` the
+  validator accepts (`resolution / 4`) gives 193 at 512px, 385 at 1024px and
+  769 at 2048px. A validation error names the field for every rejected value,
+  including a `min_bucket_resolution` equal to `resolution` (which would leave
+  only the square bucket) and one set at all under `bucketing: aspects`
+  (where it means nothing).
+- **Switching `bucketing` re-encodes every latent** (the cache key carries the
+  bucket box, and essentially every box changes), so expect a long `encoding`
+  phase on the first run. It does **not** re-encode the conditioning, which is
+  the expensive half — the text encoder is keyed on caption identity, not
+  geometry. Flipping `no_upscale` re-encodes only the images it actually
+  affects.
+
 > **Editing a dataset in place? Delete `.loractl-cache/` first.** Latents and
 > conditioning are encoded once and cached under `<dataset>/.loractl-cache/`,
 > keyed by file name, bucket shape, and encoder identity — deliberately **not**
 > by content. Overwriting `dog.png` or rewriting `dog.txt` under the same name
 > serves the previous run's tensors, silently. Adding, removing, or renaming
 > files is safe; editing one in place is not.
+
+Two runs over the same `dataset.path` **share** that cache — the key is
+encoder identity, not run identity — which is the point (a rank/lr sweep pays
+the encode once). Each file is written to a temp name and renamed into place,
+so a concurrent or interrupted run leaves no half-written cache entry behind.
+
+The encode phase decodes and resizes images **across all cores** while the VAE
+and text encoder run one example at a time (they are GPU-bound and cannot be
+parallelized). Set `RAYON_NUM_THREADS=1` to force the old fully-serial
+behaviour — the cached tensors are bit-identical either way, so this is a
+debugging lever, never a correctness one. It is also the lever to reach for on
+a small machine: each in-flight decode holds the full-frame resized image,
+which for an extreme aspect is much larger than the bucket (a 4000×250 banner
+into a 688×384 bucket resizes to 6144×384 before the crop), and up to one
+decode per core is in flight. `no_upscale: true` caps that too, since a fitted
+box never scales the source up.
 
 The pipeline itself — bucket generation, the cache layout and its fingerprint
 keying, and the encode-once-per-example contract — is documented in

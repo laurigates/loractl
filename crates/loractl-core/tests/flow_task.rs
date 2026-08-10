@@ -9,8 +9,8 @@
 
 use loractl_core::adapter::AdapterMeta;
 use loractl_core::config::{
-    BackendKind, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, OptimConfig, OutputConfig,
-    ShiftMode, TaskKind,
+    BackendKind, BucketMode, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, OptimConfig,
+    OutputConfig, ShiftMode, TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, Trainer};
 use std::path::PathBuf;
@@ -33,6 +33,9 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,
