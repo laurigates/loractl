@@ -101,13 +101,66 @@ curl -X POST http://127.0.0.1:8188/free -H 'Content-Type: application/json' -d '
 `check_step_loss` message itself is still wrong for f32 configs — tracked
 separately; it should read the configured precision before giving f16 advice.
 
+## 3. `no tokenizer found` + `http status: 401` means a GATED repo, nine minutes in
+
+A ComfyUI-layout run ships no `tokenizer.json`, so `hf::fetch_qwen3vl_tokenizer`
+falls back to `krea/Krea-2-Raw`. That repo is **gated** (`gated: "auto"`,
+verified against the HF API 2026-08-07) — `hf.rs` still calls it ungated in two
+places, and `config.rs` still tells users the ComfyUI flow "needs nothing set
+here":
+
+```
+  load: text encoder (4.9 GiB) from qwen3vl_4b_fp8_scaled.safetensors
+Error: encoding caption for <first image>
+Caused by:
+    0: no tokenizer found (no model.tokenizer override, no tokenizer/tokenizer.json under base)
+    2: http status: 401
+```
+
+Unauthenticated gives **401**; a valid token whose account has not accepted the
+terms gives **403**.
+
+What makes it expensive rather than merely wrong: the tokenizer is not needed
+until the **first caption is encoded**, so the failure lands *after* the 4.9 GiB
+text encoder has loaded — **~9 minutes per attempt**, and once per arm of any
+sweep. A 2026-08-07 matrix run burned eight arms rediscovering it.
+
+**Anyone with a warm `$HF_HOME/loractl/qwen3vl-4b-tokenizer.json` never sees
+it**, which is why it went unnoticed: the cache predates the gating. The
+corollary is a second trap — *pointing `HF_HOME` somewhere new silently
+invalidates that cache* and sends the next run to the network. That is exactly
+how the 2026-08-07 run found it.
+
+Resolve it before loading anything. `hf.rs` pins the file's SHA-256, so **any**
+byte-identical copy is provably the right tokenizer — there is no judgement call
+about tokenizer identity, only a hash check:
+
+```sh
+sha256sum "${HF_HOME:-$HOME/.cache}/loractl/qwen3vl-4b-tokenizer.json"
+# expect be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
+```
+
+Then pass it explicitly (`model.tokenizer`, or `--tokenizer` in
+`scripts/residency-matrix.sh`, whose preflight does exactly this check). Tracked
+as #200.
+
 ## The shared lesson
 
-Both failures **report a plausible wrong cause rather than erroring honestly**,
+The first two **report a plausible wrong cause rather than erroring honestly**,
 and in both the honest evidence is one cheap measurement away — `df` during the
 link, `nvidia-smi` before the run. Neither is recoverable from the error text
-alone, and one of them (the NaN) actively points at the wrong subsystem. When a
-GPU-runner failure names a component, check the *resource* at the failure point
-before believing it — the same law as the user-global
+alone, and one of them (the NaN) actively points at the wrong subsystem.
+
+The third is the variant worth recognizing separately: its error text is
+**accurate**, and it still costs an afternoon, because it arrives ~9 minutes and
+one 4.9 GiB load into every attempt, and because the code's own comments assert
+the opposite ("ungated", "needs nothing set here"). The remedy is the same shape
+as the other two — move the check to the front, where it costs milliseconds — but
+the tell is different: not a misleading message, a **late** one resting on a
+stale premise. When a precondition is cheap to verify and expensive to discover,
+verify it in a preflight rather than at the point of use.
+
+When a GPU-runner failure names a component, check the *resource* at the failure
+point before believing it — the same law as the user-global
 `diagnose-at-the-failure-point` rule, and as ADR-0005's own reclassification of
 these very panics from "reclaim race" to "genuine OOM".
