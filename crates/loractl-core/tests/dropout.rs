@@ -14,7 +14,9 @@
 //! loss sequence. Black-box (observes only the `TrainEvent` stream). Offline,
 //! milliseconds.
 
-use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
+use loractl_core::config::{
+    BucketMode, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
+};
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
 
@@ -56,6 +58,9 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,

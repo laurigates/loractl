@@ -74,7 +74,7 @@ use crate::adapters::{LoraAdapters, build_adapters};
 use crate::config::{
     BackendKind, ModelConfig, ModelVariant, Precision, Quant, TaskKind, TrainConfig,
 };
-use crate::dataset::prepare_dataset;
+use crate::dataset::{plan_dataset, prepare_dataset};
 use crate::event::{PhaseCounters, PhaseName, TrainEvent};
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
@@ -556,9 +556,11 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     // callback fires relative to its own per-entry work — an invariant nothing
     // pinned. The cost is one extra scan (image headers and caption files, no
     // decode) against a phase that costs minutes per cache miss.
+    let mut advisory_buckets = crate::dataset::bucket_set(&config.dataset)?;
     let entries = crate::dataset::scan_dataset(
         &config.dataset.path,
-        &crate::dataset::generate_buckets(config.dataset.resolution)?,
+        &mut advisory_buckets,
+        config.dataset.no_upscale,
     )?;
     if let Some(message) = crate::envelope::preflight_advisory(config, Some(entries.len())) {
         (sink.borrow_mut())(TrainEvent::Warning { message });
@@ -675,15 +677,37 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     // different conditioning build reads back clean and misaligned
     // (`crate::cache_guard`). Checked here as well as in the training phase:
     // this is the pass that would otherwise *write* the mixed cache.
+    // Read from the cached header (#175 made items a plan, not tensors).
     crate::cache_guard::check_conditioning_lengths(
-        prepared.items.iter().map(|i| i.conditioning.dims()[1]),
+        prepared.items.iter().map(|i| i.cond_shape[1]),
         max_length,
         &config.dataset.path,
         &fingerprint,
     )?;
+    // Bucket occupancy and batch count are surfaced here because the
+    // #147/#148 knobs degrade *quietly*: finer bucketing means smaller
+    // per-bucket groups, batches never mix buckets, and so a config reading
+    // `batch_size: 4` can silently train at an effective batch of ~1. That is
+    // not an error and nothing else in the run reports it — but it does change
+    // the exported `ss_num_batches_per_epoch`/`ss_num_epochs`, so one line of
+    // output beats a surprise in the header. Recomputed from the prepared
+    // dataset rather than from the config, so it describes what this run will
+    // actually do — but counted arithmetically rather than by calling
+    // `batches()`, so this phase does not depend on the batching rule at all
+    // and cannot drift into a second, subtly different implementation of it.
+    let batch_size = config.dataset.batch_size.max(1) as usize;
+    let mut occupancy = vec![0usize; prepared.buckets.len()];
+    for item in &prepared.items {
+        occupancy[item.bucket] += 1;
+    }
+    let populated = occupancy.iter().filter(|&&n| n > 0).count();
+    let batches: usize = occupancy.iter().map(|n| n.div_ceil(batch_size)).sum();
     emit(
         PhaseName::Encode,
-        format!("cache ready — {seen} examples ({encoded} encoded this pass)"),
+        format!(
+            "cache ready — {seen} examples ({encoded} encoded this pass) in {populated} \
+             bucket(s) → {batches} batch(es) at batch_size {batch_size}"
+        ),
         Some(PhaseCounters::new(seen, seen)),
     );
     Ok(())
@@ -1333,49 +1357,40 @@ where
     let (mmdit_cfg, _, _, max_length) = variant_configs(variant);
     let patch = mmdit_cfg.patch;
 
-    // ---- Phase 1: read the cache the f32 encode phase just wrote. The
-    // closures only fire on a cache miss, which after `encode_phase` means
-    // the dataset changed mid-run — bail rather than re-encoding at the
-    // training precision (f16 encoders are exactly the bug this split
-    // exists to prevent).
+    // ---- Phase 1: PLAN over the cache the f32 encode phase just wrote —
+    // file paths and shapes, no tensors (#175). `plan_dataset` takes no
+    // encoder closures at all, so the training phase structurally cannot
+    // re-encode at the training precision (f16 encoders are exactly the bug
+    // this split exists to prevent); a missing cache file after
+    // `encode_phase` means the dataset changed mid-run and is its error to
+    // report.
     let fingerprint = encoder_fingerprint(variant, max_length);
-    let prepared = {
-        let sink = RefCell::new(&mut *sink);
-        prepare_dataset::<AB>(
-            &config.dataset,
-            &fingerprint,
-            &device,
-            |_| bail!("latent cache miss after the encode phase — did the dataset change mid-run?"),
-            |_| {
-                bail!(
-                    "conditioning cache miss after the encode phase — did the dataset change mid-run?"
-                )
-            },
-            |p| {
-                // Pure disk reads here (the encode phase already ran), so this
-                // is throttled unconditionally — it exists to prove the run is
-                // moving through a large dataset, not to narrate every file.
-                if emit_every(p.done, p.total) {
-                    (sink.borrow_mut())(TrainEvent::Phase {
-                        name: PhaseName::Dataset,
-                        detail: format!("reading cached {}", p.name),
-                        counters: Some(PhaseCounters::new(p.done as u64, p.total as u64)),
-                    });
-                }
-            },
-        )?
-    };
+    let prepared = plan_dataset(&config.dataset, &fingerprint, |p| {
+        // Pure header reads here (the encode phase already ran), so this is
+        // throttled unconditionally — it exists to prove the run is moving
+        // through a large dataset, not to narrate every file.
+        if emit_every(p.done, p.total) {
+            sink(TrainEvent::Phase {
+                name: PhaseName::Dataset,
+                detail: format!("reading cached {}", p.name),
+                counters: Some(PhaseCounters::new(p.done as u64, p.total as u64)),
+            });
+        }
+    })?;
     // The encode phase checked this too, but a run can reach here without one
     // (a warm `.loractl-cache/` from an older build, the very case the rank
     // check misses — `crate::cache_guard`).
     crate::cache_guard::check_conditioning_lengths(
-        prepared.items.iter().map(|i| i.conditioning.dims()[1]),
+        prepared.items.iter().map(|i| i.cond_shape[1]),
         max_length,
         &config.dataset.path,
         &fingerprint,
     )?;
-    let batches = prepared.batches(config.dataset.batch_size.max(1) as usize);
-    if batches.is_empty() {
+    // Plans, not tensors: the step loop materializes exactly one batch at a
+    // time. `plans.len()` still means what `batches().len()` always did,
+    // including as the exported `ss_num_batches_per_epoch`.
+    let plans = prepared.batches(config.dataset.batch_size.max(1) as usize);
+    if plans.is_empty() {
         bail!("the dataset produced no batches");
     }
     emit_phase(
@@ -1385,7 +1400,7 @@ where
             "{} examples, {} buckets, {} batches per epoch",
             prepared.entries.len(),
             prepared.buckets.len(),
-            batches.len()
+            plans.len()
         ),
     );
 
@@ -1540,7 +1555,7 @@ where
             .unwrap_or_else(|| "dataset".to_string()),
         entries: &prepared.entries,
         buckets: &prepared.buckets,
-        batches_per_epoch: batches.len(),
+        batches_per_epoch: plans.len(),
     };
     let base_model_file = denoiser
         .file_name()
@@ -1597,7 +1612,16 @@ where
     let mmdit_inner = config.compute.grad_checkpointing.then(|| mmdit.valid());
 
     for step in start_step..=total {
-        let batch = &batches[((step - 1) as usize) % batches.len()];
+        // Round-robin over the plans, then materialize THIS batch only: read
+        // its cached tensors, upload, use, drop at the end of the iteration
+        // (#175). Batch order is unchanged, and the loader draws no RNG, so
+        // the seed stream — and every pinned loss trajectory — is untouched.
+        // Deliberately before the `FORWARD_START` probe boundary so the
+        // retention ledger keeps measuring the forward, not the load.
+        let plan = &plans[((step - 1) as usize) % plans.len()];
+        let batch = prepared
+            .load_batch::<AB>(plan, &device)
+            .with_context(|| format!("loading the batch for step {step}"))?;
         let [b, z, h, w] = batch.latents.dims();
         let flat = z * h * w;
         let (gh, gw) = (h / patch, w / patch);
@@ -2009,6 +2033,7 @@ mod tests {
                 path: dir.clone(),
                 resolution: 32,
                 batch_size: 1,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -2089,6 +2114,7 @@ mod tests {
                 path: dir.clone(),
                 resolution: 1024,
                 batch_size: 1,
+                ..Default::default()
             },
             compute: ComputeConfig {
                 quant: Quant::Int4,

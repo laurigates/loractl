@@ -39,3 +39,8 @@ tokio = { version = "1", features = [
     "time",
 ] }
 async-stream = "0.3"
+# Data-parallel iterators. Used by loractl-core's dataset pipeline (#178) to
+# decode/resize training images across cores while the GPU-bound encode stays
+# serial. Already in the resolved tree via `tokenizers`, so this adds no new
+# external surface; MIT OR Apache-2.0, both on cargo-deny's allow list.
+rayon = "1"

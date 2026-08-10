@@ -16,7 +16,7 @@
 //!   classification task.
 
 use loractl_core::config::{
-    DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig, TaskKind,
+    BucketMode, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig, TaskKind,
 };
 use loractl_core::{TrainConfig, TrainEvent, select_trainer};
 use std::path::PathBuf;
@@ -73,6 +73,9 @@ fn config(base: &str, out: &TempDir) -> TrainConfig {
             path: PathBuf::from("unused"),
             resolution: 32,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,

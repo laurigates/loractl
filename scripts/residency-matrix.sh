@@ -240,7 +240,9 @@ free_gib="$(df -BG --output=avail . | tail -1 | tr -dc '0-9')"
 # Ask ComfyUI to drop its idle weight cache. Refuses on a non-empty queue:
 # `/free` mid-generation would evict models a running prompt is using, and the
 # whole point of this path is that it is the NON-disruptive option.
-if [ -n "$FREE_ENDPOINT" ]; then
+if [ -n "$FREE_ENDPOINT" ] && [ "$DRY_RUN" -eq 1 ]; then
+    echo "dry-run: would POST $FREE_ENDPOINT/free (skipped)"
+elif [ -n "$FREE_ENDPOINT" ]; then
     command -v curl >/dev/null || die "--free-endpoint needs curl"
     queue="$(curl -sf --max-time 10 "$FREE_ENDPOINT/queue")" \
         || die "could not read $FREE_ENDPOINT/queue -- is ComfyUI up?"
@@ -264,7 +266,13 @@ fi
 # Stop the named service BEFORE the idle check, and restore it on any exit
 # path -- a matrix that leaves the box's service down is worse than one that
 # did not run.
-if [ -n "$STOP_SERVICE" ]; then
+if [ -n "$STOP_SERVICE" ] && [ "$DRY_RUN" -eq 1 ]; then
+    # A preflight must be side-effect free. Before this guard, `--dry-run
+    # --stop-service` really stopped the unit, exited, and let the trap restart
+    # it -- so the cheap "will my scheduled window work?" check took the box's
+    # service down and back up for nothing.
+    echo "dry-run: would stop $STOP_SERVICE for the duration (skipped)"
+elif [ -n "$STOP_SERVICE" ]; then
     if systemctl is-active --quiet "$STOP_SERVICE"; then
         log "stopping $STOP_SERVICE for the duration (restarted on exit)"
         sudo -n systemctl stop "$STOP_SERVICE" || die "could not stop $STOP_SERVICE"

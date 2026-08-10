@@ -51,6 +51,15 @@ dataset:
                                # tokens against 1536 here, a 3× step. Re-probe
                                # with `just step-probe` before trusting it.
   batch_size: 1
+  # no_upscale: true           # (#147) never enlarge a small image to fill its
+  #                            # bucket — it gets a smaller aligned box instead
+  # bucketing: grid            # (#148) aspects (default, 7 fixed ratios) | grid
+  #                            # (kohya-style 2-D grid: caps worst-case crop at
+  #                            # ~4% across 0.25–4.0, slightly worse than the
+  #                            # fixed list at 4:3, and MANY more buckets — so
+  #                            # more size-1 batches. See the README table.)
+  # min_bucket_resolution: 256 # grid only; shortest bucket side, multiple of
+  #                            # 16. Defaults to resolution / 2.
 
 lora:
   rank: 16

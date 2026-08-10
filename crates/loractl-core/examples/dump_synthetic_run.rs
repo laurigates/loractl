@@ -28,7 +28,9 @@
 use burn::backend::{Autodiff, NdArray};
 use burn::tensor::{Int, Tensor};
 use loractl_core::burn_trainer::synthetic_run_inputs;
-use loractl_core::config::{DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind};
+use loractl_core::config::{
+    BucketMode, DatasetConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
+};
 use loractl_core::{LoraMlp, TrainConfig};
 use std::path::{Path, PathBuf};
 
@@ -65,6 +67,9 @@ fn config(out_dir: &Path) -> TrainConfig {
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: LR,

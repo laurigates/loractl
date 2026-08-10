@@ -32,7 +32,7 @@ use burn::tensor::TensorData;
 use loractl_core::LoraDelta;
 use loractl_core::adapters::LoraAdapters;
 use loractl_core::config::{
-    DatasetConfig, LoraConfig, MetadataConfig, ModelConfig, ModelVariant, OptimConfig,
+    BucketMode, DatasetConfig, LoraConfig, MetadataConfig, ModelConfig, ModelVariant, OptimConfig,
     OutputConfig, TargetSpec, TaskKind, TrainConfig,
 };
 use loractl_core::dataset::{Bucket, DatasetEntry};
@@ -151,6 +151,9 @@ fn config() -> TrainConfig {
             path: PathBuf::from("/data/subject"),
             resolution: 512,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 1e-4,

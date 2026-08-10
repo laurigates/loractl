@@ -26,7 +26,7 @@ use burn::tensor::TensorData;
 use loractl_core::LoraDelta;
 use loractl_core::adapters::LoraAdapters;
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig,
+    BucketMode, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, MetadataConfig, ModelConfig,
     ModelVariant, OptimConfig, OutputConfig, Precision, Quant, ShiftMode, TargetSpec, TaskKind,
     TrainConfig,
 };
@@ -122,6 +122,9 @@ fn config() -> TrainConfig {
             path: PathBuf::from("/data/sks-dog"),
             resolution: 512,
             batch_size: 2,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 1e-4,

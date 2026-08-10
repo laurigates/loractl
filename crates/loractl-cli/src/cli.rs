@@ -904,7 +904,7 @@ mod tests {
 
     use super::*;
     use figment::Jail;
-    use loractl_core::{PhaseCounters, PhaseName};
+    use loractl_core::{BucketMode, PhaseCounters, PhaseName};
 
     /// A minimal-but-complete config YAML: `model`, `lora`, and `dataset` are
     /// the required keys (no serde default on `TrainConfig`), so all three must
@@ -1481,6 +1481,69 @@ mod tests {
             let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
             assert_eq!(config.compute.precision, Precision::F16);
             assert!(config.compute.grad_checkpointing);
+            Ok(())
+        });
+    }
+
+    /// The #147/#148 bucketing knobs deliberately ship with **no CLI flag**
+    /// (the `model.checkpoint` / `flow.shift_mode` precedent: a per-dataset
+    /// choice, not a per-invocation one), so the env layer is half their
+    /// entire override surface and nothing else would catch it silently
+    /// breaking. Also pins the case-insensitive `FromStr` route the
+    /// hand-written `Deserialize` goes through — a `#[derive(Deserialize)]`
+    /// would reject `GRID` and only this asserts otherwise.
+    #[test]
+    fn env_layer_reaches_dataset_bucketing_knobs() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            jail.set_env("LORACTL_DATASET__NO_UPSCALE", "true");
+            jail.set_env("LORACTL_DATASET__BUCKETING", "grid");
+            jail.set_env("LORACTL_DATASET__MIN_BUCKET_RESOLUTION", "256");
+
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert!(config.dataset.no_upscale);
+            assert_eq!(config.dataset.bucketing, BucketMode::Grid);
+            assert_eq!(config.dataset.min_bucket_resolution, Some(256));
+
+            // The spelling is case-insensitive, exactly like `--backend`.
+            jail.set_env("LORACTL_DATASET__BUCKETING", "GRID");
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.dataset.bucketing, BucketMode::Grid);
+
+            // …and an unknown spelling is a clear error, not a silent default.
+            jail.set_env("LORACTL_DATASET__BUCKETING", "gird");
+            let err = resolve_config(&cmd_for("config.yaml")).expect_err("typo must fail");
+            assert!(
+                format!("{err:#}").contains("aspects|grid"),
+                "error should name the vocabulary: {err:#}"
+            );
+            Ok(())
+        });
+    }
+
+    /// The YAML file layer, for the same three knobs — and the default when
+    /// the block omits them (every pre-#147 config on disk).
+    #[test]
+    fn dataset_bucketing_knobs_default_when_the_file_omits_them() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert!(!config.dataset.no_upscale);
+            assert_eq!(config.dataset.bucketing, BucketMode::Aspects);
+            assert_eq!(config.dataset.min_bucket_resolution, None);
+
+            jail.create_file(
+                "grid.yaml",
+                "steps: 10\n\
+                 model:\n  base: synthetic\n\
+                 dataset:\n  path: unused\n  no_upscale: true\n  bucketing: grid\n\
+                 \x20 min_bucket_resolution: 256\n\
+                 lora: {}\n",
+            )?;
+            let config = resolve_config(&cmd_for("grid.yaml")).expect("resolve");
+            assert!(config.dataset.no_upscale);
+            assert_eq!(config.dataset.bucketing, BucketMode::Grid);
+            assert_eq!(config.dataset.min_bucket_resolution, Some(256));
             Ok(())
         });
     }

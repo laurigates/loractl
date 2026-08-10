@@ -17,7 +17,8 @@ use burn::data::dataset::Dataset;
 use burn::data::dataset::vision::MnistDataset;
 use burn::tensor::{Device, Tensor, TensorData};
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig, TaskKind,
+    BucketMode, ComputeConfig, DatasetConfig, LoraConfig, ModelConfig, OptimConfig, OutputConfig,
+    TaskKind,
 };
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
 use std::path::PathBuf;
@@ -91,6 +92,9 @@ fn mnist_lora_converges() {
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.005,

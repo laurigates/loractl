@@ -270,6 +270,7 @@ mod tests {
                 path: "/path/to/dataset".into(),
                 resolution,
                 batch_size: 1,
+                ..Default::default()
             },
             compute: ComputeConfig {
                 backend: BackendKind::Cuda,
