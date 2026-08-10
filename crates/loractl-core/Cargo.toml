@@ -87,6 +87,13 @@ memmap2 = "0.9"
 # Default features off — only the two formats the kohya-style folder
 # convention actually uses; no HDR/EXR/AVIF subtree.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Parallel image decode/resize in the encode phase (#178). The decoder is
+# already SIMD-capable (image 0.25 decodes JPEG through zune-jpeg), so the cost
+# is resize + pixel shuffling, and the only lever left is doing several images
+# at once. Confined to the host-side pixel work: the encode closures are FnMut
+# and GPU-bound, and burn tensors carry no `Send` bound. Already resolved in
+# the tree via `tokenizers`, so this adds no new external surface.
+rayon.workspace = true
 # On-demand tokenizer fetch (ComfyUI support): a ComfyUI install ships no
 # `tokenizer.json`, so when neither `model.tokenizer` nor the base-dir file
 # exists, `hf.rs` fetches the model-invariant Qwen3-VL tokenizer once, verifies

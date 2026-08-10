@@ -128,7 +128,23 @@ VAE, and text encoder were all greenfield in burn.
   are injected as closures — M14 wires the real frozen models; the offline
   tests wire mocks (and a cache-reuse test passes encoders that *panic*,
   proving warm epochs are pure tensor reads). Per-bucket batching never mixes
-  shapes.
+  shapes. Two opt-in knobs were added later:
+  **`dataset.no_upscale`** ([#147](https://github.com/laurigates/loractl/issues/147)),
+  which gives an image smaller than its bucket a smaller aligned box of the
+  same aspect instead of Lanczos-inventing detail, and
+  **`dataset.bucketing: grid`** ([#148](https://github.com/laurigates/loractl/issues/148)),
+  a kohya-style symmetric 2-D grid that caps the worst-case crop loss near 4%
+  across the whole 0.25–4.0 aspect range (against 55% for the fixed
+  seven-ratio set) at the cost of many more buckets — and therefore many more
+  partial batches, since batches never mix. Both default off; the fixed set
+  remains slightly *better* at the seven ratios it was hand-picked for.
+  The host-side decode/resize also became parallel
+  ([#178](https://github.com/laurigates/loractl/issues/178)) — rayon across
+  examples in a bounded window, with the GPU-bound encode still strictly
+  serial and the decoded buffer bit-identical to the serial path it replaced
+  (cache keys are name/bucket/fingerprint and never content, so a shifted
+  value would invalidate nothing). The cold-cache encode-phase wall time that
+  buys is **not** claimed here: it needs a real dataset on a real machine.
 - **M13 — Single-GPU 12B fit** ([#24](https://github.com/laurigates/loractl/issues/24)).
   Two config-toggleable memory knobs, both overridable per layer:
   **`compute.precision: f16`** (wgpu only; any other backend fails loudly)
@@ -229,8 +245,10 @@ per-block forward costs something, and the #110 harness that can now price it
 exercised on the offline fixture; the number needs a GPU dispatch. int4's
 dequant error vs adapter quality is a separate question from fit (now tracked
 as #159) — the fit-vs-quality separation and the adapter-parameterization menu
-behind it are [ADR-0007](adrs/0007-adapter-algorithm-strategy.md). The
-dataset-pipeline ergonomics issues (#147–#149) are the next user-facing gap. The next *memory* lever — offloading the #134 block-boundary
+behind it are [ADR-0007](adrs/0007-adapter-algorithm-strategy.md). #147
+(`dataset.no_upscale`) and #148 (`dataset.bucketing: grid`) have landed as
+opt-in `DatasetConfig` knobs (see M12 above), leaving **#149** as the
+remaining dataset-pipeline ergonomics gap. The next *memory* lever — offloading the #134 block-boundary
 activations to host RAM (#158) — is now scoped and priced by
 [ADR-0008](adrs/0008-host-offload-mechanism-and-scope.md): explicit scheduled
 transfer rather than demand paging, worth ~1.06 GB of the 19.4 GB peak at 512px
@@ -245,10 +263,23 @@ are real: **`fusion` is compiled off on the CUDA path** (burn declares burn-cuda
 `default-features = false`, so `burn::backend::Cuda` is the raw `CubeBackend`,
 not `Fusion<CubeBackend>`), and the quantized load walks its sites strictly
 serially with a single-threaded CPU dequant. Both are gated on the same
-dispatch. It also records a *fit* finding the memory work has not accounted for:
-`prepare_dataset` holds every example's conditioning on the device for the whole
-run, at a fixed `[1, 512, 12, 2560]` f32 = 60 MiB per example, so VRAM scales
-with dataset size against ADR-0005's ~4 GB of headroom.
+dispatch. It also recorded a *fit* finding the memory work had not accounted
+for — `prepare_dataset` held every example's conditioning on the device for the
+whole run, at a fixed `[1, 512, 12, 2560]` f32 = 60 MiB per example, so VRAM
+scaled with **dataset size** against ADR-0005's ~4 GB of headroom. **#175 closed
+it**: `PreparedDataset` is now a backend-parameter-free *plan* over the on-disk
+cache and the step loop materializes one batch at a time, so residency is
+O(batch). The structural claim is proven offline by `tests/dataset_residency.rs`
+(a counting global allocator over the ndarray backend, where device memory is
+heap memory) and, at the call site, by
+`diffusion_trainer.rs::the_trainer_reads_the_cache_inside_the_step_loop` —
+deleting the latents after one full epoch must fail the next step, which a
+trainer that hoisted every batch out of the loop would survive. Two numbers are
+**not** claimed: the peak-VRAM figure needs a `gpu.yml` dispatch of
+`just step-probe` against a ≥50-example dataset (the 4-image `dataset-tiny`
+fixture cannot stand in for it), and the per-step cost this trades for it — one
+batch's read, f32 decode and upload, of which only the read is served by the
+page cache — needs a `just bench` dispatch.
 
 Sharing ComfyUI's *resident* VRAM — importing its already-loaded Krea 2 weights
 over CUDA IPC so training and generation alias one copy — is closed by

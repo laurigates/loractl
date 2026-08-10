@@ -22,7 +22,8 @@ use burn::tensor::{Tensor, TensorData};
 use loractl_core::adapter::{AdapterMeta, load_adapter};
 use loractl_core::burn_trainer::flow_batches;
 use loractl_core::config::{
-    ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, OptimConfig, OutputConfig, TaskKind,
+    BucketMode, ComputeConfig, DatasetConfig, FlowConfig, LoraConfig, OptimConfig, OutputConfig,
+    TaskKind,
 };
 use loractl_core::sample::sample_adapter;
 use loractl_core::{BurnTrainer, TrainConfig, TrainEvent, Trainer};
@@ -95,6 +96,9 @@ fn flow_training_converges() {
             path: PathBuf::from("unused"),
             resolution: 28,
             batch_size: 1,
+            no_upscale: false,
+            bucketing: BucketMode::Aspects,
+            min_bucket_resolution: None,
         },
         optim: OptimConfig {
             lr: 0.01,

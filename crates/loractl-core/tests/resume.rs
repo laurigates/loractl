@@ -97,6 +97,7 @@ fn config(dir: PathBuf, dataset: PathBuf, steps: u64) -> TrainConfig {
             path: dataset,
             resolution: 32,
             batch_size: 2,
+            ..Default::default()
         },
         optim: OptimConfig {
             lr: 0.01,

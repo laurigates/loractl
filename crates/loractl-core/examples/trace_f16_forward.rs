@@ -25,8 +25,8 @@ mod wgpu_main {
         KeyRemapper, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
     };
     use loractl_core::CastFloatsAdapter;
-    use loractl_core::config::{DatasetConfig, ModelVariant};
-    use loractl_core::dataset::prepare_dataset;
+    use loractl_core::config::{BucketMode, DatasetConfig, ModelVariant};
+    use loractl_core::dataset::plan_dataset;
     use loractl_core::diffusion_trainer::encoder_fingerprint;
     use loractl_core::mmdit::{Mmdit, MmditConfig, krea2_positions, patchify};
     use std::path::PathBuf;
@@ -53,25 +53,27 @@ mod wgpu_main {
         let dataset = PathBuf::from(args.get(2).context("arg 2: dataset dir")?);
         let device = Default::default();
 
-        // Real cached batch (warm cache required — closures bail).
-        let prepared = prepare_dataset::<B>(
+        // Real cached batch. A warm cache is a precondition, and now one the
+        // API states: `plan_dataset` takes no encoders, so a cold cache is its
+        // own error rather than a closure that bails.
+        let prepared = plan_dataset(
             &DatasetConfig {
                 path: dataset,
                 resolution: 256,
                 batch_size: 1,
+                no_upscale: false,
+                bucketing: BucketMode::Aspects,
+                min_bucket_resolution: None,
             },
             // Derived, not transcribed: the marker moves whenever the
             // encode path changes (`enc32-t2` — #163's template offsets),
             // and a stale literal here would read a cache the trainer no
             // longer writes and report "cold cache" instead.
             &encoder_fingerprint(ModelVariant::Krea2, 512),
-            &device,
-            |_| bail!("cold latent cache — run the trainer's encode phase first"),
-            |_| bail!("cold cond cache — run the trainer's encode phase first"),
             |_| {},
         )?;
-        let batches = prepared.batches(1);
-        let batch = &batches[0];
+        let plans = prepared.batches(1);
+        let batch = prepared.load_batch::<B>(&plans[0], &device)?;
         stats("latents", &batch.latents);
         stats("conditioning", &batch.conditioning);
 
