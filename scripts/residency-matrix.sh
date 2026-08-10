@@ -481,9 +481,10 @@ DS_ROOT="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_MAX}"
 # UPDATES an existing `[dependencies].burn-ndarray` entry instead of appending a
 # second one -- which matters now that #211 declares that entry in the crate
 # proper, in multi-line form. It needs no textual anchor, cannot emit invalid
-# TOML, leaves the `[dev-dependencies]` entry (`export_tests`) alone, and is a
-# no-op when the features already match, so this is self-limiting: it does
-# nothing on a revision that postdates #211 and fires only on older ones. It
+# TOML, and leaves the `[dev-dependencies]` entry (`export_tests`) alone. On a
+# revision that already declares the dependency -- anything postdating #211 --
+# it is a SEMANTIC no-op: it reflows the entry onto one line but changes no
+# version, feature or flag, so the build is bit-identical. It
 # also rewrites the worktree's Cargo.lock, which is fine -- the worktree is
 # rebuilt from scratch on every run.
 #
