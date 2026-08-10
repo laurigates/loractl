@@ -467,6 +467,18 @@ DS_ROOT="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_MAX}"
 # rather than committed to the revisions so `--before`/`--after` keep naming the
 # real commits.
 #
+# There is no command-line route: `cargo build --features` only accepts features
+# of workspace members, so enabling a feature on a transitive dependency means
+# editing a manifest. `cargo add` is used rather than a text patch because it
+# UPDATES an existing `[dependencies].burn-ndarray` entry instead of appending a
+# second one -- which matters now that #211 declares that entry in the crate
+# proper, in multi-line form. It needs no textual anchor, cannot emit invalid
+# TOML, leaves the `[dev-dependencies]` entry (`export_tests`) alone, and is a
+# no-op when the features already match, so this is self-limiting: it does
+# nothing on a revision that postdates #211 and fires only on older ones. It
+# also rewrites the worktree's Cargo.lock, which is fine -- the worktree is
+# rebuilt from scratch on every run.
+#
 # `simd` is deliberately NOT included. It breaks
 # `grad_checkpointing::checkpointing_is_numerically_identical_to_stored_activations`
 # (SIMD reduction order makes a checkpoint replay differ in the 7th significant
@@ -479,18 +491,10 @@ DS_ROOT="$REPO_ROOT/tmp/datasets/${DATASET_KEY}-${N_MAX}"
 # -- irrelevant to a VRAM measurement, but if a future arm ever compares latent
 # VALUES it must be turned off.
 enable_ndarray_threads() {
-    local wt="$1" manifest="$1/crates/loractl-core/Cargo.toml"
-    grep -q '^burn-ndarray = .*multi-threads' "$manifest" && return 0
-    python3 - "$manifest" <<'PY'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1]); s = p.read_text()
-anchor = 'burn-store = { version = "0.21.0"'
-if anchor not in s:
-    sys.exit(f"residency-matrix: cannot find the [dependencies] anchor in {p}")
-dep = ('burn-ndarray = { version = "0.21", default-features = false, features = '
-       '["std", "multi-threads"] }\n')
-p.write_text(s.replace(anchor, dep + anchor, 1))
-PY
+    local wt="$1"
+    ( cd "$wt" && cargo add burn-ndarray@0.21 --no-default-features \
+        --features std,multi-threads \
+        --manifest-path crates/loractl-core/Cargo.toml ) >/dev/null
 }
 
 for side in before after; do
