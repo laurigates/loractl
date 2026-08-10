@@ -32,6 +32,31 @@ burn = { version = "0.21", default-features = false, features = [
 # LayerNorm key remapper). Fully offline — no HTTP client — so the always-run
 # tiny-GPT-2 parity test loads the checked-in fixture without touching the
 # network.
+# Re-enable burn-ndarray's DEFAULT `multi-threads` (rayon +
+# `matrixmultiply/threading`) and `simd`, which `default-features = false` on
+# the `burn` umbrella above silently drops -- burn exposes a `simd` passthrough
+# but none for `multi-threads`, so a direct dependency is the only route
+# (upstream: tracel-ai/burn#5332). This is the whole reason the CPU encode phase
+# ran on one core.
+#
+# It matters because `diffusion_trainer.rs` pins the dataset encode to the
+# ndarray CPU backend deliberately (f16 overflows the Qwen encoders; burn 0.21's
+# wgpu f32 corrupted sequential encoder outputs). Measured on a 24-core x86_64
+# host: 598.7 s/image -> 68.6 s/image, ~8.7x, and a 40-image cold cache fill
+# from ~6.7 h to 40 min. The win saturates near 4 threads, so it is not
+# contingent on a large core count.
+#
+# `simd` is deliberately NOT enabled alongside it. It is the smaller lever
+# (78.8 vs 94.2 ms/matmul, against 32.0 for multi-threads) and it breaks
+# `tests/grad_checkpointing.rs::checkpointing_is_numerically_identical_to_stored_activations`,
+# which asserts BalancedCheckpointing replays bit-identical losses -- SIMD
+# reduction order makes the replay differ in the 7th significant digit.
+# Isolated by feature: `multi-threads` alone passes that test, `simd` alone
+# fails it, at any thread count. Dropping simd costs ~2.5% of the matmul win.
+burn-ndarray = { version = "0.21", default-features = false, features = [
+    "std",
+    "multi-threads",
+] }
 burn-store = { version = "0.21.0", default-features = false, features = [
     "safetensors",
     "std",
