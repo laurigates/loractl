@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.21.0](https://github.com/laurigates/loractl/compare/v0.20.0...v0.21.0) (2026-08-10)
+
+
+### Features
+
+* **bench:** N-point scaling arms for the residency matrix — three points for the price of two ([#205](https://github.com/laurigates/loractl/issues/205)) ([cc611de](https://github.com/laurigates/loractl/commit/cc611ded4f289339015721859025b8bd70663629))
+* **bench:** N-point scaling arms, one shared cold encode — three points for the price of two ([cc611de](https://github.com/laurigates/loractl/commit/cc611ded4f289339015721859025b8bd70663629)), closes [#175](https://github.com/laurigates/loractl/issues/175)
+* **core:** rebuild the dataset pipeline — O(batch) residency, bucket fitting, grid mode, parallel decode ([#197](https://github.com/laurigates/loractl/issues/197)) ([ea5733e](https://github.com/laurigates/loractl/commit/ea5733ed89049e9aebdf33d0dc32d3a16ae7f998))
+
+
+### Bug Fixes
+
+* **bench:** --dry-run must not stop the service it is only asking about ([#208](https://github.com/laurigates/loractl/issues/208)) ([836ca4c](https://github.com/laurigates/loractl/commit/836ca4c0d5e1b92ed5f2bdfebf7c7e3a105078d0)), closes [#175](https://github.com/laurigates/loractl/issues/175)
+
+
+### Performance Improvements
+
+* **bench:** parallelize the residency matrix's encode phase (~8.7x) ([#216](https://github.com/laurigates/loractl/issues/216)) ([d169fb4](https://github.com/laurigates/loractl/commit/d169fb4cd8c473780c0d6d02a723f60ef6722c0b))
+* **core:** enable burn-ndarray multi-threads — ~8.5x on the CPU encode phase ([#211](https://github.com/laurigates/loractl/issues/211)) ([462dc93](https://github.com/laurigates/loractl/commit/462dc9306083bc80793115e0258441af5394508d)), closes [#209](https://github.com/laurigates/loractl/issues/209)
+
 ## [0.20.0](https://github.com/laurigates/loractl/compare/v0.19.1...v0.20.0) (2026-08-08)
 
 
