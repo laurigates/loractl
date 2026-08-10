@@ -1,9 +1,9 @@
 {
   "version": "1.1.0",
-  "last_updated": "2026-07-11",
+  "last_updated": "2026-08-10",
   "project": "loractl",
   "source_document": "README.md",
-  "current_phase": "phase-9",
+  "current_phase": "phase-15",
   "tasks": {
     "in_progress": [],
     "pending": [],
@@ -53,32 +53,37 @@
     {
       "id": "phase-9",
       "name": "M9 — Krea 2 latent VAE in burn (#20)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-10",
       "name": "M10 — Qwen 3 VL text encoder in burn (#21)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-11",
       "name": "M11 — Krea 2 MMDiT denoiser + parity + LoRA attach (#22)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-12",
       "name": "M12 — Image dataset pipeline: bucketing + caching (#23)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-13",
       "name": "M13 — Single-GPU 12B fit: bf16/grad-ckpt/8-bit/QLoRA (#24)",
-      "status": "not_started"
+      "status": "complete"
     },
     {
       "id": "phase-14",
       "name": "M14 — End-to-end Krea 2 LoRA training + interop (#25)",
-      "status": "not_started"
+      "status": "complete"
+    },
+    {
+      "id": "phase-15",
+      "name": "M15 — Train on Krea-2-Turbo: variant seam + scaled-fp8 (#82)",
+      "status": "complete"
     }
   ],
   "features": {},
