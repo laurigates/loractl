@@ -1,0 +1,105 @@
+# Repo-local input to the reception-panel harness.
+#
+# The harness itself is generic (schema, tier staging, collating script,
+# persona library, KNOWN/NEW/WRONG scoring). Everything project-specific lives
+# here, so pointing the harness at another repo means writing another one of
+# these and changing nothing else.
+#
+# Consumed by:
+#   repo-first-contact   — cheap lane: slop-metrics + comparables + drive-by.
+#                          Rerun after every README edit.
+#   repo-review-panel    — expensive lane: the full persona panel. Refuses to
+#                          run unless `predictions` exists and is committed.
+
+repo: laurigates/loractl
+
+# The claim actually under test. Personas see this and nothing else before
+# they open a file — it is what EXPECT/EXPECT_DOUBT are measured against.
+pitch: "A terminal-native LoRA trainer, in Rust."
+
+venue:
+  primary: r/StableDiffusion
+  secondary: r/LocalLLaMA
+
+# Pre-registration. The run is refused if this file is missing or uncommitted:
+# without it every finding reads as informative and the panel cannot be
+# falsified.
+predictions: docs/reception/2026-08-11/predictions.md
+output_dir: docs/reception/2026-08-11
+
+# What each tier may see. Staged as real directory copies, not as an
+# instruction to the agent — a tier-0 persona that can read an ADR explaining
+# away a weakness is no longer measuring first contact.
+tiers:
+  "0":
+    include: [README.md]
+    synthesize: [REPO_FILE_LISTING.txt, RELEASES.txt]
+  "1":
+    exclude:
+      - "docs/adrs/**"
+      - "docs/roadmap.md"
+      - "CLAUDE.md"
+      - "CLAUDE.local.md"
+      - ".claude/**"
+      - "docs/blueprint/**"
+  "2":
+    include: ["**"]          # claim auditor; restricting it defeats the point
+
+# Cloned to disk before dispatch. A persona asked to compare from memory
+# invents specific, confident, false claims about the competitor.
+comparables:
+  peers:                     # same category — used for calibration personas
+    - kohya-ss/sd-scripts
+    - ostris/ai-toolkit
+  craft:                     # different category — slop-metrics calibration only
+    - BurntSushi/ripgrep
+    - sharkdp/bat
+  floor:                     # scaffold control: shows the metrics can score low
+    - rust-github/template
+
+personas:
+  - id: drive-by-skeptic
+    tier: "0"
+    model: haiku             # instrument, not delegate: a low-context reader is
+                             # the measurement. A stronger model answers an
+                             # easier question.
+    read_budget: "README lines 1-60, then at most 3 more reads"
+  - id: lora-practitioner
+    tier: "0+competitors"
+    model: opus
+    read_budget: "8 reads total"
+  - id: rust-craft
+    tier: "1"
+    model: opus
+    read_budget: "14 files"
+    told_ai_authored: true   # so "looks AI-written" is the premise, not a finding
+  - id: claim-auditor
+    tier: "2"
+    model: opus
+    read_budget: "20 files"
+    seeded_contradiction: true
+  - id: calibration
+    tier: "0"
+    model: haiku
+    runs_on: peers           # same brief, other repos: does the verdict discriminate?
+
+# Deliberately planted defect for the claim auditor only, in its staged copy.
+# If the auditor misses this, its clean bill of health on the real claims is
+# worthless and its verdict is discarded.
+seed:
+  file: README.md
+  from: "trains at **~4.5 s/step with a"
+  to: "trains at **~1.8 s/step with a"
+  contradicts: "docs/roadmap.md:314 — median step 4482.18 ms"
+
+# Known and accepted; a persona reporting one of these is not telling us
+# anything new. Listed so the rollup can mark them KNOWN without a judgment call.
+ignore:
+  - "cross-tool s/it comparison is refused on purpose — see README.md:398-400"
+  - "GPU proofs are dispatch-only; hosted CI is GPU-free by design"
+  - "default features are empty (CPU/ndarray) to keep CI offline"
+
+# Not run in-harness. An install smoke tests installability, not correctness,
+# and a real training run is already answered by the CI bench.
+deferred:
+  - "container install smoke: cargo build && loractl --help && loractl init"

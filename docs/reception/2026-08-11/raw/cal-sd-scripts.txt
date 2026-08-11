@@ -1,0 +1,17 @@
+PERSONA=cal-sd-scripts
+MODEL=haiku
+TIER=0
+FILES_OPENED=README.md (1-60), README.md (60-140), REPO_FILE_LISTING.txt
+EXPECT=Established LoRA framework for SD/SDXL with core training techniques
+EXPECT_DOUBT=Whether it supports newest models (FLUX, Anima) and active maintenance
+BOUNCE_POINT=NONE
+BOUNCE_QUOTE=N/A
+BOUNCE_REASON=N/A
+WOULD_CLONE=YES|This is kohya-ss sd-scripts, the reference LoRA training implementation
+WOULD_RUN=YES|Actively maintained (June 2026 release), comprehensive docs, proven stability
+WOULD_STAR=YES|Already the most-starred LoRA project; genuinely earned through breadth and quality
+WOULD_FILE_ISSUE=NO|Professional maintainer; high-quality issue/PR management already operating
+WOULD_RECOMMEND=YES|The default first recommendation for anyone serious about LoRA training
+WORST_THING_EVIDENCE=NONE
+WORST_THING_DEFECT=Project is professionally maintained with no significant defects observed
+DELTA=Recognized as kohya-ss on line 1; inspection confirms: cutting-edge model support, June 2026 active development, comprehensive bilingual docs, clean architecture, AI-aware infrastructure

@@ -41,13 +41,18 @@ def parse(path):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if line.startswith("FINDING|"):
+            # The claim field legitimately contains `|` — a README enum such as
+            # `backend: ndarray | wgpu | cuda` is exactly the kind of thing a
+            # finding quotes. Anchor on the first three fields and the last one
+            # and rejoin the middle, rather than truncating the claim at its
+            # first pipe.
             parts = [p.strip() for p in line.split("|")]
             if len(parts) >= 5:
                 rec["findings"].append({
                     "severity": parts[1].upper(),
                     "evidence": parts[2],
-                    "claim": parts[3],
-                    "falsifier": parts[4],
+                    "claim": " | ".join(parts[3:-1]),
+                    "falsifier": parts[-1],
                 })
             continue
         if line.startswith("UNVERIFIABLE|"):

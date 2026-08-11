@@ -1,0 +1,22 @@
+PERSONA=drive-by-skeptic
+MODEL=haiku
+TIER=0
+FILES_OPENED=README.md (1-60, 60-140), RELEASES.txt (full), REPO_FILE_LISTING.txt (full)
+EXPECT=A Rust LoRA trainer, possibly novelty, possibly abandoned; unclear production-readiness
+EXPECT_DOUBT=Whether it works on real models or just vaporware/learning project
+BOUNCE_POINT=README.md:22
+BOUNCE_QUOTE="An early-stage learning project."
+BOUNCE_REASON=Honest flag that this is research, not stable product; I kept reading anyway
+WOULD_CLONE=YES|The test coverage, reference implementations, and Krea 2 proof are too solid to dismiss.
+WOULD_RUN=YES|Quickstart is clear; synthetic demo works offline; backend detection is smart.
+WOULD_STAR=YES|13 ADRs, safetensors export, ComfyUI interop evidence, CI with GPU testing.
+WOULD_FILE_ISSUE=NO|No obvious defects from the available surface. Architecture looks sound.
+WOULD_RECOMMEND=YES|Solid groundwork for someone who wants to experiment; not production-stable yet.
+WORST_THING_EVIDENCE=README.md:22
+WORST_THING_DEFECT=Honest but scary flag; unclear if it'll hit showstoppers on real training runs
+DELTA=Expected research code, found competent systems design (multi-backend, checkpoint/resume, numerics proofs). Still early but not toy.
+FINDING|HIGH|README.md:22|Early-stage disclaimer flags active complexity debt (VRAM issues in ADRs); unclear stable training timeline|A release tagged stable (v1.0+) or docs stating "production-ready for N-hour trains"
+FINDING|MEDIUM|REPO_FILE_LISTING.txt (ADRs 5,8,11)|ADRs describe unsolved VRAM and precision hazards as recent as ADR-0013; not obviously fixed|A changelog/resolved-status doc showing which ADRs are closed by implemented solutions
+FINDING|LOW|RELEASES.txt|10 releases in 3 weeks suggests rapid iteration and API churn; users may upgrade into breakage|A semantic versioning note or CHANGELOG explaining stability guarantees per version range
+UNVERIFIABLE|Whether the int4 VRAM exhaustion (ADR-0005) is actually solved or still a blocker in current code|Running a real training step on Krea-2-Raw with int4; checking if it completes or OOMs
+UNVERIFIABLE|Actual GPU memory consumption on real user hardware vs the 24GB RTX 4090 it was tested on|Running a real training on smaller cards (8GB, 12GB) and reporting actual peak VRAM

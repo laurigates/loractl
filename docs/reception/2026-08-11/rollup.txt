@@ -1,0 +1,186 @@
+========================================================================
+RECEPTION PANEL — MECHANICAL ROLLUP
+========================================================================
+personas reporting : 7
+personas kept      : 6
+personas discarded : 1  (drive-by-skeptic)
+
+-- instrument health -----------------------------------------------
+  cal-ai-toolkit         tier=0   model=haiku                      findings=1 dropped=0 drop_rate=0%  [kept]
+  cal-sd-scripts         tier=0   model=haiku                      findings=0 dropped=0 drop_rate=0%  [kept]
+  claim-auditor          tier=2   model=opus                       findings=5 dropped=0 drop_rate=0%  [kept]
+  drive-by-skeptic       tier=0   model=haiku                      findings=1 dropped=2 drop_rate=67%  [DISCARDED]
+      DROPPED (no file:line or quote): ADRs describe unsolved VRAM and precision hazards as recent
+      DROPPED (no file:line or quote): 10 releases in 3 weeks suggests rapid iteration and API chur
+  lora-practitioner      tier=0+competitors model=opus                       findings=5 dropped=0 drop_rate=0%  [kept]
+  rust-craft-pass2.txt   tier=?   model=?                          findings=0 dropped=0 drop_rate=0%  [kept]
+  rust-craft             tier=1   model=opus                       findings=5 dropped=0 drop_rate=0%  [kept]
+
+-- BOUNCE_POINT (where the reader first considered leaving) --------
+  cal-ai-toolkit         README.md:10
+      quote : "stabilityai/stable-diffusion-xl-base-1.0 (SDXL) stable-diffusion-v1-5/stable"
+      reason: README stops explaining after line 3, becomes just a 50-line model list
+  cal-sd-scripts         NONE   <<< SYCOPHANCY SIGNAL: no bounce on a 480-line README
+      quote : N/A
+      reason: N/A
+  claim-auditor          README.md:395
+      quote : "trains at **~1.8 s/step with a 19.7 GB peak** (batch 1, cuda + f32)"
+      reason: The roadmap section it cites as source says 4482.18 ms; the peak matches, the time does not.
+  lora-practitioner      tier0/README.md:140
+      quote : "a prompt is hashed into a seed that deterministically derives the input"
+      reason: Sampling is a synthetic classifier stunt; I cannot look at an image mid-run
+  ?                      MISSING
+  rust-craft             crates/loractl-core/src/diffusion_trainer.rs:1732
+      quote : "let grads_finite = if std::env::var_os(\"LORACTL_SKIP_GRAD_CHECK\").is_some() {"
+      reason: Undocumented presence-keyed env var disables a numerics guard mid-loop; appears once, tested nowhere.
+
+-- WORST_THING (one per persona, mandatory) ------------------------
+  cal-ai-toolkit         README.md:3
+      Claims "easy to use" and "every feature imaginable" but lines 1-60 contain zero usage examples, install steps, or quickstart guide
+  cal-sd-scripts         NONE
+      Project is professionally maintained with no significant defects observed
+  claim-auditor          README.md:395
+      Headline throughput understates the only measured step time by 2.5x, in the one number a reader would quote or compare against.
+  lora-practitioner      tier0/README.md:142
+      Mid-training "samples" are a hashed-seed synthetic forward pass, not generated images; the diffusion path documents no image preview at all.
+  ?                      ?
+      (missing)
+  rust-craft             crates/loractl-api/src/routes.rs:105
+      Confinement covers only output.dir and resume.from, yet claims no path reaches the trainer unvalidated; dataset.path and model.* are used verbatim.
+
+-- ACTION TALLY ----------------------------------------------------
+  persona                     CLONE        RUN       STAR  FILE_ISSU  RECOMMEND
+  cal-ai-toolkit                YES         NO         NO         NO         NO
+  cal-sd-scripts                YES        YES        YES         NO        YES
+  claim-auditor                 YES        YES        YES        YES        YES
+  lora-practitioner             YES         NO        YES        YES         NO
+  ?                               ?          ?          ?          ?          ?
+  rust-craft                    YES        YES        YES        YES        YES
+  WOULD_CLONE            YES=5/6
+  WOULD_RUN              YES=3/6
+  WOULD_STAR             YES=4/6
+  WOULD_FILE_ISSUE       YES=3/6
+  WOULD_RECOMMEND        YES=3/6
+
+-- PRIOR vs DELTA (did reading change the verdict?) ----------------
+  cal-ai-toolkit
+      expect: A practical LoRA training suite with FLUX/SDXL support, probably simple
+      doubt : All-in-one training suites claim everything, usually deliver half
+      delta : Went from skeptical-but-hopeful to "solid project, terrible README." Filelist quality contradicts README quality entirely.
+  cal-sd-scripts
+      expect: Established LoRA framework for SD/SDXL with core training techniques
+      doubt : Whether it supports newest models (FLUX, Anima) and active maintenance
+      delta : Recognized as kohya-ss on line 1; inspection confirms: cutting-edge model support, June 2026 active development, comprehensive bilingual docs, clean architecture, AI-aware infrastructure
+  claim-auditor
+      expect: Two or three soft claims; expected mostly-clean given the visible documentation discipline.
+      doubt : Doubted the headline throughput and VRAM digits would survive tracing to source.
+      delta : Expected fuzzy prose overreach; found precise prose with one wrong digit and three stale config enumerations.
+  lora-practitioner
+      expect: Single static binary, no Python venv hell, trains SDXL/Flux LoRAs faster than sd-scripts
+      doubt : Rust ML immaturity: thin model coverage, unproven numerics, no ecosystem of community configs
+      delta : Expected a lean sd-scripts replacement; found a rigorous single-model research harness missing the whole iterate-and-look loop.
+  ?
+      expect: -
+      doubt : -
+      delta : -
+  rust-craft
+      expect: Plausible-looking ML code with unverified numerics, over-documented helpers, and tests asserting shapes instead of behavior.
+      doubt : That 400 tests at 3.46 asserts each would actually pin the numerics they claim to pin.
+      delta : Expected shallow ML plausibility; found careful numerics and honest self-critique. Defects are boundary gaps and stale comments, not math.
+
+-- FINDINGS (16 surviving validation) ---------------------------
+  F01 [BLOCKER] (claim-auditor) README.md:395 vs docs/roadmap.md:314
+      claim    : "~1.8 s/step" on RTX 4090 int4+grad_checkpointing; roadmap's linked section records median step "4482.18 ms (~4.5 s)" same config
+      falsifier: A `just bench` run log or ADR recording a ~1800 ms median step for this configuration
+  F02 [BLOCKER] (lora-practitioner) tier0/README.md:215 vs comparables/ai-toolkit/README.md:35
+      claim    : Only real image target is Krea 2, which ai-toolkit already trains alongside ~40 image/video/audio models plus edit variants
+      falsifier: A documented SDXL or FLUX loader with an example config under "Real base models"
+  F03 [HIGH] (cal-ai-toolkit) README.md:3
+      claim    : Phrase "every feature imaginable" is classic overpromise; combined with 50-line model list instead of docs, signals abandoned README
+      falsifier: Actual working tutorial (the notebook files exist but aren't linked)
+  F04 [HIGH] (lora-practitioner) tier0/README.md:142 vs comparables/sd-scripts/docs/train_README-zh.md:378
+      claim    : No documented mid-training image preview; sd-scripts exposes --sample_every_n_steps/--sample_prompts, ai-toolkit writes samples into the run folder
+      falsifier: A README example showing output.sample_every decoding an image on the diffusion path
+  F05 [HIGH] (lora-practitioner) tier0/README.md:156 vs comparables/sd-scripts/docs/train_network.md:83
+      claim    : Only AdamW appears; ss_optimizer is written as metadata, not chosen. No optimizer_type, no lr_scheduler, no warmup documented
+      falsifier: An optim: config block in the README listing selectable optimizers and LR schedules
+  F06 [HIGH] (lora-practitioner) tier0/README.md:235 vs comparables/sd-scripts/docs/config_README-en.md:147
+      claim    : dataset takes one path; no per-concept subsets, num_repeats, or regularization images — every character LoRA I train balances several folders
+      falsifier: A multi-subset dataset config example with per-folder repeat weights
+  F07 [HIGH] (rust-craft) crates/loractl-api/src/routes.rs:105
+      claim    : `dataset.path` and `model.denoiser/vae/text_encoder/tokenizer` bypass confinement on unauthenticated POST /runs; errors return via SSE (state.rs:233) as a read oracle
+      falsifier: A confine_read call (or a rejection test) covering dataset.path and the model component overrides
+  F08 [MEDIUM] (claim-auditor) README.md:40 vs Cargo.toml:3
+      claim    : "Three crates, one direction of dependency" — workspace declares four members including `crates/loractl-bench`; CLAUDE.md:64 says "The workspace is four crates"
+      falsifier: Removal of loractl-bench from workspace members, or a README row for it
+  F09 [MEDIUM] (claim-auditor) README.md:351 vs crates/loractl-core/src/config.rs:652
+      claim    : `backend: ndarray | wgpu | cuda | tch` omits `candle`, a wired backend with its own build feature and dispatch arm (diffusion_trainer.rs:493)
+      falsifier: Removal of BackendKind::Candle and the `candle` feature from cli/core Cargo.toml
+  F10 [MEDIUM] (claim-auditor) README.md:353 vs crates/loractl-core/src/config.rs:695
+      claim    : `precision: f32 (default) | f16 (wgpu only)` omits `bf16`, accepted by FromStr (config.rs:707) and the only Metal-correct precision per diffusion_trainer.rs:485
+      falsifier: Removal of Precision::Bf16, or a README mention of bf16/candle
+  F11 [MEDIUM] (lora-practitioner) tier0/README.md:402
+      claim    : "512px is the only point any of that was measured at" — 1024px, the resolution I actually train, only earns an advisory warning
+      falsifier: A published 1024px VRAM and s/step measurement alongside the 4090 512px figure
+  F12 [MEDIUM] (rust-craft) crates/loractl-core/src/diffusion_trainer.rs:304
+      claim    : Latent-cache correctness depends on a human bumping the `-t2` literal; the reader validates rank not length, so a missed bump silently trains on misaligned conditioning
+      falsifier: A cache reader asserting sequence length/shape, or a fingerprint derived from the template code
+  F13 [MEDIUM] (rust-craft) crates/loractl-core/src/lora.rs:316
+      claim    : `dropout_is_active_during_training` exercises `lora.dropout` directly, not `LoraLinear::forward`; deleting the dropout call at lora.rs:108 leaves the whole suite green (every other test uses dropout 0.0)
+      falsifier: A test calling `LoraLinear::forward` twice on an autodiff backend at prob>0 and asserting the outputs differ
+  F14 [LOW] (claim-auditor) README.md:59 vs crates/loractl-cli/src/cli.rs:198
+      claim    : "presets: synthetic, wgpu, flow, krea2" — the Preset enum has a fifth, `krea2-comfyui`, with `config/examples/krea2-comfyui.yaml` shipped
+      falsifier: Removal of Preset::Krea2Comfyui from the CLI enum
+  F15 [LOW] (rust-craft) crates/loractl-cli/src/cli.rs:718
+      claim    : Comment asserts `train()` "is never executed by any test"; tests/verbosity_wiring.rs:42 spawns the binary and runs `train` — stale claim discourages coverage that already exists
+      falsifier: Corrected comment, or a git blame showing verbosity_wiring.rs predates this line
+  F16 [LOW] (rust-craft) crates/loractl-core/src/diffusion_trainer.rs:1732
+      claim    : `LORACTL_SKIP_GRAD_CHECK` disables the non-finite-gradient guard on mere presence (`=0` also disables); appears exactly once in the tree, undocumented in README/docs
+      falsifier: A docs entry plus a value-parsing test, or removal in favour of a config field
+
+-- CONVERGENCE (same evidence cited by 2+ personas) ----------------
+  (none — every finding is single-source; treat all as unconfirmed)
+
+-- UNVERIFIABLE (artifact the repo does not currently supply) ------
+  need: The `bench-log` artifact from a `gpu.yml` dispatch after run 30982204201
+        to settle: Whether the 19.7 GB / 1.8 s pair came from a second unrecorded bench run
+  need: An A/B pair (with/without adapter) rather than the single docs/evidence/m14-krea2-dog-interop.jpg
+        to settle: Whether the M14 interop image actually shows LoRA conditioning as claimed
+  need: A recorded `just install` run on an Apple Silicon host
+        to settle: Whether `just install` detection picks candle on macOS as the code's comments imply it should
+  need: An inference/generate subcommand documented in the README usage section
+        to settle: Whether the diffusion trainer can decode images at all outside training
+  need: A lora: config block in the README's Config section
+        to settle: Whether LoRA rank/alpha and target-module selection are user-configurable
+  need: A release asset listing showing platform binaries per tag
+        to settle: Whether prebuilt binaries exist; RELEASES.txt lists tags only, no assets
+  need: An integration test POSTing an absolute model.denoiser and asserting 400
+        to settle: Whether the unconfined dataset/model paths are reachable in practice depends on the deployment binding
+  need: A CI run of the reference-regeneration recipes against live upstream
+        to settle: Whether the numerics goldens (lora_reference, krea2_lora_keys) still match current upstream
+  need: A coverage report over crates/loractl-core
+        to settle: Whether the ~490-line run_diffusion loop has untested branches (resume, checkpointing, f16 scale halving)
+
+-- KNOWN / NEW / WRONG vs predictions.md ---------------------------
+
+  [KNOWN] 1
+    F02 (P1) [BLOCKER] Only real image target is Krea 2, which ai-toolkit already trains alongside ~40 image/video/audio models plus edit variants
+
+  [NEW] 12
+    F04 [HIGH] No documented mid-training image preview; sd-scripts exposes --sample_every_n_steps/--sample_prompts, ai-toolkit writes samples into the run folder
+    F05 [HIGH] Only AdamW appears; ss_optimizer is written as metadata, not chosen. No optimizer_type, no lr_scheduler, no warmup documented
+    F06 [HIGH] dataset takes one path; no per-concept subsets, num_repeats, or regularization images — every character LoRA I train balances several folders
+    F07 [HIGH] `dataset.path` and `model.denoiser/vae/text_encoder/tokenizer` bypass confinement on unauthenticated POST /runs; errors return via SSE (state.rs:233) as a read oracle
+    F08 [MEDIUM] "Three crates, one direction of dependency" — workspace declares four members including `crates/loractl-bench`; CLAUDE.md:64 says "The workspace is four crates"
+    F09 [MEDIUM] `backend: ndarray | wgpu | cuda | tch` omits `candle`, a wired backend with its own build feature and dispatch arm (diffusion_trainer.rs:493)
+    F10 [MEDIUM] `precision: f32 (default) | f16 (wgpu only)` omits `bf16`, accepted by FromStr (config.rs:707) and the only Metal-correct precision per diffusion_trainer.rs:485
+    F11 [MEDIUM] "512px is the only point any of that was measured at" — 1024px, the resolution I actually train, only earns an advisory warning
+    F12 [MEDIUM] Latent-cache correctness depends on a human bumping the `-t2` literal; the reader validates rank not length, so a missed bump silently trains on misaligned conditioning
+    F14 [LOW] "presets: synthetic, wgpu, flow, krea2" — the Preset enum has a fifth, `krea2-comfyui`, with `config/examples/krea2-comfyui.yaml` shipped
+    F15 [LOW] Comment asserts `train()` "is never executed by any test"; tests/verbosity_wiring.rs:42 spawns the binary and runs `train` — stale claim discourages coverage that already exists
+    F16 [LOW] `LORACTL_SKIP_GRAD_CHECK` disables the non-finite-gradient guard on mere presence (`=0` also disables); appears exactly once in the tree, undocumented in README/docs
+
+========================================================================
+MARGINAL INFORMATION: NEW=12  KNOWN=1  WRONG=0
+VERDICT: the panel EARNED ITS COST (>=3 findings absent from predictions.md).
+========================================================================

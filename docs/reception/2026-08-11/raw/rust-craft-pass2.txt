@@ -1,0 +1,5 @@
+PASS2|crates/loractl-api/src/routes.rs:105|REAL|ADR-0012 Decision 1 (+ADR-0003 §7 Auth/TLS row)|Settles resume.from only, and asserts output.dir "was already confined"; dataset.path and model.* component paths are named nowhere. Loopback/token bound exposure, not the gap.
+PASS2|crates/loractl-core/src/diffusion_trainer.rs:304|REAL|NONE|No ADR in the index covers dataset caching or encoder fingerprinting; the hand-bumped literal and rank-not-length validation remain undecided anywhere.
+PASS2|crates/loractl-core/src/lora.rs:316|REAL|ADR-0012 Decision 5 (pointer only)|Cites a burn-dropout rules file that may explain the test's shape; no rationale can supply the absent coverage of forward-path wiring.
+PASS2|crates/loractl-cli/src/cli.rs:718|REAL|NONE|No ADR addresses CLI testability; the claim is contradicted inside the same crate by tests/verbosity_wiring.rs, which spawns the binary and runs train.
+PASS2|crates/loractl-core/src/diffusion_trainer.rs:1732|REAL|ADR-0006 (f16 deferred)|Explains why the f16 guard cannot be exercised offline, which excuses the missing test but not an undocumented presence-keyed env bypass.
