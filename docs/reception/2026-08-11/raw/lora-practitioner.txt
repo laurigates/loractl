@@ -1,0 +1,25 @@
+PERSONA=lora-practitioner
+MODEL=opus
+TIER=0+competitors
+FILES_OPENED=tier0/README.md:1-150, tier0/README.md:150-309, tier0/README.md:310-479, comparables/sd-scripts/README.md:81-125, comparables/ai-toolkit/README.md:1-70, comparables/ai-toolkit/README.md:195-294
+EXPECT=Single static binary, no Python venv hell, trains SDXL/Flux LoRAs faster than sd-scripts
+EXPECT_DOUBT=Rust ML immaturity: thin model coverage, unproven numerics, no ecosystem of community configs
+BOUNCE_POINT=tier0/README.md:140
+BOUNCE_QUOTE="a prompt is hashed into a seed that deterministically derives the input"
+BOUNCE_REASON=Sampling is a synthetic classifier stunt; I cannot look at an image mid-run
+WOULD_CLONE=YES|Bucketing loss table and metadata reverse-engineering are worth reading regardless
+WOULD_RUN=NO|Must compile from source to train one model I mostly do not use
+WOULD_STAR=YES|Unusually honest docs; measured claims, named limits, no benchmark theatre
+WOULD_FILE_ISSUE=YES|Ask for image sampling during diffusion training; it is the daily loop
+WOULD_RECOMMEND=NO|ai-toolkit already trains Krea 2 plus forty models with previews
+WORST_THING_EVIDENCE=tier0/README.md:142
+WORST_THING_DEFECT=Mid-training "samples" are a hashed-seed synthetic forward pass, not generated images; the diffusion path documents no image preview at all.
+DELTA=Expected a lean sd-scripts replacement; found a rigorous single-model research harness missing the whole iterate-and-look loop.
+FINDING|BLOCKER|tier0/README.md:215 vs comparables/ai-toolkit/README.md:35|Only real image target is Krea 2, which ai-toolkit already trains alongside ~40 image/video/audio models plus edit variants|A documented SDXL or FLUX loader with an example config under "Real base models"
+FINDING|HIGH|tier0/README.md:142 vs comparables/sd-scripts/docs/train_README-zh.md:378|No documented mid-training image preview; sd-scripts exposes --sample_every_n_steps/--sample_prompts, ai-toolkit writes samples into the run folder|A README example showing output.sample_every decoding an image on the diffusion path
+FINDING|HIGH|tier0/README.md:156 vs comparables/sd-scripts/docs/train_network.md:83|Only AdamW appears; ss_optimizer is written as metadata, not chosen. No optimizer_type, no lr_scheduler, no warmup documented|An optim: config block in the README listing selectable optimizers and LR schedules
+FINDING|HIGH|tier0/README.md:235 vs comparables/sd-scripts/docs/config_README-en.md:147|dataset takes one path; no per-concept subsets, num_repeats, or regularization images — every character LoRA I train balances several folders|A multi-subset dataset config example with per-folder repeat weights
+FINDING|MEDIUM|tier0/README.md:402|"512px is the only point any of that was measured at" — 1024px, the resolution I actually train, only earns an advisory warning|A published 1024px VRAM and s/step measurement alongside the 4090 512px figure
+UNVERIFIABLE|Whether the diffusion trainer can decode images at all outside training|An inference/generate subcommand documented in the README usage section
+UNVERIFIABLE|Whether LoRA rank/alpha and target-module selection are user-configurable|A lora: config block in the README's Config section
+UNVERIFIABLE|Whether prebuilt binaries exist; RELEASES.txt lists tags only, no assets|A release asset listing showing platform binaries per tag

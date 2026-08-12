@@ -1,0 +1,25 @@
+PERSONA=claim-auditor
+MODEL=opus
+TIER=2
+FILES_OPENED=README.md, docs/roadmap.md
+EXPECT=Two or three soft claims; expected mostly-clean given the visible documentation discipline.
+EXPECT_DOUBT=Doubted the headline throughput and VRAM digits would survive tracing to source.
+BOUNCE_POINT=README.md:395
+BOUNCE_QUOTE="trains at **~1.8 s/step with a 19.7 GB peak** (batch 1, cuda + f32)"
+BOUNCE_REASON=The roadmap section it cites as source says 4482.18 ms; the peak matches, the time does not.
+WOULD_CLONE=YES|Architecture invariant is real and the bucketing math checks out exactly.
+WOULD_RUN=YES|Every command, flag, recipe, and config path in the README exists.
+WOULD_STAR=YES|Documentation traceability is unusually strong apart from one headline number.
+WOULD_FILE_ISSUE=YES|The s/step figure contradicts its own linked source by 2.5x.
+WOULD_RECOMMEND=YES|Claims are checkable and mostly hold; the failures are enumerations and one digit.
+WORST_THING_EVIDENCE=README.md:395
+WORST_THING_DEFECT=Headline throughput understates the only measured step time by 2.5x, in the one number a reader would quote or compare against.
+DELTA=Expected fuzzy prose overreach; found precise prose with one wrong digit and three stale config enumerations.
+FINDING|BLOCKER|README.md:395 vs docs/roadmap.md:314|"~1.8 s/step" on RTX 4090 int4+grad_checkpointing; roadmap's linked section records median step "4482.18 ms (~4.5 s)" same config|A `just bench` run log or ADR recording a ~1800 ms median step for this configuration
+FINDING|MEDIUM|README.md:40 vs Cargo.toml:3|"Three crates, one direction of dependency" — workspace declares four members including `crates/loractl-bench`; CLAUDE.md:64 says "The workspace is four crates"|Removal of loractl-bench from workspace members, or a README row for it
+FINDING|MEDIUM|README.md:351 vs crates/loractl-core/src/config.rs:652|`backend: ndarray | wgpu | cuda | tch` omits `candle`, a wired backend with its own build feature and dispatch arm (diffusion_trainer.rs:493)|Removal of BackendKind::Candle and the `candle` feature from cli/core Cargo.toml
+FINDING|MEDIUM|README.md:353 vs crates/loractl-core/src/config.rs:695|`precision: f32 (default) | f16 (wgpu only)` omits `bf16`, accepted by FromStr (config.rs:707) and the only Metal-correct precision per diffusion_trainer.rs:485|Removal of Precision::Bf16, or a README mention of bf16/candle
+FINDING|LOW|README.md:59 vs crates/loractl-cli/src/cli.rs:198|"presets: synthetic, wgpu, flow, krea2" — the Preset enum has a fifth, `krea2-comfyui`, with `config/examples/krea2-comfyui.yaml` shipped|Removal of Preset::Krea2Comfyui from the CLI enum
+UNVERIFIABLE|Whether the 19.7 GB / 1.8 s pair came from a second unrecorded bench run|The `bench-log` artifact from a `gpu.yml` dispatch after run 30982204201
+UNVERIFIABLE|Whether the M14 interop image actually shows LoRA conditioning as claimed|An A/B pair (with/without adapter) rather than the single docs/evidence/m14-krea2-dog-interop.jpg
+UNVERIFIABLE|Whether `just install` detection picks candle on macOS as the code's comments imply it should|A recorded `just install` run on an Apple Silicon host

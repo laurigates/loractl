@@ -1,0 +1,26 @@
+_id	label	verification
+# Assignment of every surviving finding against docs/reception/2026-08-11/predictions.md.
+# KNOWN:Pn  = predicted in the pre-registration
+# NEW       = not predicted, and verified true against the real repo
+# REFUTED   = panel finding verified FALSE against the real repo
+# SEED      = the planted contradiction (control, not a real defect)
+# CALIBRATION = a finding about a comparable repo, not about loractl
+#
+# Ties are broken toward KNOWN, never toward NEW: NEW is the metric that
+# decides whether the panel earned its cost, so it must not be inflated.
+F01	SEED	planted ~1.8 s/step; real README:395 says ~4.5 s/step and matches roadmap:314. Auditor caught it -> its other findings stand.
+F02	KNOWN:P1	P1 predicted Krea-2-only. Sharpened: ai-toolkit/README.md:35 lists krea/Krea-2-Raw, verified.
+F03	CALIBRATION	about ai-toolkit's own README, not loractl.
+F04	NEW	verified: diffusion_trainer.rs:325-328 REJECTS output.sample_every>0 ("no sample path").
+F05	NEW	verified: config.rs:515-520 OptimConfig has only lr + weight_decay.
+F06	NEW	verified: config.rs:439-441 DatasetConfig.path is a single PathBuf.
+F07	NEW	verified: routes.rs:116-124 confines output.dir/name + resume.from only; doc at :100-105 claims more.
+F08	NEW	verified: README.md:40 "Three crates" vs Cargo.toml:3-8 four members.
+F09	NEW	verified: BackendKind::Candle exists (config.rs:635); README:351 omits it.
+F10	NEW	verified: Precision::Bf16 exists (config.rs:695); README:353 omits it.
+F11	NEW	verified: README:402 concedes 512px is the only measured point.
+F12	NEW	verified: encoder_fingerprint ends in hand-maintained "-t2" literal (diffusion_trainer.rs:309).
+F13	REFUTED	mutation run: removing dropout from LoraLinear::forward FAILS tests/dropout.rs:117 in 2.37s.
+F14	NEW	verified: Preset::Krea2Comfyui exists (cli.rs:173) + config/examples/krea2-comfyui.yaml shipped.
+F15	NEW	verified: cli.rs:718 says train() "never executed by any test"; verbosity_wiring.rs:42 runs it via the binary.
+F16	NEW	verified: diffusion_trainer.rs:1732 uses var_os().is_some(), so LORACTL_SKIP_GRAD_CHECK=0 also disables.

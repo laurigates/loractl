@@ -1,0 +1,25 @@
+PERSONA=rust-craft
+MODEL=opus
+TIER=1
+FILES_OPENED=crates/loractl-api/src/paths.rs,crates/loractl-api/src/routes.rs,crates/loractl-api/src/state.rs,crates/loractl-core/src/diffusion_trainer.rs,crates/loractl-core/src/lora.rs,crates/loractl-core/src/quant.rs,crates/loractl-cli/src/cli.rs,crates/loractl-cli/tests/example_config.rs
+EXPECT=Plausible-looking ML code with unverified numerics, over-documented helpers, and tests asserting shapes instead of behavior.
+EXPECT_DOUBT=That 400 tests at 3.46 asserts each would actually pin the numerics they claim to pin.
+BOUNCE_POINT=crates/loractl-core/src/diffusion_trainer.rs:1732
+BOUNCE_QUOTE="let grads_finite = if std::env::var_os(\"LORACTL_SKIP_GRAD_CHECK\").is_some() {"
+BOUNCE_REASON=Undocumented presence-keyed env var disables a numerics guard mid-loop; appears once, tested nowhere.
+WOULD_CLONE=YES|Offline demo config, justfile gate, real crate boundaries
+WOULD_RUN=YES|`just bench-offline` and the synthetic demo run without a GPU
+WOULD_STAR=YES|Interop contracts generated from pinned upstream source, not hand-copied
+WOULD_FILE_ISSUE=YES|Path confinement covers two fields; dataset/model paths unconfined
+WOULD_RECOMMEND=YES|Architecture invariant holds; core never renders, dependency direction clean
+WORST_THING_EVIDENCE=crates/loractl-api/src/routes.rs:105
+WORST_THING_DEFECT=Confinement covers only output.dir and resume.from, yet claims no path reaches the trainer unvalidated; dataset.path and model.* are used verbatim.
+DELTA=Expected shallow ML plausibility; found careful numerics and honest self-critique. Defects are boundary gaps and stale comments, not math.
+FINDING|HIGH|crates/loractl-api/src/routes.rs:105|`dataset.path` and `model.denoiser/vae/text_encoder/tokenizer` bypass confinement on unauthenticated POST /runs; errors return via SSE (state.rs:233) as a read oracle|A confine_read call (or a rejection test) covering dataset.path and the model component overrides
+FINDING|MEDIUM|crates/loractl-core/src/diffusion_trainer.rs:304|Latent-cache correctness depends on a human bumping the `-t2` literal; the reader validates rank not length, so a missed bump silently trains on misaligned conditioning|A cache reader asserting sequence length/shape, or a fingerprint derived from the template code
+FINDING|MEDIUM|crates/loractl-core/src/lora.rs:316|`dropout_is_active_during_training` exercises `lora.dropout` directly, not `LoraLinear::forward`; deleting the dropout call at lora.rs:108 leaves the whole suite green (every other test uses dropout 0.0)|A test calling `LoraLinear::forward` twice on an autodiff backend at prob>0 and asserting the outputs differ
+FINDING|LOW|crates/loractl-cli/src/cli.rs:718|Comment asserts `train()` "is never executed by any test"; tests/verbosity_wiring.rs:42 spawns the binary and runs `train` — stale claim discourages coverage that already exists|Corrected comment, or a git blame showing verbosity_wiring.rs predates this line
+FINDING|LOW|crates/loractl-core/src/diffusion_trainer.rs:1732|`LORACTL_SKIP_GRAD_CHECK` disables the non-finite-gradient guard on mere presence (`=0` also disables); appears exactly once in the tree, undocumented in README/docs|A docs entry plus a value-parsing test, or removal in favour of a config field
+UNVERIFIABLE|Whether the unconfined dataset/model paths are reachable in practice depends on the deployment binding|An integration test POSTing an absolute model.denoiser and asserting 400
+UNVERIFIABLE|Whether the numerics goldens (lora_reference, krea2_lora_keys) still match current upstream|A CI run of the reference-regeneration recipes against live upstream
+UNVERIFIABLE|Whether the ~490-line run_diffusion loop has untested branches (resume, checkpointing, f16 scale halving)|A coverage report over crates/loractl-core

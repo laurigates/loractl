@@ -1,0 +1,19 @@
+PERSONA=cal-ai-toolkit
+MODEL=haiku
+TIER=0
+FILES_OPENED=README.md (lines 1-60), REPO_FILE_LISTING.txt
+EXPECT=A practical LoRA training suite with FLUX/SDXL support, probably simple
+EXPECT_DOUBT=All-in-one training suites claim everything, usually deliver half
+BOUNCE_POINT=README.md:10
+BOUNCE_QUOTE="stabilityai/stable-diffusion-xl-base-1.0 (SDXL) stable-diffusion-v1-5/stable"
+BOUNCE_REASON=README stops explaining after line 3, becomes just a 50-line model list
+WOULD_CLONE=YES|Filelist proves it's real code: UI, hundreds of trainer modules, legit structure
+WOULD_RUN=NO|README has zero quickstart, install, or usage docs. "Easy to use" with no how-to
+WOULD_STAR=NO|Poor README for something claiming ease-of-use. Documentation is the first fail
+WOULD_FILE_ISSUE=NO|Not worth my time. Bad docs = low maintenance interest
+WOULD_RECOMMEND=NO|Legitimate codebase buried under unusable README. Needs docs overhaul first
+WORST_THING_EVIDENCE=README.md:3
+WORST_THING_DEFECT=Claims "easy to use" and "every feature imaginable" but lines 1-60 contain zero usage examples, install steps, or quickstart guide
+DELTA=Went from skeptical-but-hopeful to "solid project, terrible README." Filelist quality contradicts README quality entirely.
+
+FINDING|HIGH|README.md:3|Phrase "every feature imaginable" is classic overpromise; combined with 50-line model list instead of docs, signals abandoned README|Actual working tutorial (the notebook files exist but aren't linked)
