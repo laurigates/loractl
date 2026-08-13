@@ -736,6 +736,7 @@ version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0098bf6555c151517b4c98ca0e8ed1ab6a976e40f5f4e967c117b00eee21e192"
 dependencies = [
+ "aligned-vec",
  "burn-backend",
  "burn-ir",
  "burn-std",
@@ -743,7 +744,9 @@ dependencies = [
  "gemm 0.19.0",
  "half",
  "libm",
+ "macerator",
  "num-traits",
+ "rayon",
 ]
 
 [[package]]
@@ -924,6 +927,7 @@ dependencies = [
  "aligned-vec",
  "bon",
  "burn-cubecl",
+ "burn-flex",
  "burn-ir",
  "burn-tch",
  "burn-tensor",
@@ -3746,6 +3750,7 @@ version = "0.21.0"
 dependencies = [
  "anyhow",
  "burn",
+ "burn-flex",
  "burn-ndarray",
  "burn-store",
  "figment",

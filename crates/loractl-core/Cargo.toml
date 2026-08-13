@@ -53,10 +53,29 @@ burn = { version = "0.21", default-features = false, features = [
 # reduction order makes the replay differ in the 7th significant digit.
 # Isolated by feature: `multi-threads` alone passes that test, `simd` alone
 # fails it, at any thread count. Dropping simd costs ~2.5% of the matmul win.
+#
+# THIS DEPENDENCY IS ON A DEPRECATION PATH. burn's maintainers answered #5332
+# (2026-08) with "we could forward a pass-through feature flag as suggested" AND
+# "the plan is to deprecate burn-ndarray and only keep burn-flex", asking that
+# flex match whatever performance ndarray is giving us. So the flag may land,
+# but the crate under it is going away, and the ~8.7x above is the thing that
+# has to survive the move. `examples/cpu_backend_probe.rs` (`just flex-probe`)
+# is the measurement that decides when it can: it times this exact matmul shape
+# on both backends. Two gates before any migration, neither of which the probe
+# covers -- the real encode phase on real Qwen weights, and a re-run of
+# `tests/grad_checkpointing.rs` bit-identity against a flex-backed trainer,
+# since flex's SIMD is the same class of lever that already fails it here.
 burn-ndarray = { version = "0.21", default-features = false, features = [
     "std",
     "multi-threads",
 ] }
+# The successor CPU backend, for `examples/cpu_backend_probe.rs` only — optional
+# and absent from `default`, so it costs the normal build nothing. The `[features]`
+# block below documents why it is declared directly (same reason as burn-ndarray
+# above: `rayon` has no passthrough on the umbrella) and what the probe answers.
+burn-flex = { version = "0.21", default-features = false, features = [
+    "std",
+], optional = true }
 burn-store = { version = "0.21.0", default-features = false, features = [
     "safetensors",
     "std",
@@ -147,6 +166,32 @@ qwen3vl-real = []
 # Opt-in real Krea-2-Raw MMDiT staged-parity test (`tests/mmdit_real.rs`,
 # M11; depth-truncated — see the test docs). Fixtures: `just mmdit-real-reference`.
 mmdit-real = []
+# `burn-flex` CPU backend, for `examples/cpu_backend_probe.rs` only (`just
+# flex-probe`). burn's maintainers have said on tracel-ai/burn#5332 that
+# burn-ndarray is slated for deprecation with flex the survivor, and asked
+# whether flex matches the threaded-ndarray performance the encode phase
+# currently depends on. Nothing in the library routes through flex — this is a
+# measurement dependency, kept out of `default` so the normal build, `just
+# lint` and CI are untouched.
+#
+# The features are split three ways for the same reason the burn-ndarray block
+# above splits multi-threads from simd: threading and SIMD are separate levers
+# with separate risks, and an arm that bundles them cannot tell you which one
+# paid. `flex` alone is the single-threaded scalar baseline; the other two add
+# one lever each.
+#
+# Note the shape of this dependency — it is the workaround, and it is the same
+# workaround: burn-flex's OWN defaults are ["std", "simd", "rayon"], and the
+# umbrella's `default-features = false` drops all three. `simd` comes back
+# through burn's `simd` passthrough; `rayon` has no passthrough at all, so a
+# direct dependency is again the only route. Verified against burn main
+# (d5865f5d) with `cargo tree -e features -i burn-flex`: a consumer at
+# `default-features = false, features = ["std", "flex"]` gets `std` and nothing
+# else. That is #5332 one backend over, on the backend that is meant to outlive
+# it — which is the substance of our follow-up on the issue.
+flex = ["burn/flex", "dep:burn-flex"]
+flex-rayon = ["flex", "burn-flex/rayon"]
+flex-simd = ["flex", "burn-flex/simd"]
 
 [dev-dependencies]
 # `tests/adapter_metadata.rs` recomputes the exported LoRA's
