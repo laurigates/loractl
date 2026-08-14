@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/laurigates/loractl/compare/v0.21.0...v0.22.0) (2026-08-14)
+
+
+### Features
+
+* **bench:** CPU-backend probe — flex vs threaded ndarray (burn[#5332](https://github.com/laurigates/loractl/issues/5332) follow-up) ([#225](https://github.com/laurigates/loractl/issues/225)) ([58897f7](https://github.com/laurigates/loractl/commit/58897f704b1361ebb28d83bf7af1e7d3b48ff44b))
+
 ## [0.21.0](https://github.com/laurigates/loractl/compare/v0.20.0...v0.21.0) (2026-08-10)
 
 
