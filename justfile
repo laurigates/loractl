@@ -370,6 +370,49 @@ dataset-fetch key="" out="" n="0":
 residency-matrix *args:
     ./scripts/residency-matrix.sh "$@"
 
+# burn#5332 follow-up: does burn-flex match threaded burn-ndarray on the CPU
+# matmul the dataset-encode phase is bound by? burn's maintainers plan to
+# deprecate burn-ndarray in favour of burn-flex and asked exactly this, so the
+# answer has to be a measurement rather than a preference.
+#
+# Runs five arms of `examples/cpu_backend_probe.rs` — threading and SIMD are
+# Cargo features, not runtime switches, so each is its own build:
+#
+#   1. ndarray, 1 thread   (RAYON_NUM_THREADS=1 MATMUL_NUM_THREADS=1)
+#   2. ndarray, all cores  (the config the library ships today)
+#   3. flex, scalar        (--features flex          — what burn's umbrella
+#                           actually gives a default-features=false consumer)
+#   4. flex, rayon         (--features flex-rayon)
+#   5. flex, rayon + SIMD  (--features flex-rayon,flex-simd — flex's own defaults)
+#
+# Arm 3 is not filler: it is the number that shows what the missing `rayon`
+# passthrough costs, which is the point of the upstream issue.
+#
+# CPU-only and GPU-free, so it runs anywhere — but run it on the 24-core box if
+# the numbers are going anywhere public, since the figures already on burn#5332
+# (94.2 ms scalar / 32.0 ms threaded at seq 512, hidden 2560) were measured
+# there and a comparison across hosts is not a comparison. --release always:
+# a debug-profile GEMM measures rustc, not the backend.
+#
+# e.g. `just flex-probe --seq 512 --hidden 2560 --iters 20`
+flex-probe *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== arm 1/5: ndarray, single thread ==="
+    RAYON_NUM_THREADS=1 MATMUL_NUM_THREADS=1 cargo run --release -p loractl-core --example cpu_backend_probe -- "$@"
+    echo "=== arm 2/5: ndarray, all cores ==="
+    cargo run --release -p loractl-core --example cpu_backend_probe -- "$@"
+    echo "=== arm 3/5: flex, scalar (no rayon, no simd) ==="
+    cargo run --release -p loractl-core --features flex --example cpu_backend_probe -- "$@"
+    echo "=== arm 4/5: flex, rayon ==="
+    cargo run --release -p loractl-core --features flex-rayon --example cpu_backend_probe -- "$@"
+    echo "=== arm 5/5: flex, rayon + simd ==="
+    cargo run --release -p loractl-core --features flex-rayon,flex-simd --example cpu_backend_probe -- "$@"
+
+# Lint the opt-in flex probe path (compiles burn-flex + the probe; nothing runs).
+lint-flex:
+    cargo clippy -p loractl-core --all-targets --features flex-rayon,flex-simd -- -D warnings
+
 # #132 retention-ledger validation (offline, ndarray): run both checkpointing
 # arms over the tiny-krea2 fixture with the ledger enabled, then report each.
 # Stages a dataset copy under tmp/ so the checked-in fixture never grows a

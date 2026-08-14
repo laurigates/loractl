@@ -42,7 +42,7 @@ jobs:
   # so the shared burn tree compiles once under a single rust-cache — a matrix
   # would rebuild burn 6x. No GPU or network is needed to lint. Commands mirror
   # the justfile recipes `lint-mnist`, `lint-gpt2-real`, `lint-vae-real`,
-  # `lint-qwen3vl-real`, `lint-mmdit-real`, `lint-wgpu` (CI parity).
+  # `lint-qwen3vl-real`, `lint-mmdit-real`, `lint-wgpu`, `lint-flex` (CI parity).
   feature-lints:
     name: clippy (opt-in feature paths)
     runs-on: ubuntu-latest
@@ -64,6 +64,8 @@ jobs:
         run: cargo clippy -p loractl-core --all-targets --features mmdit-real -- -D warnings
       - name: clippy (wgpu)
         run: cargo clippy -p loractl-core --all-targets --features wgpu -- -D warnings
+      - name: clippy (flex)
+        run: cargo clippy -p loractl-core --all-targets --features flex-rayon,flex-simd -- -D warnings
       # NOTE: the `candle` feature is NOT linted here — candle-metal pulls
       # objc2, which only compiles on Apple platforms (the inverse of the
       # cuda/tch situation). Lint locally with `just lint-candle` on macOS.
