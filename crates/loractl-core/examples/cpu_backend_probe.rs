@@ -68,6 +68,33 @@
 //! rather than above). Raise `--iters` and re-run. If it stays SUSPECT, the
 //! timing is not quotable — that is the whole point of the line.
 //!
+//! ## Observed baseline (popos, AMD Ryzen 9 3900X, 12c/24t, 2026-08-14)
+//!
+//! `just flex-probe --iters 20` at the default seq 512 / hidden 2560. Every arm
+//! `sanity=ok` (1.94–2.05); `PARITY` identical across arms at `rel_to_scale
+//! 6.3e-7`. Posted upstream on tracel-ai/burn#5332.
+//!
+//! | arm | ms | GFLOP/s |
+//! |---|---|---|
+//! | ndarray, 1 thread | 75.78 | 88.6 |
+//! | ndarray, `multi-threads` | 32.27 | 207.9 |
+//! | flex, scalar | 55.41 | 121.1 |
+//! | flex + `rayon` | **11.09** | **604.9** |
+//! | flex + `rayon` + `simd` | 11.14 | 602.4 |
+//!
+//! Two readings. **flex+rayon is ~2.9x faster than the threaded ndarray this
+//! crate ships**, so the answer to burn's "match flex's performance" is that
+//! flex wins outright — migration is now an optimization, not a hedge against
+//! deprecation. And **`simd` does nothing on x86 here**: 11.09 vs 11.14 ms is
+//! well inside the ~7% run-to-run spread the ndarray control showed
+//! (31.9–34.1 ms across the five builds). burn-flex's `simd` forwards
+//! `gemm/wasm-simd128-enable`, which is WASM-specific, so a pure GEMM on x86
+//! plausibly has nothing to switch on — inference from the manifest, not
+//! confirmed inside gemm.
+//!
+//! The ndarray arm reproducing the 32.0 ms from #5332 (32.27 here) is what makes
+//! the rest of the table quotable: it is the known-good control.
+//!
 //! ## What it deliberately does NOT answer
 //!
 //! Whether we can *migrate* to flex. That needs two things this probe does not
