@@ -29,10 +29,13 @@
 //!
 //! Threading and SIMD are Cargo features, not runtime switches, so the arms are
 //! separate builds. `burn-flex`'s own defaults are `["std", "simd", "rayon"]`,
-//! and every one of them is dropped by the umbrella's `default-features =
-//! false` — `simd` is recoverable through burn's `simd` passthrough, `rayon` is
-//! not recoverable at all. So this crate declares `burn-flex` directly and
-//! re-enables them by name, exactly as it already does for burn-ndarray:
+//! and the umbrella's `default-features = false` drops all three. `simd` comes
+//! back through burn's `simd` passthrough **only if `flex` is also enabled** —
+//! `burn-flex?/simd` is the weak form, so it keys off burn's own optional
+//! `burn-flex` dep rather than off the crate being in the graph — and `rayon`
+//! has no passthrough at any feature combination. So this crate declares
+//! `burn-flex` directly and re-enables them by name, as it already does for
+//! burn-ndarray:
 //!
 //! | build | backend | threading | SIMD |
 //! |---|---|---|---|

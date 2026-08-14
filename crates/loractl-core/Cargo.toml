@@ -182,13 +182,23 @@ mmdit-real = []
 #
 # Note the shape of this dependency — it is the workaround, and it is the same
 # workaround: burn-flex's OWN defaults are ["std", "simd", "rayon"], and the
-# umbrella's `default-features = false` drops all three. `simd` comes back
-# through burn's `simd` passthrough; `rayon` has no passthrough at all, so a
-# direct dependency is again the only route. Verified against burn main
-# (d5865f5d) with `cargo tree -e features -i burn-flex`: a consumer at
-# `default-features = false, features = ["std", "flex"]` gets `std` and nothing
-# else. That is #5332 one backend over, on the backend that is meant to outlive
-# it — which is the substance of our follow-up on the issue.
+# umbrella's `default-features = false` drops all three, so a direct dependency
+# is again the only route. Verified against burn main (d5865f5d) by varying only
+# the consumer's `burn` features and reading `cargo tree -e features -i
+# burn-flex`:
+#
+#   ["std"]                  -> std          (burn-flex is compiled REGARDLESS:
+#   ["std", "simd"]          -> std           burn-dispatch depends on it
+#   ["std", "flex"]          -> std           NON-optionally)
+#   ["std", "flex", "simd"]  -> std, simd
+#   default features + flex  -> std, simd, rayon
+#
+# So `simd` is recoverable only when `flex` is ALSO on — `burn-flex?/simd` is
+# the weak form, keyed on burn's own optional dep rather than on the crate being
+# in the graph — and `rayon` is recoverable at no feature combination. That is
+# #5332 one backend over, on the backend meant to outlive it, and it is why the
+# follow-up on that issue proposes the STRONG form (`burn-flex/rayon`, no `?`):
+# the weak form cannot reach the instance burn-dispatch already pulls in.
 flex = ["burn/flex", "dep:burn-flex"]
 flex-rayon = ["flex", "burn-flex/rayon"]
 flex-simd = ["flex", "burn-flex/simd"]
