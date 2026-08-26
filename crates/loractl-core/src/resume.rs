@@ -532,7 +532,9 @@ pub fn load_optimizer_state<AB: AutodiffBackend>(
         }
         let vals: Vec<f32> = view
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         // The same finiteness guard `import_adapters` applies to the weights

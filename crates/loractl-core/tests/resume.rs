@@ -136,7 +136,9 @@ fn tensor_f32(path: &Path, key: &str) -> Vec<f32> {
     st.tensor(key)
         .unwrap_or_else(|_| panic!("{key} present in {}", path.display()))
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

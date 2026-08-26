@@ -23,10 +23,10 @@ anchors:
     at:
       - crates/loractl-core/src/export.rs > export_adapters
       - crates/loractl-core/src/export.rs > import_adapters
-    hash: 2:40642bc99015
+    hash: 2:7569189f1def
     id: c_18c63b4af1e172780002
-    verified_at: 2026-08-08T00:31:45Z
-    verified_commit: bac6be6b1951d2b8fb49c4481648d32950f67620
+    verified_at: 2026-08-26T11:54:29Z
+    verified_commit: 649acfffdace4b49b9eaf50839bba3cf22bf909e
 refs: []
 ---
 
