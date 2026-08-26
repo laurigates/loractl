@@ -390,7 +390,9 @@ pub fn import_adapters<B: Backend>(
         let shape: Vec<usize> = view.shape().to_vec();
         let vals: Vec<f32> = view
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         // Checked on the raw f32 bytes, before the tensor exists: a resume

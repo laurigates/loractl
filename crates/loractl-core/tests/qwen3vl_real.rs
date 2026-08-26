@@ -60,7 +60,9 @@ fn read_f32(st: &safetensors::SafeTensors, name: &str) -> Vec<f32> {
     let view = st.tensor(name).expect("golden tensor present");
     assert_eq!(view.dtype(), safetensors::Dtype::F32);
     view.data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -70,8 +72,10 @@ fn read_i64(st: &safetensors::SafeTensors, name: &str) -> Vec<i64> {
     let view = st.tensor(name).expect("golden tensor present");
     assert_eq!(view.dtype(), safetensors::Dtype::I64);
     view.data()
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect()
 }
 

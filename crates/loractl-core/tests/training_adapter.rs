@@ -417,7 +417,9 @@ fn bf16_factors_merge() {
     // so the comparison isn't chasing bf16's own quantization).
     let rt = |v: &[f32]| -> Vec<f32> {
         bf16_bytes(v)
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
             .collect()
     };

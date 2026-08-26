@@ -81,7 +81,7 @@
 //!
 //! **What the step now pays, stated in full.** Per batch: a `read` of each
 //! item's two cache files, a scalar `u8 → f32` decode of their payloads
-//! ([`read_cache`] collects `chunks_exact(4)`, so ~2× the payload is
+//! ([`read_cache`] collects `as_chunks::<4>()`, so ~2× the payload is
 //! allocated transiently), and the upload. Only the *first* of those three is
 //! served by the OS page cache — batches are visited round-robin over files
 //! that were just written, so the hot working set stays cached for free while
@@ -555,7 +555,9 @@ pub fn decode_image_for_bucket(path: &Path, bucket: Bucket) -> Result<Vec<f32>> 
         let green = &mut green[row.clone()];
         let blue = &mut blue[row];
         for (((px, r), g), b) in src
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .zip(red.iter_mut())
             .zip(green.iter_mut())
             .zip(blue.iter_mut())
@@ -626,7 +628,9 @@ fn read_cache(path: &Path, names: &[&str]) -> Result<Option<Vec<CachedTensor>>> 
         }
         let values: Vec<f32> = view
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         out.push((values, view.shape().to_vec()));

@@ -306,7 +306,9 @@ fn tiny_krea2_lora_trains_end_to_end_and_exports_kohya() {
     // The adapter genuinely trained: zero-init `B` (lora_up) moved off zero.
     let sum: f32 = up
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs())
         .sum();
     assert!(sum > 0.0, "lora_up must have moved off its zero init");

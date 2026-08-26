@@ -73,7 +73,9 @@ impl Drop for TempDir {
 /// Read a safetensors `TensorView`'s raw little-endian f32 bytes into a `Vec<f32>`.
 fn view_f32(view: &safetensors::tensor::TensorView) -> Vec<f32> {
     view.data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
 }
