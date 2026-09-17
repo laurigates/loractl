@@ -274,7 +274,9 @@ credible patterns, and the choice constrains the provider:
 
 - **Attached network volume** (RunPod network volume, Nebius Shared Filesystem, Verda block volume,
   AWS EBS, Lambda filesystem). Cleanest. Note RunPod pins a pod to the volume's datacenter, and the
-  volume must be attached at *creation* time — you cannot attach it later.
+  volume must be attached at *creation* time — you cannot attach it later. RunPod's **Global
+  Volumes** (beta, post-dates this study) remove the datacenter pin for the read-only half of this
+  cache but not the attach-at-creation rule — see the addendum below.
 - **Pre-baked image** — an AMI or container image with the weights inside. Works everywhere, no
   volume needed, but rebuilding the image on every model change is friction, and a 20 GB image pull
   is not free unless the provider caches layers.
@@ -443,6 +445,122 @@ it is worth resolving before any purchasing decision: a provider that cannot com
 free at any price.
 
 **The 12-minute ci-smoke run length is an assumption, not a measurement** — see the billing section.
+
+---
+
+## Addendum — two RunPod features that post-date the study (2026-09-17)
+
+Prompted by two RunPod blog posts: [Global Volumes
+(beta)](https://www.runpod.io/blog/global-volumes-beta) and [Deploy ComfyUI as a serverless API
+endpoint](https://www.runpod.io/blog/deploy-comfyui-as-a-serverless-api-endpoint). The facts below
+are read from RunPod's **own docs** on 2026-09-17, not from the posts, which are thinner than the
+docs on every load-bearing detail. Same discipline as the study: where a number could not be
+fetched it is left absent, never recalled.
+
+**Neither changes the recommendation.** RunPod Secure Cloud in an EU datacenter stays primary.
+These refine the *storage* leg of the migration, and add a use for serverless the study did not
+consider.
+
+### Global Volumes (beta) — removes the datacenter pin, for the read-only half of the cache only
+
+What it is ([`docs.runpod.io/storage/globalstore`](https://docs.runpod.io/storage/globalstore)):
+
+- Region-independent, **object-storage-backed**, attachable to a Pod in any RunPod datacenter.
+  Mounts at `/workspace`, or `/workspace-global` when a network volume is also attached.
+- Elastic — no capacity provisioned up front.
+- **Pods at launch.** Neither the post nor the docs mention Serverless, and the serverless
+  network-volume page does not mention Global Volumes either.
+- **Eventual consistency** — writes may not become visible inside a container that is already
+  running.
+- No file locking, no atomic rename, no hard links, no permission bits.
+- RunPod's own framing: write-rarely/read-often (model serving, inference), and **explicitly not
+  training writes** or concurrent writes.
+- Flagged and deleted 15 days after the account balance reaches $0.
+- **Price: not published.** Absent from `runpod.io/pricing`, `docs.runpod.io/pods/pricing`, and the
+  feature docs as of this date. Not costed here.
+
+The study's storage bullet flagged two RunPod network-volume constraints. A Global Volume removes
+one and leaves the other:
+
+| Constraint | Status under a Global Volume |
+|---|---|
+| Pod is pinned to the volume's datacenter | **Removed** — this was the sharper of the two |
+| Volume must be attached at pod *creation* | **Unchanged** — mount path is set at deploy time |
+
+The pin was the one with teeth: the recommended setup binds every run to whichever single EU
+datacenter holds the 50 GB volume, which is a capacity bet on one DC. RunPod's own serverless docs
+concede the same pin "may limit GPU availability and reduce failover options" and offer no remedy
+beyond manually syncing multiple volumes.
+
+**The right shape is a split, not a replacement**, because the weight cache and the run's own
+writes have opposite profiles:
+
+| Data | Profile | Store |
+|---|---|---|
+| Base weights (~13 GB denoiser + ~4 GB text encoder + VAE) | written once, read every run | Global Volume |
+| Checkpoints and resume state (`resume.rs`), adapter exports, dataset latent cache | frequent writes, mid-run | regional network volume |
+
+Putting checkpoint writes on a Global Volume is a **correctness** hazard, not merely a slow path:
+with no atomic rename, the write-temp-then-rename pattern that makes a checkpoint crash-safe does
+not hold, and RunPod names training writes as out of scope for the product.
+
+Two questions to settle before adopting it:
+
+1. **Where do the bytes live?** "Region-independent" is the negation of the property this study
+   priced at $1.19/month across all three scenarios. The docs do not say which jurisdiction holds
+   the object store, nor whether replication can be constrained to a region. For the ci-smoke cache
+   — public Krea 2 weights — this is likely moot; for anything private it is a gate, and it is the
+   reason a Global Volume cannot simply absorb the whole cache in the training scenario.
+2. **What does it cost?** Unpublished. The bound is reassuring rather than the number: the 50 GB
+   network volume is $3.50 of a $42.51 month, so this cannot plausibly reorder the finalists — but
+   it also cannot be asserted at zero.
+
+Beta status and the 15-day-at-$0 deletion are acceptable for this use: the cache is reproducible
+from Hugging Face, so what is at risk is re-download time, not data.
+
+### Serverless ComfyUI — the missing renderer for the interop proof, not a training target
+
+Not a training option, and not a candidate for any scenario in this study: serverless is short,
+stateless invocations, and the 60-hour training run fits none of it.
+
+Where it does fit is a gap the repo already names. `tests/krea2_lora_keys.rs` pins the export
+against ComfyUI's *source* — the key map `ast`-extracted from a pinned commit — which is the
+strongest **offline** claim available and deliberately not the same claim as "a running ComfyUI
+loaded it". The only evidence for the latter is M14's manual A/B: one JPEG in `docs/evidence/`,
+produced by hand, once. Hosted CI is GPU-free and cannot reproduce it.
+
+A scale-to-zero endpoint is the renderer that closes that loop — workflow JSON in, base64 image
+out, so an on-demand per-PR interop gate costs a cold start plus seconds of GPU.
+
+Mechanics, from [`runpod-workers/worker-comfyui`](https://github.com/runpod-workers/worker-comfyui)
+rather than the post:
+
+- Input is `{workflow, images?}` — **images only**. There is no arbitrary-file upload, so the
+  adapter under test cannot ride in the request payload. It has to reach the worker on a network
+  volume (mounted at `/runpod-volume` in Serverless, not `/workspace`) or baked into the image.
+- That makes the volume the transport: push the exported `.safetensors` via RunPod's
+  S3-compatible API, then `/runsync` a workflow that references it by name.
+- **The S3 API is network-volume-only** — it does not expose Global Volumes — **and covers 15
+  datacenters, of which the EU-member ones are EU-CZ-1 and EU-RO-1.** France, the Netherlands and
+  Sweden, three of the six EU datacenters this study named, have no S3 endpoint. Adopting this flow
+  narrows the DC choice to Czechia or Romania.
+- The post's happy path bakes the model into the image and is pinned to FLUX.1-dev-fp8. Krea 2 is
+  in no official image, so it is a custom image with ~13 GB baked, or the same network volume.
+- Output carries `errors[]` for non-fatal warnings. **That is the assertion worth making.**
+  ComfyUI's "lora key not loaded" warning is precisely the [#137](https://github.com/laurigates/loractl/issues/137)
+  failure shape — an adapter that loads clean and does nothing — so the gate should read the
+  key-match outcome, not only eyeball the image.
+
+One caveat, stated plainly: an image A/B is a **weaker** assertion than the offline key test, not a
+stronger one. Its value is covering what the offline test structurally cannot — the loader actually
+executing — not replacing it.
+
+### What this does not touch
+
+The migration's top open question is unchanged and still unmeasured: whether a Rust + CUDA
+toolchain (MSRV 1.92, `nvcc` at build time for the `cuda` feature) builds and runs on any of these
+providers. A provider that cannot compile the project is free at any price, and no amount of
+storage design moves that.
 
 ---
 
