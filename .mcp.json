@@ -45,13 +45,9 @@
       "env": {}
     },
     "pal": {
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "run",
-        "--project",
-        "/Users/lgates/repos/laurigates/pal-mcp-server",
-        "python",
-        "/Users/lgates/repos/laurigates/pal-mcp-server/server.py"
+        "pal-mcp-server@latest"
       ],
       "env": {
         "GEMINI_API_KEY": "$GEMINI_API_KEY",
