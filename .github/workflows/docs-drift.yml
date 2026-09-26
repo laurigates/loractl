@@ -33,14 +33,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: surf lint (every anchor resolves)
-        uses: Connorrmcd6/surface@091b937ae34ac81a02386604fed977dd24f1f0cf # v0.8.0
+        uses: Connorrmcd6/surface@df2ba902d78a308c481be87a06ed2239b0beb352 # v0.9.0
         with:
           # `version` defaults to "latest" — without it the SHA-pinned action
           # still installs a floating binary, defeating the pin.
           version: v0.8.0
           args: lint
       - name: surf check (the gate — blocks on logic drift)
-        uses: Connorrmcd6/surface@091b937ae34ac81a02386604fed977dd24f1f0cf # v0.8.0
+        uses: Connorrmcd6/surface@df2ba902d78a308c481be87a06ed2239b0beb352 # v0.9.0
         with:
           version: v0.8.0
           args: check
