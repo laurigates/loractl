@@ -35,14 +35,14 @@ anyhow.workspace = true
 # formatting lives here, not in core.
 serde_json.workspace = true
 tracing.workspace = true
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
-figment = { version = "0.10", features = ["yaml", "env"] }
-indicatif = "0.18"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "=4.6.1", features = ["derive"] }
+clap_complete = "=4.6.7"
+figment = { version = "=0.10.19", features = ["yaml", "env"] }
+indicatif = "=0.18.6"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 # Error/panic reporting to GlitchTip (Sentry-API compatible). DSN comes from
 # the SENTRY_DSN env var; rustls transport avoids a system OpenSSL dependency.
-sentry = { version = "0.46", default-features = false, features = [
+sentry = { version = "=0.46.2", default-features = false, features = [
     "backtrace",
     "contexts",
     "panic",
@@ -55,4 +55,4 @@ sentry = { version = "0.46", default-features = false, features = [
 [dev-dependencies]
 # `figment::Jail` (env + cwd isolation for the config-precedence tests) is
 # gated behind figment's `test` feature.
-figment = { version = "0.10", features = ["yaml", "env", "test"] }
+figment = { version = "=0.10.19", features = ["yaml", "env", "test"] }

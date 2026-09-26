@@ -21,7 +21,7 @@ loractl-bench = { path = "../loractl-bench" }
 # ML backend. `ndarray` is the portable CPU backend (no GPU/CUDA needed for the
 # MNIST correctness harness); `autodiff` wraps a backend for training. Backends
 # stay generic so a GPU backend (wgpu/cuda) can be swapped in later.
-burn = { version = "0.21", default-features = false, features = [
+burn = { version = "=0.21.0", default-features = false, features = [
     "std",
     "ndarray",
     "autodiff",
@@ -78,7 +78,7 @@ burn = { version = "0.21", default-features = false, features = [
 # is one matmul), and a re-run of `tests/grad_checkpointing.rs` bit-identity
 # against a flex-backed trainer, since flex's SIMD is the same class of lever
 # that already fails it here.
-burn-ndarray = { version = "0.21", default-features = false, features = [
+burn-ndarray = { version = "=0.21.0", default-features = false, features = [
     "std",
     "multi-threads",
 ] }
@@ -86,10 +86,10 @@ burn-ndarray = { version = "0.21", default-features = false, features = [
 # and absent from `default`, so it costs the normal build nothing. The `[features]`
 # block below documents why it is declared directly (same reason as burn-ndarray
 # above: `rayon` has no passthrough on the umbrella) and what the probe answers.
-burn-flex = { version = "0.21", default-features = false, features = [
+burn-flex = { version = "=0.21.0", default-features = false, features = [
     "std",
 ], optional = true }
-burn-store = { version = "0.21.0", default-features = false, features = [
+burn-store = { version = "=0.21.0", default-features = false, features = [
     "safetensors",
     "std",
 ] }
@@ -103,22 +103,22 @@ serde_json.workspace = true
 # burn-store's snapshot-save can't express). Both already ride in transitively
 # via burn-store at these exact versions, so depending on them directly adds no
 # new external surface.
-regex = "1"
-safetensors = "0.7"
+regex = "=1.12.4"
+safetensors = "=0.7.0"
 # Qwen3-VL caption conditioning (M10, #21): loads the HF `tokenizer.json`
 # shipped with Krea-2-Raw so `Qwen3VlConditioner` can tokenize captions
 # through the krea-2 chat template. Pure offline — file-based loading only,
 # no hub/HTTP features.
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"] }
 # Scaled-fp8 checkpoint loading (M15, #82): `fp8.rs` mmaps the safetensors
 # file once and shares it across its lazy dequant closures — the same crate
 # (and pattern) burn-store's own lazy file path uses, so this already rides
 # in transitively at this exact version via burn-store's `std` feature.
-memmap2 = "0.9"
+memmap2 = "=0.9.11"
 # Image dataset pipeline (M12, #23): decode + resize the training images.
 # Default features off — only the two formats the kohya-style folder
 # convention actually uses; no HDR/EXR/AVIF subtree.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 # Parallel image decode/resize in the encode phase (#178). The decoder is
 # already SIMD-capable (image 0.25 decodes JPEG through zune-jpeg), so the cost
 # is resize + pixel shuffling, and the only lever left is doing several images
@@ -134,8 +134,8 @@ rayon.workspace = true
 # tree; `sha2` (already transitive via burn-store) does the integrity check.
 # The fetch is lazy — a run with a local tokenizer never touches the network,
 # so offline CI is unaffected.
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-sha2 = "0.10"
+ureq = { version = "=3.3.0", default-features = false, features = ["rustls"] }
+sha2 = "=0.10.9"
 
 [features]
 # GPU compute backends (M7, #18). None are in `default`, so `cargo build`/
@@ -221,7 +221,7 @@ flex-simd = ["flex", "burn-flex/simd"]
 # `sshs_model_hash` from the finished file — an INDEPENDENT check of the
 # consumer's algorithm, so it must hash for itself rather than trust the
 # exporter. Same version the library already pins.
-sha2 = "0.10"
+sha2 = "=0.10.9"
 # int4 (Q4S) frozen-base quantization goldens (#96). burn-ndarray gates its Q4
 # `quantize` behind the empty `export_tests` feature (Q8/int8 is always on; Q4 is
 # not) — so the offline int4 quant tests need it enabled. As a dev-dependency it
@@ -231,7 +231,7 @@ sha2 = "0.10"
 # `default-features = false` so it adds only export_tests to whatever features
 # burn already turns on; unification is additive, so std/simd/etc. are unaffected
 # and the int8 goldens are untouched (export_tests only ADDS the Q4/Q2 arms).
-burn-ndarray = { version = "0.21", default-features = false, features = [
+burn-ndarray = { version = "=0.21.0", default-features = false, features = [
     "export_tests",
 ] }
 # ADR-0005 step-VRAM probe (`examples/step_probe.rs`): loads a TrainConfig
@@ -239,4 +239,4 @@ burn-ndarray = { version = "0.21", default-features = false, features = [
 # itself as env-free). Examples build against dev-dependencies, so the
 # library surface is untouched; same version + feature the CLI already pins,
 # so no new external surface rides into Cargo.lock.
-figment = { version = "0.10", features = ["yaml"] }
+figment = { version = "=0.10.19", features = ["yaml"] }
