@@ -115,13 +115,13 @@ jobs:
     runs-on: [self-hosted, gpu, cuda]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Persistent self-hosted runner: caching ~/.cargo/bin snapshots the
           # host's rustup/cargo proxies and clobbers them on restore (the CAEF
@@ -146,13 +146,13 @@ jobs:
     runs-on: [self-hosted, gpu, wgpu]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Persistent self-hosted runner — see the cuda job's cache-bin note.
           cache-bin: "false"
@@ -173,13 +173,13 @@ jobs:
     runs-on: [self-hosted, gpu, cuda]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Persistent self-hosted runner — see the cuda job's cache-bin note.
           cache-bin: "false"
@@ -206,13 +206,13 @@ jobs:
     runs-on: [self-hosted, gpu, cuda]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Persistent self-hosted runner — see the cuda job's cache-bin note.
           cache-bin: "false"
@@ -301,7 +301,7 @@ jobs:
       # lines it managed, and those are exactly what diagnosis needs.
       - name: Upload bench log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: bench-log
           path: bench.log

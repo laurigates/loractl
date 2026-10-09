@@ -17,30 +17,30 @@ repository = "https://github.com/laurigates/loractl"
 rust-version = "1.92"
 
 [workspace.dependencies]
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
+anyhow = "=1.0.103"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+tracing = "=0.1.44"
 # HTTP/SSE surface for loractl-api. Default features off: routing/SSE are
 # always available; `http1` + `tokio` enable the hyper server and
 # `axum::serve`, `json` enables the `Json` extractor.
-axum = { version = "0.8", default-features = false, features = [
+axum = { version = "=0.8.9", default-features = false, features = [
     "http1",
     "json",
     "tokio",
 ] }
 # `time` is deliberate: axum's SSE keep-alive timer and the test timeout
 # guards both need it.
-tokio = { version = "1", features = [
+tokio = { version = "=1.52.3", features = [
     "rt-multi-thread",
     "macros",
     "sync",
     "net",
     "time",
 ] }
-async-stream = "0.3"
+async-stream = "=0.3.6"
 # Data-parallel iterators. Used by loractl-core's dataset pipeline (#178) to
 # decode/resize training images across cores while the GPU-bound encode stays
 # serial. Already in the resolved tree via `tokenizers`, so this adds no new
 # external surface; MIT OR Apache-2.0, both on cargo-deny's allow list.
-rayon = "1"
+rayon = "=1.12.0"

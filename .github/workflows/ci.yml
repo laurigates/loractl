@@ -20,11 +20,11 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -47,11 +47,11 @@ jobs:
     name: clippy (opt-in feature paths)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
       - name: clippy (mnist)
         run: cargo clippy -p loractl-core --all-targets --features mnist -- -D warnings
       - name: clippy (gpt2-real)
@@ -80,8 +80,8 @@ jobs:
     name: cargo-deny (licenses/bans/sources)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@v6.1.0
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
         with:
           arguments: ""
           command: check
