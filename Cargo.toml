@@ -17,9 +17,9 @@ repository = "https://github.com/laurigates/loractl"
 rust-version = "1.92"
 
 [workspace.dependencies]
-anyhow = "=1.0.103"
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
+anyhow = "=1.0.104"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 tracing = "=0.1.44"
 # HTTP/SSE surface for loractl-api. Default features off: routing/SSE are
 # always available; `http1` + `tokio` enable the hyper server and
@@ -31,7 +31,7 @@ axum = { version = "=0.8.9", default-features = false, features = [
 ] }
 # `time` is deliberate: axum's SSE keep-alive timer and the test timeout
 # guards both need it.
-tokio = { version = "=1.52.3", features = [
+tokio = { version = "=1.53.2", features = [
     "rt-multi-thread",
     "macros",
     "sync",
