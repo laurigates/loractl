@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.22.1](https://github.com/laurigates/loractl/compare/v0.22.0...v0.22.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **core:** migrate chunks_exact to as_chunks for clippy 1.98 ([#229](https://github.com/laurigates/loractl/issues/229)) ([8656e4b](https://github.com/laurigates/loractl/commit/8656e4be2c8c954384cefaa47fa951a1325fa4c7))
+* **mcp:** launch PAL via uvx from PyPI ([#232](https://github.com/laurigates/loractl/issues/232)) ([8455e56](https://github.com/laurigates/loractl/commit/8455e5628e3c2216fef184b6d8d9ac5d78f8dbc9))
+
 ## [0.22.0](https://github.com/laurigates/loractl/compare/v0.21.0...v0.22.0) (2026-08-14)
 
 
