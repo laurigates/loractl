@@ -101,20 +101,23 @@ serde_json.workspace = true
 # against module paths; `safetensors` is the direct writer for the kohya-ss
 # adapter export (arbitrary keys + transpose + `.alpha` scalar — a shape
 # burn-store's snapshot-save can't express). Both already ride in transitively
-# via burn-store at these exact versions, so depending on them directly adds no
-# new external surface.
-regex = "=1.12.4"
+# via burn-store, so depending on them directly adds no new external surface.
+# `safetensors` is HELD at burn-store 0.21's exact 0.7.0: 0.8 is a new minor of
+# a 0.x crate, so bumping it would add a second copy to the tree next to
+# burn-store's. Move it together with the burn bump (#79). `regex` is a 1.x
+# range burn-store accepts, so it tracks latest without a duplicate.
+regex = "=1.13.1"
 safetensors = "=0.7.0"
 # Qwen3-VL caption conditioning (M10, #21): loads the HF `tokenizer.json`
 # shipped with Krea-2-Raw so `Qwen3VlConditioner` can tokenize captions
 # through the krea-2 chat template. Pure offline — file-based loading only,
 # no hub/HTTP features.
-tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"] }
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
 # Scaled-fp8 checkpoint loading (M15, #82): `fp8.rs` mmaps the safetensors
 # file once and shares it across its lazy dequant closures — the same crate
 # (and pattern) burn-store's own lazy file path uses, so this already rides
 # in transitively at this exact version via burn-store's `std` feature.
-memmap2 = "=0.9.11"
+memmap2 = "=0.9.12"
 # Image dataset pipeline (M12, #23): decode + resize the training images.
 # Default features off — only the two formats the kohya-style folder
 # convention actually uses; no HDR/EXR/AVIF subtree.
@@ -131,10 +134,12 @@ rayon.workspace = true
 # exists, `hf.rs` fetches the model-invariant Qwen3-VL tokenizer once, verifies
 # a pinned SHA-256, and caches it under `HF_HOME`. `ureq` is a minimal
 # pure-Rust blocking client over the rustls stack already in the workspace
-# tree; `sha2` (already transitive via burn-store) does the integrity check.
+# tree; `sha2` does the integrity check. `sha2` is HELD at 0.10.x: the rest of
+# the tree (pbkdf2, tracel-llvm-bundler, via burn) is on 0.10, so 0.11 would
+# add a duplicate copy. Revisit with the burn bump (#79).
 # The fetch is lazy — a run with a local tokenizer never touches the network,
 # so offline CI is unaffected.
-ureq = { version = "=3.3.0", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 sha2 = "=0.10.9"
 
 [features]
@@ -220,7 +225,7 @@ flex-simd = ["flex", "burn-flex/simd"]
 # `tests/adapter_metadata.rs` recomputes the exported LoRA's
 # `sshs_model_hash` from the finished file — an INDEPENDENT check of the
 # consumer's algorithm, so it must hash for itself rather than trust the
-# exporter. Same version the library already pins.
+# exporter. Same version the library already pins (held at 0.10.x, see above).
 sha2 = "=0.10.9"
 # int4 (Q4S) frozen-base quantization goldens (#96). burn-ndarray gates its Q4
 # `quantize` behind the empty `export_tests` feature (Q8/int8 is always on; Q4 is
