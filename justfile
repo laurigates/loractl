@@ -131,6 +131,11 @@ lint-qwen3vl-real:
 lint-mmdit-real:
     cargo clippy -p loractl-core --all-targets --features mmdit-real -- -D warnings
 
+# Lint the opt-in `plot` feature path (#215): the loss/LR curve PNG renderer in
+# loractl-cli. Pure-Rust (plotters + ab_glyph), offline, small.
+lint-plot:
+    cargo clippy -p loractl-cli --all-targets --features plot -- -D warnings
+
 # Lint the opt-in wgpu GPU-backend path (M7). Compiles the cubecl/wgpu/naga
 # subtree + the gated wgpu smoke test; no GPU is needed to COMPILE and nothing
 # runs. Kept out of the default `just lint` so that stays offline and fast.
@@ -169,6 +174,12 @@ fmt-check:
 test:
     cargo test
     cargo test --examples
+
+# Run the opt-in `plot` feature's offline tests (#215): the curve PNG renderer.
+# Not covered by `just test` (the feature is off by default); CI's test job runs
+# this too — keep them in sync.
+test-plot:
+    cargo test -p loractl-cli --features plot
 
 # Dead-code report: `pub` items nothing outside their own file names, plus
 # manifest dependencies nothing imports. REPORTING ONLY, deliberately not part

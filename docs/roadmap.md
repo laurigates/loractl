@@ -525,6 +525,36 @@ alternatives they were chosen over — are
   comment in its training loop for the three reasons, pinned by
   `tests/resume.rs::the_synthetic_trainer_does_not_resume`.
 
+## Opt-in loss/LR curve PNG (#215)
+
+A finished run used to leave no visual artifact: the `TrainEvent` stream was
+rendered live (indicatif bar, SSE) and gone, so comparing two runs meant reading
+numbers out of logs. `loractl-cli`'s opt-in **`plot`** feature
+(`crates/loractl-cli/src/plot.rs`) adds a second renderer over the same stream:
+it accumulates `(step, loss, lr)` from `TrainEvent::Step` and, on
+`TrainEvent::Finished`, writes `<output.dir>/<output.name>.curve.png` — loss
+above, learning rate below. The LR panel is a flat line today and becomes
+informative when #212 makes the rate vary.
+
+- **Core is untouched.** The recorder lives in the CLI beside `render_event`;
+  `loractl-core` gains no plotting dependency and no new event.
+- **Pure Rust, off by default.** `plotters` with only the bitmap backend and the
+  `ab_glyph` font path (`default-features = false`; the default `ttf` feature
+  would pull system freetype/fontconfig). The one font is embedded —
+  `assets/fonts/DejaVuSansMono.ttf`, unmodified, with its Bitstream Vera license
+  beside it. The new crates (plotters, png, image, ab_glyph, ttf-parser) are all
+  MIT/Apache-compatible and pass `cargo deny` with no allow-list change;
+  `ttf-parser` carries a RustSec *unmaintained* advisory (RUSTSEC-2026-0192), a
+  warning that does not fail `cargo audit`, reachable only through this feature.
+- **Never fails a run.** `observe` logs a `tracing` warning and swallows a
+  render/write error; the fallible `write` is what the offline tests drive.
+  Empty and single-point series produce a valid image rather than panicking.
+- **Gated.** `just lint-plot` (CI `feature-lints`) and `just test-plot` (CI
+  `test` job) cover the feature.
+- **`rerun` is a separate, later evaluation** (live scalars plus validation
+  samples on one timeline) and is deliberately not bundled — it is a far larger
+  dependency that has to earn its place.
+
 ## A note on the text side
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern

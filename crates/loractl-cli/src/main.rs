@@ -3,6 +3,8 @@
 //! exit.
 
 mod cli;
+#[cfg(feature = "plot")]
+mod plot;
 
 use anyhow::Result;
 
