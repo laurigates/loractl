@@ -105,9 +105,13 @@ separately; it should read the configured precision before giving f16 advice.
 
 A ComfyUI-layout run ships no `tokenizer.json`, so `hf::fetch_qwen3vl_tokenizer`
 falls back to `krea/Krea-2-Raw`. That repo is **gated** (`gated: "auto"`,
-verified against the HF API 2026-08-07) — `hf.rs` still calls it ungated in two
-places, and `config.rs` still tells users the ComfyUI flow "needs nothing set
-here":
+verified against the HF API 2026-08-07). **Status (#200): the late failure and
+the missing auth path are fixed** — `hf.rs` now sends `HF_TOKEN` /
+`$HF_HOME/token` / `~/.cache/huggingface/token` as a Bearer token, the encode
+phase resolves the tokenizer before loading any checkpoint, and 401/403 carry
+the remedy. The signature below is what the *old* build printed; on a current
+build the same cause fails at startup with `HTTP 401: ... gated and no
+HuggingFace token was found`, so seeing the old shape means a stale binary.
 
 ```
   load: text encoder (4.9 GiB) from qwen3vl_4b_fp8_scaled.safetensors
@@ -154,7 +158,8 @@ alone, and one of them (the NaN) actively points at the wrong subsystem.
 The third is the variant worth recognizing separately: its error text is
 **accurate**, and it still costs an afternoon, because it arrives ~9 minutes and
 one 4.9 GiB load into every attempt, and because the code's own comments assert
-the opposite ("ungated", "needs nothing set here"). The remedy is the same shape
+the opposite (at the time: "ungated", "needs nothing set here"; corrected in
+#200). The remedy is the same shape
 as the other two — move the check to the front, where it costs milliseconds — but
 the tell is different: not a misleading message, a **late** one resting on a
 stale premise. When a precondition is cheap to verify and expensive to discover,

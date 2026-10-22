@@ -55,6 +55,48 @@ struct Golden {
     safetensors_keys: Vec<String>,
 }
 
+/// Parse the golden JSON, turning a parse failure into the actionable message.
+///
+/// The goldens are gitignored and generated locally, so one generated before
+/// #163 still exists on disk — it passes the files-exist preflight and then
+/// fails to deserialize on the `prefix_len`/`suffix_len` fields the old
+/// generator never wrote. A bare serde error ("missing field `prefix_len`")
+/// names no remedy (#203); the remedy is always to regenerate.
+fn parse_golden(text: &str) -> Result<Golden, String> {
+    serde_json::from_str(text).map_err(|e| {
+        format!(
+            "the real qwen3vl golden ({GOLDEN_JSON}) does not parse: {e}.\n\
+             It was most likely generated before #163 added `prefix_len`/`suffix_len`; \
+             regenerate it with:  just qwen3vl-real-reference"
+        )
+    })
+}
+
+/// A golden from before #163 (no template lengths) must say how to fix it,
+/// not die on a bare serde error. Offline — needs only the feature, no
+/// fixtures — so it runs wherever the feature is built.
+#[test]
+fn a_stale_pre_163_golden_says_to_regenerate() {
+    let stale = r#"{
+        "caption": "c", "input_ids": [1], "input_shape": [1, 1],
+        "attention_mask": [1], "select_layers": [8], "max_length": 8,
+        "conditioning_shape": [1, 1, 1, 1], "safetensors_keys": []
+    }"#;
+    let message = match parse_golden(stale) {
+        Ok(_) => panic!("a golden without prefix_len/suffix_len must not parse"),
+        Err(m) => m,
+    };
+    assert!(message.contains("just qwen3vl-real-reference"), "{message}");
+    assert!(message.contains("prefix_len"), "{message}");
+
+    // And a current golden still parses, so the guard cannot be vacuous.
+    let current = stale.replace(
+        "\"max_length\": 8,",
+        "\"max_length\": 8, \"prefix_len\": 34, \"suffix_len\": 5,",
+    );
+    assert!(parse_golden(&current).is_ok());
+}
+
 /// Read a named f32 tensor out of the golden safetensors file.
 fn read_f32(st: &safetensors::SafeTensors, name: &str) -> Vec<f32> {
     let view = st.tensor(name).expect("golden tensor present");
@@ -93,8 +135,8 @@ fn real_qwen3vl_conditioning_matches_transformers_golden() {
         }
     }
 
-    let golden: Golden = serde_json::from_str(&std::fs::read_to_string(GOLDEN_JSON).unwrap())
-        .expect("parse real golden");
+    let golden = parse_golden(&std::fs::read_to_string(GOLDEN_JSON).unwrap())
+        .unwrap_or_else(|message| panic!("{message}"));
     let config = Qwen3VlConfig::krea2_4b();
     assert_eq!(golden.select_layers, config.select_layers);
 
