@@ -131,6 +131,12 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   explicitly (any `checkpoint-N.safetensors` works), `--no-resume` forces a
   fresh start, and an artifact whose `__metadata__` says its run did not finish
   is refused by name unless `--resume-unfinished` is passed.
+- **Learning-rate schedules** (#212). `optim.lr` is the peak rate; an optional
+  `optim.schedule` block adds linear warmup and a `linear` / `cosine` /
+  `exponential` / `step` decay (`constant` is the default, so existing configs
+  are unchanged — see `config/examples/lora.yaml`). The rate is a pure function
+  of the global step, so a resumed run continues on the curve rather than
+  restarting its warmup; each `step` event carries the rate that was applied.
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box

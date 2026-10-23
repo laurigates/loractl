@@ -5,6 +5,7 @@
 //! fields (e.g. a `--lr` flag), but the config — not code paths — is the
 //! source of truth for what a run does.
 
+pub use crate::schedule::{ScheduleConfig, ScheduleKind};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -518,10 +519,15 @@ impl Default for DatasetConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OptimConfig {
-    /// Learning rate.
+    /// Learning rate. With a non-default [`schedule`](Self::schedule) this is
+    /// the **peak** rate the schedule is relative to (and what `--lr` sets).
     pub lr: f64,
     /// Decoupled weight decay (AdamW-style).
     pub weight_decay: f64,
+    /// How the learning rate moves over the run (#212): warmup and/or decay
+    /// relative to [`lr`](Self::lr). Defaults to constant, which applies `lr`
+    /// unchanged. Env overrides: `LORACTL_OPTIM__SCHEDULE__KIND` etc.
+    pub schedule: ScheduleConfig,
 }
 
 impl Default for OptimConfig {
@@ -529,7 +535,24 @@ impl Default for OptimConfig {
         Self {
             lr: 1e-4,
             weight_decay: 0.0,
+            schedule: ScheduleConfig::default(),
         }
+    }
+}
+
+impl OptimConfig {
+    /// The learning rate applied during the 1-based global `step` of a
+    /// `total`-step run — a pure function of `(step, total)`, so a resumed run
+    /// continues on the curve ([`crate::schedule`]). Under the default
+    /// schedule this is exactly `self.lr`.
+    pub fn lr_at(&self, step: u64, total: u64) -> f64 {
+        self.schedule.lr_at(self.lr, step, total)
+    }
+
+    /// Validate the schedule against this `lr` and the run's `steps`. Called
+    /// by every trainer before any backend work.
+    pub fn validate(&self, total_steps: u64) -> anyhow::Result<()> {
+        self.schedule.validate(self.lr, total_steps)
     }
 }
 

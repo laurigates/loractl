@@ -563,6 +563,33 @@ alternatives they were chosen over — are
   comment in its training loop for the three reasons, pinned by
   `tests/resume.rs::the_synthetic_trainer_does_not_resume`.
 
+## Learning-rate schedules (#212)
+
+`optim.lr` used to be applied unchanged for a whole run. `optim.schedule`
+(`crates/loractl-core/src/schedule.rs`) adds warmup plus a `constant` (default),
+`linear`, `cosine`, `exponential` or `step` curve, validated before any backend
+work and defaulting to constant so every existing config — and every pinned loss
+trajectory — is bit-identical.
+
+- **A pure function of the 1-based global step**, not a stateful scheduler. That
+  is what makes resume correct with nothing to persist: the diffusion loop
+  resumes at `plan.start_step()` and evaluates the same function at the same
+  global step. `burn::lr_scheduler` was considered and not used for this reason
+  (its schedulers are `.step()`ped iterators, so a resume would need its
+  position saved alongside the optimizer sidecar). Pinned by
+  `tests/lr_schedule.rs::a_resumed_run_continues_on_the_curve`, which fails under
+  a sabotaged loop-relative step.
+- **`steps` is the decay horizon**, consistent with its resume meaning (a
+  total). Resuming with a different `steps` therefore stretches the decay.
+- **`--lr` stays the peak.** The schedule has no CLI flags; env overrides work
+  (`LORACTL_OPTIM__SCHEDULE__KIND`, `..__WARMUP_STEPS`, ...).
+- **`TrainEvent::Step.lr` is the applied rate** (no wire-shape change).
+  `ss_learning_rate`/`ss_unet_lr` remain the peak; `ss_lr_scheduler`
+  (`constant_with_warmup` for flat-after-warmup) and `ss_lr_warmup_steps` are
+  written in kohya's vocabulary. No A1111-family
+  consumer reads them, so `tests/lora_metadata_keys.rs` and its omission list
+  are unchanged.
+
 ## Opt-in loss/LR curve PNG (#215)
 
 A finished run used to leave no visual artifact: the `TrainEvent` stream was
@@ -573,8 +600,8 @@ it accumulates `(step, loss, lr)` from `TrainEvent::Step`, remembers the adapter
 path from `TrainEvent::Finished`, and — after the trainer returns, so its log
 lines cannot tear the progress bar — writes `<adapter stem>.curve.png` beside
 the adapter (`<output.dir>/<output.name>.curve.png`): loss above, learning rate
-below. The LR panel is a flat line today and becomes
-informative when #212 makes the rate vary.
+below. With `optim.schedule` (#212, above) the LR panel shows the applied
+warmup/decay curve; under the default constant schedule it is a flat line.
 
 - **Core is untouched.** The recorder lives in the CLI beside `render_event`;
   `loractl-core` gains no plotting dependency and no new event.

@@ -65,6 +65,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
         optim: OptimConfig {
             lr: 0.01,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out.0.clone(),

@@ -66,6 +66,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
         optim: OptimConfig {
             lr: 0.01,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out.0.clone(),

@@ -501,8 +501,24 @@ pub fn build_metadata(facts: &RunFacts<'_>) -> LoraMetadata {
             num(config.optim.weight_decay)
         ),
     );
+    // `optim.lr` is the PEAK rate; the curve around it is `ss_lr_scheduler`
+    // (kohya's key, which no A1111-family consumer reads - see
+    // `tests/lora_metadata_keys.rs` - so this is provenance for humans and
+    // sd-scripts tooling, not a contract).
     m.set("ss_learning_rate", num(config.optim.lr));
     m.set("ss_unet_lr", num(config.optim.lr));
+    // kohya names constant-after-warmup `constant_with_warmup`; the other kinds
+    // keep their YAML spelling (`exponential`/`step` are loractl's own).
+    let sched = &config.optim.schedule;
+    let sched_name = match (sched.kind, sched.warmup_steps) {
+        (crate::config::ScheduleKind::Constant, w) if w > 0 => "constant_with_warmup",
+        (kind, _) => kind.as_str(),
+    };
+    m.set("ss_lr_scheduler", sched_name);
+    m.set(
+        "ss_lr_warmup_steps",
+        config.optim.schedule.warmup_steps.to_string(),
+    );
     // Always frozen — see the module docs' "deliberately NOT written".
     m.set("ss_text_encoder_lr", "0.0");
     m.set("ss_max_train_steps", config.steps.to_string());
