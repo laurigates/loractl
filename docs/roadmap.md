@@ -145,6 +145,16 @@ VAE, and text encoder were all greenfield in burn.
   (cache keys are name/bucket/fingerprint and never content, so a shifted
   value would invalidate nothing). The cold-cache encode-phase wall time that
   buys is **not** claimed here: it needs a real dataset on a real machine.
+  Even there it would be noise: the decode is ~36 ms/image against an encode
+  phase of 68.6 s/image, so a phase-level delta cannot resolve it
+  ([#217](https://github.com/laurigates/loractl/issues/217)). `just
+  decode-probe` (`examples/decode_probe.rs`) prices the decode **in
+  isolation** instead — CPU-only, the real `decode_image_for_bucket` serial
+  versus a bounded rayon window mirroring `prepare_dataset`, an
+  identical-output gate, and the absolute per-image delta in the
+  `loractl-bench` `RESULT` schema. Its offline arm (generated synthetic images)
+  keeps the harness runnable anywhere; the figure over the pinned Tuxemon set
+  (`just dataset-fetch`) is still to be recorded here.
 - **M13 — Single-GPU 12B fit** ([#24](https://github.com/laurigates/loractl/issues/24)).
   Two config-toggleable memory knobs, both overridable per layer:
   **`compute.precision: f16`** (wgpu only; any other backend fails loudly)
