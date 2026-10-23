@@ -142,7 +142,8 @@ document has drifted; fix the document.
 `optim.schedule` is set (warmup/decay, #212), so a client can plot the curve
 straight from the stream; with the default constant schedule it is `optim.lr` on
 every step. It is a pure function of the global step number, so a resumed run
-reports the same values an uninterrupted one would for those steps.
+reports the same values an uninterrupted one would for those steps (provided
+`steps` is unchanged across the resume, since it is the decay horizon).
 
 `phase` reports progress through a long setup or background phase that is not
 an optimization step — the one-time dataset encode, a multi-gigabyte

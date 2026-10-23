@@ -1043,6 +1043,21 @@ mod tests {
     }
 
     #[test]
+    fn a_misspelled_schedule_key_is_a_config_error_not_silently_ignored() {
+        // #212 review: `warmup:` (for `warmup_steps:`) must not quietly mean
+        // "no warmup" for a whole training run.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!("{YAML}  schedule:\n    kind: cosine\n    warmup: 50\n"),
+            )?;
+            let err = resolve_config(&cmd_for("config.yaml")).unwrap_err();
+            assert!(format!("{err:#}").contains("warmup"), "{err:#}");
+            Ok(())
+        });
+    }
+
+    #[test]
     fn model_training_adapter_env_layer() {
         // #83: the optional `model.training_adapter` path is env-overridable via
         // figment's `__` nesting (no CLI flag), like `model.checkpoint`.

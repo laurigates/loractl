@@ -132,8 +132,12 @@ impl ScheduleKind {
 /// Env overrides: `LORACTL_OPTIM__SCHEDULE__KIND`, `..__WARMUP_STEPS`,
 /// `..__MIN_LR`, `..__GAMMA`, `..__STEP_SIZE`. No CLI flags (`--lr` keeps
 /// meaning the peak rate).
+///
+/// Unlike the rest of the (permissive) config schema this block is
+/// `deny_unknown_fields`: a typo such as `warmup:` for `warmup_steps:` would
+/// otherwise be dropped and the run would quietly train with no warmup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScheduleConfig {
     /// The decay curve. Default: `constant`.
     pub kind: ScheduleKind,
@@ -214,13 +218,22 @@ impl ScheduleConfig {
                 total.max(1)
             );
         }
-        if !self.min_lr.is_finite() || self.min_lr < 0.0 || self.min_lr > base {
+        let decays = self.kind != ScheduleKind::Constant;
+        if !self.min_lr.is_finite() || self.min_lr < 0.0 {
             bail!(
                 "optim.schedule.min_lr = {} must be within 0..=optim.lr ({base})",
                 self.min_lr
             );
         }
-        let decays = self.kind != ScheduleKind::Constant;
+        // The upper bound only means something for a decaying kind; for
+        // `constant` the check below rejects any non-zero `min_lr`, and a
+        // default schedule must not newly reject an odd `optim.lr`.
+        if decays && self.min_lr > base {
+            bail!(
+                "optim.schedule.min_lr = {} must be within 0..=optim.lr ({base})",
+                self.min_lr
+            );
+        }
         if !decays && self.min_lr != 0.0 {
             bail!(
                 "optim.schedule.min_lr = {} has no effect with kind: constant; pick a \
@@ -443,6 +456,27 @@ mod tests {
         }
         .validate(BASE, 100)
         .unwrap();
+    }
+
+    #[test]
+    fn the_default_schedule_validates_for_any_lr() {
+        // Pre-#212 configs never had `lr` range-checked; the default schedule
+        // must not start rejecting one (e.g. lr: 0 or a negative lr).
+        for lr in [0.0, -1e-4, 1e-4, 10.0] {
+            ScheduleConfig::default().validate(lr, 10).unwrap();
+        }
+    }
+
+    #[test]
+    fn unknown_schedule_keys_are_rejected_not_ignored() {
+        let err = serde_json::from_str::<ScheduleConfig>(r#"{"kind":"cosine","warmup":50}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `warmup`"), "{err}");
+        // The real spelling still parses.
+        let ok: ScheduleConfig =
+            serde_json::from_str(r#"{"kind":"cosine","warmup_steps":50}"#).unwrap();
+        assert_eq!(ok.warmup_steps, 50);
     }
 
     #[test]
