@@ -61,6 +61,7 @@ fn run_losses(dropout: f32, out: &TempDir) -> Vec<f32> {
             no_upscale: false,
             bucketing: BucketMode::Aspects,
             min_bucket_resolution: None,
+            caption_dropout_rate: 0.0,
         },
         optim: OptimConfig {
             lr: 0.01,

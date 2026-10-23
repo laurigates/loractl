@@ -137,6 +137,14 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   are unchanged — see `config/examples/lora.yaml`). The rate is a pure function
   of the global step, so a resumed run continues on the curve rather than
   restarting its warmup; each `step` event carries the rate that was applied.
+- **Caption dropout** (#219). `dataset.caption_dropout_rate` (default `0.0`)
+  replaces an example's caption with the empty string for a step with that
+  probability, so the adapter also trains the unconditional branch that
+  classifier-free guidance is built from (kohya's `--caption_dropout_rate`).
+  Applied per example at batch assembly from a seeded host-side generator keyed
+  by `(seed, global step, row)` — so it varies across epochs and a resumed run
+  reproduces it — against one shared cached empty-caption conditioning. Off by
+  default; see `config/examples/lora.yaml`. Per-tag dropout is #220.
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box
@@ -270,6 +278,8 @@ dataset:
   # no_upscale: false        # never enlarge an image to fill its bucket
   # bucketing: aspects       # aspects | grid
   # min_bucket_resolution:   # grid only; defaults to resolution / 2
+  # caption_dropout_rate: 0.05  # (#219) chance per example per step that the
+  #                          # caption is replaced by "" — default 0 (off)
 ```
 
 - **Any size and aspect ratio is accepted — no pre-processing needed.** Each

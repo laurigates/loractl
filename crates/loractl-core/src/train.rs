@@ -72,6 +72,7 @@ pub struct MockTrainer;
 impl Trainer for MockTrainer {
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf> {
         config.optim.validate(config.steps)?;
+        config.dataset.validate()?;
         let total = config.steps.max(1);
         sink(TrainEvent::Started { total_steps: total });
 

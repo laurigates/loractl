@@ -242,6 +242,7 @@ fn prepare_encodes_once_reuses_cache_and_batches_per_bucket() {
         no_upscale: false,
         bucketing: BucketMode::Aspects,
         min_bucket_resolution: None,
+        caption_dropout_rate: 0.0,
     };
     let device = Default::default();
 
@@ -512,6 +513,7 @@ fn corrupted_cache_file_is_an_error_not_a_panic() {
         no_upscale: false,
         bucketing: BucketMode::Aspects,
         min_bucket_resolution: None,
+        caption_dropout_rate: 0.0,
     };
     let device = Default::default();
 
@@ -844,6 +846,7 @@ fn empty_dataset_folder_fails_fast() {
         no_upscale: false,
         bucketing: BucketMode::Aspects,
         min_bucket_resolution: None,
+        caption_dropout_rate: 0.0,
     };
     let device = Default::default();
     let result = prepare_dataset::<B>(&config, "mock-v1", &device, Ok, mock_encode_caption, |_| {});

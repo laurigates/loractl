@@ -55,6 +55,7 @@ fn config(out: &TempDir, steps: u64, lr: f64, compute: ComputeConfig) -> TrainCo
             no_upscale: false,
             bucketing: BucketMode::Aspects,
             min_bucket_resolution: None,
+            caption_dropout_rate: 0.0,
         },
         optim: OptimConfig {
             lr,

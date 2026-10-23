@@ -64,6 +64,7 @@ fn synthetic_training_converges() {
             no_upscale: false,
             bucketing: BucketMode::Aspects,
             min_bucket_resolution: None,
+            caption_dropout_rate: 0.0,
         },
         optim: OptimConfig {
             lr: 0.01,

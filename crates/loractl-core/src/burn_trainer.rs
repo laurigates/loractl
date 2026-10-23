@@ -145,6 +145,18 @@ impl Trainer for BurnTrainer {
         // fails identically on every backend: before `B::seed`, before any
         // TrainEvent reaches the sink, before any filesystem I/O.
         config.optim.validate(config.steps)?;
+        config.dataset.validate()?;
+        // `config.rs` carries no `deny_unknown_fields`, so a knob this trainer
+        // merely ignored would be the schema's quietest failure: the synthetic
+        // and MNIST tasks have no captions, so there is nothing to drop.
+        if config.dataset.caption_dropout_rate > 0.0 {
+            anyhow::bail!(
+                "dataset.caption_dropout_rate = {} has no effect on this trainer — the \
+                 synthetic/MNIST tasks have no captions to drop. It applies to the diffusion \
+                 (image + caption) trainer only; set it to 0",
+                config.dataset.caption_dropout_rate
+            );
+        }
         if config.task == TaskKind::FlowMatching && config.output.sample_every > 0 {
             anyhow::bail!(
                 "validation sampling (output.sample_every = {}) is classification-specific — \

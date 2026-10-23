@@ -62,6 +62,7 @@ fn base_config(out: &TempDir, steps: u64, checkpoint_every: u64, sample_every: u
             no_upscale: false,
             bucketing: BucketMode::Aspects,
             min_bucket_resolution: None,
+            caption_dropout_rate: 0.0,
         },
         optim: OptimConfig {
             lr: 0.01,

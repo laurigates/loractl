@@ -129,6 +129,43 @@
 //! materializes in the seed stream (see `.claude/rules/burn-lazy-param-init.md`)
 //! and silently change frozen-base values across the suite.
 //!
+//! ## Caption dropout (#219)
+//!
+//! [`DatasetConfig::caption_dropout_rate`](crate::config::DatasetConfig::caption_dropout_rate)
+//! swaps an example's cached conditioning for the conditioning of the **empty
+//! caption** with that probability, per example, per step. Three decisions
+//! carry the design, and each is the way it is because the obvious alternative
+//! is a silent bug that still trains and still converges:
+//!
+//! - **Applied at batch assembly, not at encode time.** Conditioning is
+//!   stem-keyed and encoded once; deciding "dropped or not" while encoding
+//!   would freeze each example's decision into its cache entry and it would
+//!   stop varying across epochs. The per-stem cache therefore never knows
+//!   dropout exists.
+//! - **One shared empty entry, not one per example.** [`prepare_dataset`]
+//!   encodes `""` through the same `encode_caption` closure and caches it once,
+//!   fingerprint-keyed, as `{fingerprint}.empty.cond.safetensors` (a name no
+//!   `{stem}.{fingerprint}.cond.safetensors` can equal: equality would force
+//!   the fingerprint to end in `empty`, and every real one ends in an encoder
+//!   tag such as `-t2`). Conditioning is 60 MiB per
+//!   example on the real model, so any per-example variant is a non-starter.
+//!   With the rate at `0.0` nothing is encoded and nothing is written.
+//! - **A dedicated, pure, host-side generator — never `B::seed`.**
+//!   [`CaptionDropout`] hashes `(seed, global step, row)` and draws from
+//!   nothing else, so the drop pattern needs no state to checkpoint (a resumed
+//!   run, which restarts its step counter at `plan.start_step()`, reproduces it
+//!   exactly), varies across epochs (the step differs), and cannot move the
+//!   burn RNG stream that lazily-initialized `Param`s materialize against. At
+//!   rate `0.0` the trainer takes the original [`PreparedDataset::load_batch`]
+//!   path, which still draws nothing — bit-identical default trajectories.
+//!
+//! The substitution seam is [`ConditioningPolicy`]: [`PreparedDataset::load_batch_with`]
+//! asks it, per row, which conditioning to use. Whole-caption dropout is the
+//! only implementation; per-tag dropout (#220) produces *new* conditioning per
+//! step rather than choosing between cached ones, so it extends
+//! [`ConditioningChoice`] (a `#[non_exhaustive]` enum) rather than replacing
+//! this seam.
+//!
 //! Like the rest of `loractl-core`, this module emits no output and imports
 //! no CLI.
 
@@ -785,6 +822,13 @@ impl DatasetCache {
             .join(format!("{stem}.{}.cond.safetensors", self.fingerprint))
     }
 
+    /// The one shared empty-caption conditioning (#219). See the module docs
+    /// for why this name cannot collide with a [`Self::cond_path`].
+    fn empty_cond_path(&self) -> PathBuf {
+        self.dir
+            .join(format!("{}.empty.cond.safetensors", self.fingerprint))
+    }
+
     /// Write one cache file **atomically**: serialize to a per-process temp
     /// name in the same directory, then `rename` into place.
     ///
@@ -866,6 +910,123 @@ pub struct PreparedDataset {
     /// ([`crate::metadata`]) describes the data this run actually consumed,
     /// rather than a second scan of a folder that may have changed since.
     pub entries: Vec<DatasetEntry>,
+    /// The shared empty-caption conditioning, present exactly when the run was
+    /// planned with `caption_dropout_rate > 0` (#219).
+    pub empty_conditioning: Option<EmptyConditioning>,
+}
+
+/// Where the shared empty-caption conditioning lives (#219) — the plan-side
+/// record of the one extra cache file caption dropout needs. Holds no tensor,
+/// like [`CachedItem`], and for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyConditioning {
+    /// The `*.empty.cond.safetensors` file holding `"conditioning"` + `"mask"`.
+    pub path: PathBuf,
+    /// `[1, s, n, d]` — must equal every item's, or a mixed batch could not
+    /// be concatenated ([`plan_dataset`] enforces it).
+    pub cond_shape: [usize; 4],
+    /// `[1, s]`.
+    pub mask_shape: [usize; 2],
+}
+
+/// Which conditioning a row of a batch trains against.
+///
+/// `#[non_exhaustive]`: per-tag dropout (#220) will need a variant that
+/// *builds* conditioning rather than selecting a cached one, and adding it must
+/// not be a breaking change for matchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConditioningChoice {
+    /// The example's own cached caption conditioning.
+    Cached,
+    /// The shared empty-caption conditioning (an unconditional example).
+    Empty,
+}
+
+/// The per-row substitution hook of [`PreparedDataset::load_batch_with`].
+///
+/// `step` is the 1-based **global** step and `row` the position within the
+/// batch. A policy that is a pure function of those two (plus its own
+/// construction-time constants) is what makes a resumed run reproduce the
+/// original run's choices; [`CaptionDropout`] is one.
+pub trait ConditioningPolicy {
+    /// Which conditioning row `row` of step `step`'s batch uses.
+    fn choose(&self, step: u64, row: usize) -> ConditioningChoice;
+}
+
+/// Whole-caption dropout (#219): [`ConditioningChoice::Empty`] with probability
+/// `rate`, independently per `(step, row)`.
+///
+/// The generator is a counter-mode hash of `(seed, step, row)` — SplitMix64's
+/// finalizer chained over the three — so it has **no state**: nothing to
+/// advance, nothing to checkpoint, and no call order that could make a resumed
+/// run diverge. It is host-side and entirely separate from the burn backend's
+/// RNG (`B::seed`), whose stream decides where every lazily-initialized `Param`
+/// materializes; drawing from that stream here would silently change
+/// frozen-base values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaptionDropout {
+    rate: f32,
+    seed: u64,
+}
+
+/// Domain separator, so this generator's stream is unrelated to any other use
+/// of the run seed.
+const DROPOUT_DOMAIN: u64 = 0x6361_7074_696f_6e64; // "caption d"
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+impl CaptionDropout {
+    /// A dropout policy. `rate` must be a probability in `[0, 1]` (NaN is
+    /// rejected); `seed` is the run seed.
+    pub fn new(rate: f32, seed: u64) -> Result<Self> {
+        if !(0.0..=1.0).contains(&rate) {
+            bail!("caption dropout rate = {rate} must be a probability in [0, 1]");
+        }
+        Ok(Self { rate, seed })
+    }
+
+    /// The policy for a run, or `None` when the rate is `0.0` — in which case
+    /// the caller takes the plain [`PreparedDataset::load_batch`] path and
+    /// nothing is drawn at all.
+    pub fn from_config(config: &DatasetConfig, seed: u64) -> Result<Option<Self>> {
+        config.validate()?;
+        if config.caption_dropout_rate > 0.0 {
+            Ok(Some(Self::new(config.caption_dropout_rate, seed)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// The configured per-example drop probability.
+    pub fn rate(&self) -> f32 {
+        self.rate
+    }
+
+    /// Uniform in `[0, 1)`, a pure function of `(seed, step, row)`.
+    fn uniform(&self, step: u64, row: usize) -> f64 {
+        let h = splitmix64(DROPOUT_DOMAIN ^ self.seed);
+        let h = splitmix64(h ^ step);
+        let h = splitmix64(h ^ row as u64);
+        (h >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+impl ConditioningPolicy for CaptionDropout {
+    fn choose(&self, step: u64, row: usize) -> ConditioningChoice {
+        // Rate 0 computes no draw at all (rather than computing one that can
+        // never be below 0): "draws nothing" is the property worth pinning.
+        if self.rate > 0.0 && self.uniform(step, row) < f64::from(self.rate) {
+            ConditioningChoice::Empty
+        } else {
+            ConditioningChoice::Cached
+        }
+    }
 }
 
 /// Which items make up one batch, and from which bucket.
@@ -940,27 +1101,9 @@ impl PreparedDataset {
             )
         })?;
 
-        let mut cached = read_cache_required(&item.latent_path, &["latent"])?;
-        let (values, shape) = cached.remove(0);
-        check_shape(&item.latent_path, "latent", &item.latent_shape, &shape)?;
-        let latent = Tensor::from_data(TensorData::new(values, shape), device);
-
-        // The mask rides inside the conditioning file (the cache is
-        // single-dtype, so it is stored as f32 0/1 and converted back here).
-        let mut cached = read_cache_required(&item.cond_path, &["conditioning", "mask"])?;
-        let (mask_values, mask_shape) = cached.remove(1);
-        let (cond_values, cond_shape) = cached.remove(0);
-        check_shape(
-            &item.cond_path,
-            "conditioning",
-            &item.cond_shape,
-            &cond_shape,
-        )?;
-        check_shape(&item.cond_path, "mask", &item.mask_shape, &mask_shape)?;
-        let conditioning = Tensor::from_data(TensorData::new(cond_values, cond_shape), device);
-        let mask =
-            Tensor::<B, 2>::from_data(TensorData::new(mask_values, mask_shape), device).int();
-
+        let latent = load_latent::<B>(item, device)?;
+        let (conditioning, mask) =
+            load_conditioning::<B>(&item.cond_path, &item.cond_shape, &item.mask_shape, device)?;
         Ok(PreparedItem {
             latent,
             conditioning,
@@ -977,6 +1120,37 @@ impl PreparedDataset {
         plan: &BatchPlan,
         device: &B::Device,
     ) -> Result<DatasetBatch<B>> {
+        self.assemble_batch::<B>(plan, device, |_| ConditioningChoice::Cached)
+    }
+
+    /// [`Self::load_batch`], with `policy` choosing each row's conditioning
+    /// (#219). `step` is the 1-based **global** step, which is what makes a
+    /// resumed run's choices reproduce the original's.
+    ///
+    /// A [`ConditioningChoice::Empty`] row skips reading that item's own
+    /// conditioning file entirely and takes the shared empty entry (read once
+    /// per batch, however many rows use it). The latent is always the item's.
+    /// Errors if the policy asks for an empty row but the dataset was planned
+    /// without one — i.e. `caption_dropout_rate` was `0` at plan time.
+    ///
+    /// Draws nothing from the burn RNG and never calls `B::seed`; whatever
+    /// randomness the policy has is its own.
+    pub fn load_batch_with<B: Backend>(
+        &self,
+        plan: &BatchPlan,
+        step: u64,
+        policy: &dyn ConditioningPolicy,
+        device: &B::Device,
+    ) -> Result<DatasetBatch<B>> {
+        self.assemble_batch::<B>(plan, device, |row| policy.choose(step, row))
+    }
+
+    fn assemble_batch<B: Backend>(
+        &self,
+        plan: &BatchPlan,
+        device: &B::Device,
+        choose: impl Fn(usize) -> ConditioningChoice,
+    ) -> Result<DatasetBatch<B>> {
         if plan.items.is_empty() {
             // `batches()` never emits one, but this is a `pub` entry point and
             // `Tensor::cat` panics on an empty list.
@@ -985,11 +1159,46 @@ impl PreparedDataset {
         let mut latents = Vec::with_capacity(plan.items.len());
         let mut conditioning = Vec::with_capacity(plan.items.len());
         let mut masks = Vec::with_capacity(plan.items.len());
-        for &index in &plan.items {
-            let item = self.load_item::<B>(index, device)?;
-            latents.push(item.latent);
-            conditioning.push(item.conditioning);
-            masks.push(item.mask);
+        // Read lazily and at most once per batch.
+        let mut empty: Option<(Tensor<B, 4>, Tensor<B, 2, Int>)> = None;
+        for (row, &index) in plan.items.iter().enumerate() {
+            let item = self.items.get(index).with_context(|| {
+                format!(
+                    "dataset item {index} is out of range ({} items)",
+                    self.items.len()
+                )
+            })?;
+            latents.push(load_latent::<B>(item, device)?);
+            match choose(row) {
+                ConditioningChoice::Cached => {
+                    let (cond, mask) = load_conditioning::<B>(
+                        &item.cond_path,
+                        &item.cond_shape,
+                        &item.mask_shape,
+                        device,
+                    )?;
+                    conditioning.push(cond);
+                    masks.push(mask);
+                }
+                ConditioningChoice::Empty => {
+                    if empty.is_none() {
+                        let planned = self.empty_conditioning.as_ref().context(
+                            "the batch asked for the empty-caption conditioning, but the dataset \
+                             was planned without one (dataset.caption_dropout_rate was 0 at plan \
+                             time)",
+                        )?;
+                        empty = Some(load_conditioning::<B>(
+                            &planned.path,
+                            &planned.cond_shape,
+                            &planned.mask_shape,
+                            device,
+                        )?);
+                    }
+                    let (cond, mask) = empty.as_ref().expect("just loaded");
+                    conditioning.push(cond.clone());
+                    masks.push(mask.clone());
+                }
+            }
         }
         Ok(DatasetBatch {
             latents: Tensor::cat(latents, 0),
@@ -997,6 +1206,35 @@ impl PreparedDataset {
             mask: Tensor::cat(masks, 0),
         })
     }
+}
+
+/// Read and upload one item's latent, checking it against the plan.
+fn load_latent<B: Backend>(item: &CachedItem, device: &B::Device) -> Result<Tensor<B, 4>> {
+    let mut cached = read_cache_required(&item.latent_path, &["latent"])?;
+    let (values, shape) = cached.remove(0);
+    check_shape(&item.latent_path, "latent", &item.latent_shape, &shape)?;
+    Ok(Tensor::from_data(TensorData::new(values, shape), device))
+}
+
+/// Read and upload one conditioning file (an item's, or the shared empty one),
+/// checking it against the planned shapes.
+///
+/// The mask rides inside the conditioning file (the cache is single-dtype, so
+/// it is stored as f32 0/1 and converted back here).
+fn load_conditioning<B: Backend>(
+    path: &Path,
+    planned_cond: &[usize; 4],
+    planned_mask: &[usize; 2],
+    device: &B::Device,
+) -> Result<(Tensor<B, 4>, Tensor<B, 2, Int>)> {
+    let mut cached = read_cache_required(path, &["conditioning", "mask"])?;
+    let (mask_values, mask_shape) = cached.remove(1);
+    let (cond_values, cond_shape) = cached.remove(0);
+    check_shape(path, "conditioning", planned_cond, &cond_shape)?;
+    check_shape(path, "mask", planned_mask, &mask_shape)?;
+    let conditioning = Tensor::from_data(TensorData::new(cond_values, cond_shape), device);
+    let mask = Tensor::<B, 2>::from_data(TensorData::new(mask_values, mask_shape), device).int();
+    Ok((conditioning, mask))
 }
 
 /// One progress report from [`prepare_dataset`], emitted **before** each
@@ -1123,7 +1361,10 @@ fn decode_window() -> usize {
 ///   see [`DatasetProgress`]. Pass `|_| {}` when nothing surfaces it.
 ///
 /// Both closures run **once per example on a cache miss and never on a
-/// hit** — after the first pass, epochs re-read pure tensor files.
+/// hit** — after the first pass, epochs re-read pure tensor files. (When
+/// `config.caption_dropout_rate > 0`, `encode_caption` additionally runs once
+/// with `""` on a miss of the shared empty-caption entry — #219, see the
+/// module docs.)
 ///
 /// The returned plan holds **no tensor** (#175): on a hit only the file
 /// header is read, and on a miss the freshly encoded tensor is written and
@@ -1165,6 +1406,7 @@ pub fn prepare_dataset<B: Backend>(
     mut encode_caption: impl FnMut(&str) -> Result<(Tensor<B, 4>, Tensor<B, 2, Int>)>,
     mut progress: impl FnMut(DatasetProgress<'_>),
 ) -> Result<PreparedDataset> {
+    config.validate()?;
     let mut buckets = bucket_set(config)?;
     let entries = scan_dataset(&config.path, &mut buckets, config.no_upscale)?;
     let cache = DatasetCache::new(&config.path, fingerprint)?;
@@ -1274,11 +1516,71 @@ pub fn prepare_dataset<B: Backend>(
         }
     }
 
+    // Caption dropout (#219): the one shared empty-caption entry, encoded here
+    // through the same closure as every caption and so under the same
+    // fingerprint. Skipped entirely at rate 0 — no encode, no file — which is
+    // what keeps a default run (and a fully warm, encoders-deleted rerun)
+    // byte-for-byte what it was before the knob existed.
+    let empty_conditioning = if config.caption_dropout_rate > 0.0 {
+        let path = cache.empty_cond_path();
+        let (cond_shape, mask_shape) = match read_cache_shapes(&path, &["conditioning", "mask"])? {
+            Some(shapes) => (
+                ranked::<4>(&shapes[0], "conditioning", &path)?,
+                ranked::<2>(&shapes[1], "mask", &path)?,
+            ),
+            None => {
+                let (conditioning, mask) = encode_caption("")
+                    .context("encoding the empty caption for dataset.caption_dropout_rate")?;
+                let shapes = (conditioning.dims(), mask.dims());
+                cache.write(
+                    &path,
+                    vec![
+                        ("conditioning", to_owned_f32(conditioning)),
+                        ("mask", to_owned_f32(mask.float())),
+                    ],
+                )?;
+                shapes
+            }
+        };
+        let empty = EmptyConditioning {
+            path,
+            cond_shape,
+            mask_shape,
+        };
+        check_empty_matches_items(&empty, &items)?;
+        Some(empty)
+    } else {
+        None
+    };
+
     Ok(PreparedDataset {
         items,
         buckets,
         entries,
+        empty_conditioning,
     })
+}
+
+/// A dropped row's conditioning is concatenated with kept rows' on the batch
+/// dim, so it must be the same `[1, s, n, d]`. The real encoder pads every
+/// caption to one length, so this holds there by construction; it is checked
+/// rather than assumed because `Tensor::cat` on mismatched shapes panics
+/// mid-run, at whichever step first mixes the two.
+fn check_empty_matches_items(empty: &EmptyConditioning, items: &[CachedItem]) -> Result<()> {
+    for item in items {
+        if item.cond_shape != empty.cond_shape {
+            bail!(
+                "the empty-caption conditioning {} is {:?} but {} is {:?}; caption dropout \
+                 would mix them in one batch. Delete the dataset's .loractl-cache/ so both \
+                 are re-encoded under one conditioning build",
+                empty.path.display(),
+                empty.cond_shape,
+                item.cond_path.display(),
+                item.cond_shape
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Plan a run over an **already-encoded** dataset: scan, bucket, and record
@@ -1299,6 +1601,7 @@ pub fn plan_dataset(
     fingerprint: &str,
     mut progress: impl FnMut(DatasetProgress<'_>),
 ) -> Result<PreparedDataset> {
+    config.validate()?;
     let mut buckets = bucket_set(config)?;
     let entries = scan_dataset(&config.path, &mut buckets, config.no_upscale)?;
     let cache = DatasetCache::new(&config.path, fingerprint)?;
@@ -1349,9 +1652,37 @@ pub fn plan_dataset(
         });
     }
 
+    // Caption dropout (#219): the shared empty entry must already be in the
+    // cache — the encode phase wrote it — and this signature has no encoder to
+    // make one.
+    let empty_conditioning = if config.caption_dropout_rate > 0.0 {
+        let path = cache.empty_cond_path();
+        let (cond_shape, mask_shape) = match read_cache_shapes(&path, &["conditioning", "mask"])? {
+            Some(shapes) => (
+                ranked::<4>(&shapes[0], "conditioning", &path)?,
+                ranked::<2>(&shapes[1], "mask", &path)?,
+            ),
+            None => bail!(
+                "empty-caption conditioning cache miss after the encode phase — was \
+                 dataset.caption_dropout_rate changed mid-run? (missing {})",
+                path.display()
+            ),
+        };
+        let empty = EmptyConditioning {
+            path,
+            cond_shape,
+            mask_shape,
+        };
+        check_empty_matches_items(&empty, &items)?;
+        Some(empty)
+    } else {
+        None
+    };
+
     Ok(PreparedDataset {
         items,
         buckets,
         entries,
+        empty_conditioning,
     })
 }
