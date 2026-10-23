@@ -167,8 +167,8 @@ fmt-check:
 # `--examples` is a SECOND invocation on purpose: cargo defaults examples to
 # `test = false`, so a plain `cargo test` only *builds* them and silently skips
 # any `#[cfg(test)]` they carry. The measurement examples (`bench_step`,
-# `step_probe`, `quant_probe`) are load-bearing tools whose flag contracts CI
-# dispatches depend on, so their tests have to actually run — the same
+# `step_probe`, `quant_probe`, `decode_probe`) are load-bearing tools whose
+# flag contracts CI dispatches depend on, so their tests have to actually run — the same
 # examples-are-a-blind-spot problem `.claude/rules/cargo-gate-coverage.md`
 # documents for `cargo build`. Keep in sync with ci.yml's test job.
 test:
@@ -323,6 +323,20 @@ step-probe *args:
 # --features wgpu by hand if that changes.
 bench *args:
     cargo run --release -p loractl-core --features cuda --example bench_step -- "$@"
+
+# #217 decode-fraction probe: time the dataset scan's pixel work (read, Lanczos3
+# resize, center-crop, CHW pack) in ISOLATION, serial versus the bounded-window
+# rayon form, and print both arms plus the absolute per-image delta as
+# RESULT/MODEL/SANITY lines. The encode phase's wall clock cannot resolve this
+# (decode is ~0.05% of it); this can. CPU-only, no weights, runs in seconds.
+# With no directory it decodes a generated synthetic set (offline smoke); for a
+# real figure, point it at a fetched dataset (decode cost tracks source size):
+#   just dataset-fetch tuxemon tmp/datasets/tuxemon-56 56
+#   just decode-probe tmp/datasets/tuxemon-56 --images 32 --bucket 512x512
+# --release matters: a debug build times an unoptimized `image` crate. Args
+# forward through "$@" like the other probes.
+decode-probe *args:
+    cargo run --release -p loractl-core --example decode_probe -- "$@"
 
 # The offline arm of the bench: the tiny-krea2 fixture on ndarray, no GPU. Its
 # NUMBERS are meaningless (a 2-block toy at 32px) — it exists to keep the
