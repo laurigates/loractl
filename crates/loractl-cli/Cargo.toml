@@ -22,6 +22,10 @@ wgpu = ["loractl-core/wgpu"]
 candle = ["loractl-core/candle"]
 cuda = ["loractl-core/cuda"]
 tch = ["loractl-core/tch"]
+# Opt-in loss/LR curve PNG written next to the adapter at run end (#215). A
+# CLI-side renderer over the `TrainEvent` stream (`src/plot.rs`); core gains
+# nothing. Off by default so the stock build stays free of the plotting tree.
+plot = ["dep:plotters"]
 
 [dependencies]
 loractl-core = { path = "../loractl-core" }
@@ -55,6 +59,16 @@ sentry = { version = "=0.49.3", default-features = false, features = [
     "reqwest",
     "rustls",
 ] }
+# Loss/LR curve renderer (`plot` feature, #215). Bitmap backend only, with the
+# pure-Rust `ab_glyph` font path: the default `ttf` feature pulls font-kit and
+# with it system freetype/fontconfig, which a CLI build must not need. The one
+# font is embedded (assets/fonts, license alongside).
+plotters = { version = "=0.3.7", default-features = false, features = [
+    "bitmap_backend",
+    "bitmap_encoder",
+    "ab_glyph",
+    "line_series",
+], optional = true }
 
 [dev-dependencies]
 # `figment::Jail` (env + cwd isolation for the config-precedence tests) is

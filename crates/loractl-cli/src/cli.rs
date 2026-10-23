@@ -813,9 +813,25 @@ fn train(cmd: TrainCmd) -> Result<()> {
     // protects. Routing on `model.base` lives in core (`select_trainer`) so
     // the CLI and the API cannot drift apart.
     let mut trainer = select_trainer(&config);
+
+    // Opt-in (`--features plot`, #215): a second renderer over the same event
+    // stream that accumulates (step, loss, lr) and, once the run has finished,
+    // writes `<adapter stem>.curve.png` beside the adapter. Its failures are
+    // logged and swallowed — the adapter already exists by then.
+    #[cfg(feature = "plot")]
+    let mut curve = crate::plot::CurveRecorder::new();
+
     let adapter = trainer.train(&config, &mut |event| {
+        // Observe before `render_event` consumes the event.
+        #[cfg(feature = "plot")]
+        curve.observe(&event);
         render_event(&bar, &mut phase_log, event);
     })?;
+
+    // After the trainer returns, not from the callback: the progress bar has
+    // finished, so the recorder's `tracing` lines cannot tear a live bar.
+    #[cfg(feature = "plot")]
+    curve.finish();
 
     println!("adapter: {}", adapter.display());
     Ok(())
