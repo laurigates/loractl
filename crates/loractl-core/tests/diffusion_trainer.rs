@@ -1173,3 +1173,46 @@ fn the_trainer_reads_the_cache_inside_the_step_loop() {
         "steps before the failure"
     );
 }
+
+/// #200: an unresolvable tokenizer must fail at startup, BEFORE any
+/// checkpoint is read. The tokenizer used to be resolved inside the caption
+/// closure, after the VAE and the multi-GB text encoder had loaded — on a
+/// gated-repo 401 that was ~9 minutes of loading before a one-line error.
+///
+/// Uses a `model.tokenizer` override naming a missing file because that is the
+/// one unresolvable case that is deterministic offline (the fetch fallback
+/// would hit the network). Both cases go through the same `resolve_tokenizer`
+/// call site, so the ordering this pins covers the fetch case too. The teeth:
+/// a `Load` phase is emitted whenever a component is read, so any `Load`
+/// event here means a checkpoint was opened before the tokenizer was checked.
+#[test]
+fn an_unresolvable_tokenizer_fails_before_any_checkpoint_is_loaded() {
+    let _rng = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("diffusion-tokenizer-first");
+    let dataset = staged_dataset(&out);
+    let mut cfg = config(&out, dataset);
+    cfg.model.tokenizer = Some(out.0.join("no-such-dir").join("tokenizer.json"));
+
+    let mut loads: Vec<String> = Vec::new();
+    let err = DiffusionTrainer
+        .train(&cfg, &mut |event| {
+            if let TrainEvent::Phase {
+                name: PhaseName::Load,
+                detail,
+                ..
+            } = event
+            {
+                loads.push(detail);
+            }
+        })
+        .expect_err("a missing tokenizer override must fail the run");
+
+    let text = format!("{err:#}");
+    assert!(text.contains("model.tokenizer points at"), "{text}");
+    assert!(
+        loads.is_empty(),
+        "a checkpoint was loaded before the tokenizer was resolved: {loads:?}"
+    );
+}

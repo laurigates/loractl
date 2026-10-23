@@ -224,9 +224,14 @@ pub struct ModelConfig {
     /// onto `base`. Env: `LORACTL_MODEL__TOKENIZER`. A ComfyUI install ships
     /// no tokenizer file — when neither this override nor the base-dir file
     /// exists, the model-invariant Qwen3-VL tokenizer is fetched once and
-    /// cached (see `hf::fetch_qwen3vl_tokenizer`), so the ComfyUI flow needs
-    /// nothing set here. An override that names a **missing** file is an
-    /// error, never a silent fetch.
+    /// cached (see `hf::fetch_qwen3vl_tokenizer`). That source repo
+    /// (`krea/Krea-2-Raw`) is **gated**: the fetch needs `HF_TOKEN` (or a saved
+    /// `huggingface-cli login`) from an account that has accepted its terms at
+    /// <https://huggingface.co/krea/Krea-2-Raw>. A warm cache needs nothing;
+    /// otherwise set this field to a local `tokenizer.json` (any copy whose
+    /// SHA-256 matches the pin) to skip the download entirely. An override that
+    /// names a **missing** file is an error, never a silent fetch. Either
+    /// failure surfaces at startup, before any checkpoint loads.
     #[serde(default)]
     pub tokenizer: Option<PathBuf>,
     /// Optional path to a LoRA **training adapter** (`.safetensors`) merged into

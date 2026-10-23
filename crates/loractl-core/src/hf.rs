@@ -9,22 +9,43 @@
 //! tokenizer — so one canonical copy serves every run.
 //!
 //! Rather than commit an ~11 MB asset into the repo, this fetches it once from
-//! the ungated `krea/Krea-2-Raw` repo (the exact tokenizer the encoder loractl
-//! targets was trained with), verifies a **pinned SHA-256**, and caches it
-//! under `HF_HOME` (or the platform cache dir). The fetch is lazy: a run whose
-//! tokenizer is already on disk never touches the network, so offline CI and
-//! the existing snapshot-dir flow are unaffected.
+//! the **gated** `krea/Krea-2-Raw` repo (the exact tokenizer the encoder
+//! loractl targets was trained with), verifies a **pinned SHA-256**, and caches
+//! it under `HF_HOME` (or the platform cache dir). The fetch is lazy: a run
+//! whose tokenizer is already on disk never touches the network, so offline CI
+//! and the existing snapshot-dir flow are unaffected.
+//!
+//! # The repo is gated (#200)
+//!
+//! `krea/Krea-2-Raw` is `gated: "auto"`: an anonymous GET answers **401**, and
+//! a valid token whose account has not accepted the terms answers **403**. So
+//! the download sends `Authorization: Bearer` when a token is discoverable
+//! (`discover_token`: `HF_TOKEN`, then `HF_TOKEN_PATH`, then `$HF_HOME/token`,
+//! then the default `huggingface/token` under `$XDG_CACHE_HOME` or
+//! `~/.cache`), and maps both statuses to an error that says
+//! what to do. The token is only ever put in that header — never in an error
+//! message, a log line, or a redirect to another host.
+//!
+//! A warm cache predates the gating and never reaches the network, which is
+//! why the 401 went unnoticed. Callers should resolve the tokenizer **before**
+//! loading multi-GB checkpoints so a missing credential fails at startup.
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The canonical source: Krea-2-Raw's shipped Qwen3-VL tokenizer, publicly
-/// downloadable (ungated). Pinning the exact repo+file guarantees the fetched
-/// tokenizer matches the encoder Krea 2 conditions on.
+/// The canonical source: Krea-2-Raw's shipped Qwen3-VL tokenizer. The repo is
+/// **gated** (`gated: "auto"`, #200) — downloading needs a HuggingFace token
+/// from an account that has accepted the terms at [`GATE_PAGE`]. Pinning the
+/// exact repo+file guarantees the fetched tokenizer matches the encoder Krea 2
+/// conditions on; the SHA-256 pin below is what makes any byte-identical copy
+/// (e.g. a `model.tokenizer` override) provably the right one.
 const TOKENIZER_URL: &str =
     "https://huggingface.co/krea/Krea-2-Raw/resolve/main/tokenizer/tokenizer.json";
+
+/// Where a user accepts the gate's terms.
+const GATE_PAGE: &str = "https://huggingface.co/krea/Krea-2-Raw";
 
 /// SHA-256 of the pinned `tokenizer.json` (11 422 650 bytes, BPE, 151 643
 /// vocab). Verified on both a fresh download and the cached copy — a mismatch
@@ -67,43 +88,142 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The size + digest a download must match. A struct (rather than the two
+/// constants inline) so tests can serve a tiny body from a local stub and still
+/// exercise the real check.
+struct Pin<'a> {
+    len: usize,
+    sha256: &'a str,
+}
+
+const PINNED: Pin<'static> = Pin {
+    len: TOKENIZER_LEN,
+    sha256: TOKENIZER_SHA256,
+};
+
+/// A trimmed, non-empty token, or `None`.
+fn clean_token(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    (!t.is_empty()).then(|| t.to_owned())
+}
+
+/// The environment [`discover_token`] reads, injected so the lookup order is
+/// unit-testable without mutating the process environment.
+#[derive(Default)]
+struct TokenEnv<'a> {
+    /// `HF_TOKEN`, else the legacy `HUGGING_FACE_HUB_TOKEN`.
+    token: Option<&'a str>,
+    /// `HF_TOKEN_PATH`: an explicit token file.
+    token_path: Option<&'a Path>,
+    hf_home: Option<&'a Path>,
+    xdg_cache_home: Option<&'a Path>,
+    home: Option<&'a Path>,
+}
+
+/// Find a HuggingFace token, in the order the official client uses:
+///
+/// 1. the `HF_TOKEN` (or legacy `HUGGING_FACE_HUB_TOKEN`) value;
+/// 2. the file `HF_TOKEN_PATH` names;
+/// 3. `<hf_home>/token`;
+/// 4. `<xdg_cache_home>/huggingface/token` (the default `HF_HOME` when
+///    `XDG_CACHE_HOME` is set);
+/// 5. `<home>/.cache/huggingface/token` (the default `HF_HOME` otherwise).
+///
+/// An unreadable or empty candidate is skipped, not an error: no token is a
+/// valid state (a public repo needs none), and its absence is reported by the
+/// 401 mapping in [`download`].
+fn discover_token(env: &TokenEnv<'_>) -> Option<String> {
+    if let Some(t) = env.token.and_then(clean_token) {
+        return Some(t);
+    }
+    let candidates = [
+        env.token_path.map(Path::to_path_buf),
+        env.hf_home.map(|h| h.join("token")),
+        env.xdg_cache_home
+            .map(|h| h.join("huggingface").join("token")),
+        env.home
+            .map(|h| h.join(".cache").join("huggingface").join("token")),
+    ];
+    candidates.into_iter().flatten().find_map(|p| {
+        std::fs::read_to_string(p)
+            .ok()
+            .as_deref()
+            .and_then(clean_token)
+    })
+}
+
+/// [`discover_token`] over the real process environment.
+fn token_from_env() -> Option<String> {
+    let path = |name| std::env::var_os(name).map(PathBuf::from);
+    let token = std::env::var("HF_TOKEN")
+        .ok()
+        .and_then(|t| clean_token(&t))
+        .or_else(|| {
+            std::env::var("HUGGING_FACE_HUB_TOKEN")
+                .ok()
+                .and_then(|t| clean_token(&t))
+        });
+    let (token_path, hf_home) = (path("HF_TOKEN_PATH"), path("HF_HOME"));
+    let (xdg, home) = (path("XDG_CACHE_HOME"), path("HOME"));
+    discover_token(&TokenEnv {
+        token: token.as_deref(),
+        token_path: token_path.as_deref(),
+        hf_home: hf_home.as_deref(),
+        xdg_cache_home: xdg.as_deref(),
+        home: home.as_deref(),
+    })
+}
+
 /// Returns the path to the cached Qwen3-VL tokenizer, fetching+verifying it on
 /// the first call and reusing the (re-verified) cache thereafter.
 ///
 /// The network is touched only when the cache is absent or fails its checksum;
-/// a run whose tokenizer is already resolved locally never calls this.
+/// a run whose tokenizer is already resolved locally never calls this. The
+/// source repo is gated, so a cold-cache fetch needs a token — see the module
+/// docs; call this **early** so a missing credential is found at startup.
 pub fn fetch_qwen3vl_tokenizer() -> Result<PathBuf> {
-    let dir = cache_dir()?;
+    fetch_with(
+        &cache_dir()?,
+        TOKENIZER_URL,
+        token_from_env().as_deref(),
+        &PINNED,
+    )
+}
+
+/// [`fetch_qwen3vl_tokenizer`] with the cache dir, URL, token and pin injected.
+fn fetch_with(dir: &Path, url: &str, token: Option<&str>, pin: &Pin<'_>) -> Result<PathBuf> {
     let cached = dir.join(CACHE_NAME);
 
     // Cache hit: reuse only if it still matches the pin (guards a truncated or
     // tampered cache).
     if let Ok(bytes) = std::fs::read(&cached)
-        && bytes.len() == TOKENIZER_LEN
-        && sha256_hex(&bytes) == TOKENIZER_SHA256
+        && bytes.len() == pin.len
+        && sha256_hex(&bytes) == pin.sha256
     {
         return Ok(cached);
     }
 
-    let bytes = download(TOKENIZER_URL)?;
-    if bytes.len() != TOKENIZER_LEN {
+    let bytes = download(url, token)?;
+    if bytes.len() != pin.len {
         bail!(
-            "fetched Qwen3-VL tokenizer is {} bytes, expected {TOKENIZER_LEN} — \
+            "fetched Qwen3-VL tokenizer is {} bytes, expected {} — \
              refusing a corrupt or changed download",
-            bytes.len()
+            bytes.len(),
+            pin.len
         );
     }
     let got = sha256_hex(&bytes);
-    if got != TOKENIZER_SHA256 {
+    if got != pin.sha256 {
         bail!(
-            "fetched Qwen3-VL tokenizer SHA-256 {got} != pinned {TOKENIZER_SHA256} — \
-             refusing a corrupt or tampered download"
+            "fetched Qwen3-VL tokenizer SHA-256 {got} != pinned {} — \
+             refusing a corrupt or tampered download",
+            pin.sha256
         );
     }
 
     // Write atomically: a temp file + rename so a concurrent run (or a crash
     // mid-write) never leaves a half-written tokenizer at the cache path.
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .with_context(|| format!("creating tokenizer cache dir {}", dir.display()))?;
     let tmp = dir.join(format!("{CACHE_NAME}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
@@ -111,17 +231,61 @@ pub fn fetch_qwen3vl_tokenizer() -> Result<PathBuf> {
     Ok(cached)
 }
 
+/// The actionable text for a rejected gated download. `had_token` selects
+/// between "you sent nothing" and "what you sent was refused"; neither variant
+/// includes the token itself.
+fn gate_error(status: u16, had_token: bool) -> String {
+    let fixes = format!(
+        "accept the terms at {GATE_PAGE} and set HF_TOKEN (or run `huggingface-cli login`), \
+         or set model.tokenizer to a local tokenizer.json (it is verified against a pinned \
+         SHA-256, so any byte-identical copy works)"
+    );
+    match (status, had_token) {
+        (401, false) => format!(
+            "HTTP 401: the Qwen3-VL tokenizer's repo is gated and no HuggingFace token was \
+             found — {fixes}"
+        ),
+        (401, true) => format!(
+            "HTTP 401: HuggingFace rejected the token (expired, revoked, or mistyped) — {fixes}"
+        ),
+        (403, false) => format!(
+            "HTTP 403: access to the Qwen3-VL tokenizer's repo was refused and no HuggingFace \
+             token was found (a proxy or firewall can also answer 403) — {fixes}"
+        ),
+        _ => format!(
+            "HTTP 403: the token is valid but this account has not accepted the repo's terms — \
+             {fixes}"
+        ),
+    }
+}
+
 /// Blocking GET of `url` into bytes, with an overall timeout and a body-size
-/// limit sized for the ~11 MB tokenizer.
-fn download(url: &str) -> Result<Vec<u8>> {
+/// limit sized for the ~11 MB tokenizer. `token`, when present, is sent as
+/// `Authorization: Bearer`; it is not forwarded across a redirect to another
+/// host (`RedirectAuthHeaders::Never`, set explicitly below), which matters
+/// because HF redirects the file to a pre-signed CDN URL.
+fn download(url: &str, token: Option<&str>) -> Result<Vec<u8>> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(120)))
+        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
         .build()
         .into();
-    let mut resp = agent
-        .get(url)
-        .call()
-        .with_context(|| format!("fetching the Qwen3-VL tokenizer from {url}"))?;
+    let mut req = agent.get(url);
+    if let Some(token) = token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let mut resp = match req.call() {
+        Ok(resp) => resp,
+        Err(ureq::Error::StatusCode(status @ (401 | 403))) => {
+            bail!(
+                "fetching the Qwen3-VL tokenizer from {url}: {}",
+                gate_error(status, token.is_some())
+            )
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("fetching the Qwen3-VL tokenizer from {url}"));
+        }
+    };
     resp.body_mut()
         .with_config()
         .limit(32 * 1024 * 1024)
@@ -153,6 +317,448 @@ mod tests {
             "cache dir must live under a loractl/ subdir, got {}",
             dir.display()
         );
+    }
+
+    // ---- offline tests for the gated-download path (#200) -------------------
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A unique scratch dir, removed on drop (no `tempfile` dev-dep in core).
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            static N: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "loractl-hf-test-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Serve exactly one request on a loopback port with a canned response.
+    /// Returns the URL and a handle yielding the raw request text, so a test
+    /// can assert on the headers the client actually sent.
+    fn stub(status_line: &'static str, body: Vec<u8>) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/tokenizer.json", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            let head = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            sock.write_all(&body).unwrap();
+            String::from_utf8_lossy(&req).into_owned()
+        });
+        (url, handle)
+    }
+
+    const BODY: &[u8] = b"{\"stub\":\"tokenizer\"}";
+
+    #[test]
+    fn token_discovery_order_matches_the_official_client() {
+        let s = Scratch::new();
+        let explicit = s.0.join("explicit-token");
+        let hf_home = s.0.join("hfhome");
+        let xdg = s.0.join("xdg");
+        let home = s.0.join("home");
+        for d in [
+            &hf_home,
+            &xdg.join("huggingface"),
+            &home.join(".cache/huggingface"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(&explicit, "from-token-path\n").unwrap();
+        std::fs::write(hf_home.join("token"), "  from-hf-home\n").unwrap();
+        std::fs::write(xdg.join("huggingface/token"), "from-xdg\n").unwrap();
+        std::fs::write(home.join(".cache/huggingface/token"), "from-default\n").unwrap();
+
+        let all = TokenEnv {
+            token: Some(" from-env "),
+            token_path: Some(&explicit),
+            hf_home: Some(&hf_home),
+            xdg_cache_home: Some(&xdg),
+            home: Some(&home),
+        };
+        // 1. the env var wins over every file, and is trimmed.
+        assert_eq!(discover_token(&all).as_deref(), Some("from-env"));
+        // 2. then HF_TOKEN_PATH, 3. then $HF_HOME/token, 4. then the XDG
+        //    default, 5. then ~/.cache/huggingface/token.
+        let env = TokenEnv { token: None, ..all };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-token-path"));
+        let env = TokenEnv {
+            token_path: None,
+            ..env
+        };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-hf-home"));
+        let env = TokenEnv {
+            hf_home: None,
+            ..env
+        };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-xdg"));
+        let env = TokenEnv {
+            xdg_cache_home: None,
+            ..env
+        };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-default"));
+    }
+
+    #[test]
+    fn token_discovery_skips_empty_and_missing_candidates() {
+        let s = Scratch::new();
+        let hf_home = s.0.join("hfhome"); // exists, but its token is blank
+        let home = s.0.join("home"); // has no token file at all
+        std::fs::create_dir_all(&hf_home).unwrap();
+        std::fs::write(hf_home.join("token"), " \n").unwrap();
+
+        // A blank env var and a blank file fall through rather than yielding
+        // an empty bearer token.
+        let env = TokenEnv {
+            token: Some("  "),
+            hf_home: Some(&hf_home),
+            home: Some(&home),
+            ..Default::default()
+        };
+        assert_eq!(discover_token(&env), None);
+        assert_eq!(discover_token(&TokenEnv::default()), None);
+    }
+
+    /// A pin matching [`BODY`].
+    fn body_pin_sha() -> String {
+        sha256_hex(BODY)
+    }
+
+    #[test]
+    fn authenticated_download_sends_the_bearer_header_and_caches_the_verified_body() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, req) = stub("200 OK", BODY.to_vec());
+        let path = fetch_with(
+            &s.0,
+            &url,
+            Some("hf_secret123"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .expect("a 200 with the pinned body succeeds");
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        let req = req.join().unwrap().to_ascii_lowercase();
+        assert!(
+            req.contains("authorization: bearer hf_secret123"),
+            "the token must be sent as a Bearer header, got:\n{req}"
+        );
+    }
+
+    #[test]
+    fn anonymous_download_sends_no_authorization_header() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, req) = stub("200 OK", BODY.to_vec());
+        fetch_with(
+            &s.0,
+            &url,
+            None,
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap();
+        let req = req.join().unwrap().to_ascii_lowercase();
+        assert!(!req.contains("authorization"), "got:\n{req}");
+    }
+
+    #[test]
+    fn a_401_without_a_token_says_how_to_get_one() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("401 Unauthorized", Vec::new());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            None,
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("401"), "{text}");
+        assert!(text.contains("no HuggingFace token was found"), "{text}");
+        assert!(text.contains(GATE_PAGE), "{text}");
+        assert!(text.contains("HF_TOKEN"), "{text}");
+        assert!(text.contains("model.tokenizer"), "{text}");
+        assert!(
+            !s.0.join(CACHE_NAME).exists(),
+            "a failed fetch must cache nothing"
+        );
+    }
+
+    #[test]
+    fn a_401_with_a_token_says_the_token_was_rejected_and_never_echoes_it() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("401 Unauthorized", Vec::new());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            Some("hf_secret123"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("rejected the token"), "{text}");
+        assert!(
+            !text.contains("hf_secret123"),
+            "the token must never appear in an error: {text}"
+        );
+    }
+
+    #[test]
+    fn a_403_says_the_token_is_valid_but_the_terms_are_not_accepted() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("403 Forbidden", Vec::new());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            Some("hf_secret123"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("403"), "{text}");
+        assert!(text.contains("token is valid"), "{text}");
+        assert!(text.contains("not accepted"), "{text}");
+        assert!(text.contains(GATE_PAGE), "{text}");
+        assert!(!text.contains("hf_secret123"), "{text}");
+    }
+
+    #[test]
+    fn other_statuses_are_not_misreported_as_the_gate() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("500 Internal Server Error", Vec::new());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            None,
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("500"), "{text}");
+        assert!(!text.contains("gated"), "{text}");
+    }
+
+    #[test]
+    fn an_authenticated_download_still_fails_the_pinned_checks() {
+        // Auth must not weaken provenance: a 200 with the wrong bytes is
+        // refused (length, then digest), and nothing is cached.
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+
+        let (url, _req) = stub("200 OK", BODY.to_vec());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            Some("t"),
+            &Pin {
+                len: BODY.len() + 1,
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("bytes, expected"), "{err:#}");
+
+        let (url, _req) = stub("200 OK", BODY.to_vec());
+        let wrong = "0".repeat(64);
+        let err = fetch_with(
+            &s.0,
+            &url,
+            Some("t"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &wrong,
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("SHA-256"), "{err:#}");
+        assert!(!s.0.join(CACHE_NAME).exists());
+    }
+
+    #[test]
+    fn a_403_without_a_token_does_not_claim_the_token_is_valid() {
+        // A proxy or firewall can answer 403 to an anonymous request; saying
+        // "the token is valid" there would be false.
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("403 Forbidden", Vec::new());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            None,
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("403"), "{text}");
+        assert!(text.contains("no HuggingFace token was found"), "{text}");
+        assert!(!text.contains("token is valid"), "{text}");
+    }
+
+    #[test]
+    fn a_malformed_token_is_reported_without_echoing_it() {
+        // A token file with an interior newline survives `trim()` and is not a
+        // legal header value. The failure must not put it in the message.
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("200 OK", BODY.to_vec());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            Some("hf_line1\nhf_secretline2"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#} / {err:?}");
+        assert!(!text.contains("secretline2"), "{text}");
+        assert!(!text.contains("hf_line1"), "{text}");
+    }
+
+    /// The token must not follow a redirect to a different host -- HF answers
+    /// the file request with a 302 to a pre-signed CDN URL. `127.0.0.1` and
+    /// `localhost` are different hosts to the client but the same machine, so
+    /// two loopback stubs stand in for huggingface.co and the CDN.
+    #[test]
+    fn the_token_is_not_forwarded_across_a_redirect_to_another_host() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+
+        // The "CDN": serves the body, records what it was sent.
+        let cdn = TcpListener::bind("127.0.0.1:0").unwrap();
+        let cdn_port = cdn.local_addr().unwrap().port();
+        let cdn_seen = std::thread::spawn(move || {
+            let (mut sock, _) = cdn.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            sock.write_all(BODY).unwrap();
+            String::from_utf8_lossy(&req).into_owned()
+        });
+
+        // The "hub": answers 302 to the CDN under a different hostname.
+        let hub = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/tokenizer.json", hub.local_addr().unwrap());
+        let hub_seen = std::thread::spawn(move || {
+            let (mut sock, _) = hub.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            let head = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{cdn_port}/signed\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            String::from_utf8_lossy(&req).into_owned()
+        });
+
+        fetch_with(
+            &s.0,
+            &url,
+            Some("hf_secret123"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .expect("the redirect is followed and the body verified");
+
+        let hub_req = hub_seen.join().unwrap().to_ascii_lowercase();
+        assert!(
+            hub_req.contains("authorization: bearer hf_secret123"),
+            "the first hop must carry the token:\n{hub_req}"
+        );
+        let cdn_req = cdn_seen.join().unwrap().to_ascii_lowercase();
+        assert!(
+            !cdn_req.contains("authorization") && !cdn_req.contains("hf_secret123"),
+            "the token leaked to the redirect target:\n{cdn_req}"
+        );
+    }
+
+    #[test]
+    fn a_verified_cache_hit_never_touches_the_network() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        std::fs::write(s.0.join(CACHE_NAME), BODY).unwrap();
+        // Port 1 on loopback: connecting would fail, so Ok proves no request.
+        let path = fetch_with(
+            &s.0,
+            "http://127.0.0.1:1/never",
+            None,
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .expect("warm cache resolves offline");
+        assert_eq!(path, s.0.join(CACHE_NAME));
     }
 
     /// Opt-in network proof (never in CI): actually fetch, verify the pin, and
