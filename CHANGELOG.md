@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.23.0](https://github.com/laurigates/loractl/compare/v0.22.1...v0.23.0) (2026-10-23)
+
+
+### Features
+
+* **cli:** opt-in loss/LR curve PNG (plot feature) ([#241](https://github.com/laurigates/loractl/issues/241)) ([e75ff61](https://github.com/laurigates/loractl/commit/e75ff611f12e24d7faf79548c05aeceae2766ce4))
+* **dataset:** caption dropout (dataset.caption_dropout_rate) ([#245](https://github.com/laurigates/loractl/issues/245)) ([830eff8](https://github.com/laurigates/loractl/commit/830eff85865b31e0d68a417bbe95783593c3f65a))
+* **trainer:** learning-rate schedules with warmup (optim.schedule) ([#242](https://github.com/laurigates/loractl/issues/242)) ([3461cf2](https://github.com/laurigates/loractl/commit/3461cf29cd356988f3dcab4d7cd280454c13d66a))
+
+
+### Bug Fixes
+
+* **core:** authenticate HF tokenizer fetch and fail fast before checkpoint load ([#240](https://github.com/laurigates/loractl/issues/240)) ([5362b4c](https://github.com/laurigates/loractl/commit/5362b4ccc8b206f032fc241ad9825592aef81500))
+
+
+### Performance Improvements
+
+* **core:** decode-probe example times the dataset decode fraction in isolation ([#244](https://github.com/laurigates/loractl/issues/244)) ([a967e89](https://github.com/laurigates/loractl/commit/a967e89d1c9f56b688531debcefc0e0aced71c3a))
+
 ## [0.22.1](https://github.com/laurigates/loractl/compare/v0.22.0...v0.22.1) (2026-09-22)
 
 
