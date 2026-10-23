@@ -20,8 +20,9 @@
 //! `krea/Krea-2-Raw` is `gated: "auto"`: an anonymous GET answers **401**, and
 //! a valid token whose account has not accepted the terms answers **403**. So
 //! the download sends `Authorization: Bearer` when a token is discoverable
-//! (`discover_token`: `HF_TOKEN`, then `$HF_HOME/token`, then
-//! `~/.cache/huggingface/token`), and maps both statuses to an error that says
+//! (`discover_token`: `HF_TOKEN`, then `HF_TOKEN_PATH`, then `$HF_HOME/token`,
+//! then the default `huggingface/token` under `$XDG_CACHE_HOME` or
+//! `~/.cache`), and maps both statuses to an error that says
 //! what to do. The token is only ever put in that header — never in an error
 //! message, a log line, or a redirect to another host.
 //!
@@ -106,27 +107,42 @@ fn clean_token(raw: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_owned())
 }
 
+/// The environment [`discover_token`] reads, injected so the lookup order is
+/// unit-testable without mutating the process environment.
+#[derive(Default)]
+struct TokenEnv<'a> {
+    /// `HF_TOKEN`, else the legacy `HUGGING_FACE_HUB_TOKEN`.
+    token: Option<&'a str>,
+    /// `HF_TOKEN_PATH`: an explicit token file.
+    token_path: Option<&'a Path>,
+    hf_home: Option<&'a Path>,
+    xdg_cache_home: Option<&'a Path>,
+    home: Option<&'a Path>,
+}
+
 /// Find a HuggingFace token, in the order the official client uses:
 ///
-/// 1. `hf_token_env` (the value of `HF_TOKEN`);
-/// 2. `<hf_home>/token`;
-/// 3. `<home>/.cache/huggingface/token` (the default `HF_HOME`).
+/// 1. the `HF_TOKEN` (or legacy `HUGGING_FACE_HUB_TOKEN`) value;
+/// 2. the file `HF_TOKEN_PATH` names;
+/// 3. `<hf_home>/token`;
+/// 4. `<xdg_cache_home>/huggingface/token` (the default `HF_HOME` when
+///    `XDG_CACHE_HOME` is set);
+/// 5. `<home>/.cache/huggingface/token` (the default `HF_HOME` otherwise).
 ///
-/// Inputs are explicit so the order is unit-testable without mutating the
-/// process environment. An unreadable or empty candidate is skipped, not an
-/// error: no token is a valid state (a public repo needs none), and its
-/// absence is reported by the 401 mapping in [`download`].
-fn discover_token(
-    hf_token_env: Option<&str>,
-    hf_home: Option<&Path>,
-    home: Option<&Path>,
-) -> Option<String> {
-    if let Some(t) = hf_token_env.and_then(clean_token) {
+/// An unreadable or empty candidate is skipped, not an error: no token is a
+/// valid state (a public repo needs none), and its absence is reported by the
+/// 401 mapping in [`download`].
+fn discover_token(env: &TokenEnv<'_>) -> Option<String> {
+    if let Some(t) = env.token.and_then(clean_token) {
         return Some(t);
     }
     let candidates = [
-        hf_home.map(|h| h.join("token")),
-        home.map(|h| h.join(".cache").join("huggingface").join("token")),
+        env.token_path.map(Path::to_path_buf),
+        env.hf_home.map(|h| h.join("token")),
+        env.xdg_cache_home
+            .map(|h| h.join("huggingface").join("token")),
+        env.home
+            .map(|h| h.join(".cache").join("huggingface").join("token")),
     ];
     candidates.into_iter().flatten().find_map(|p| {
         std::fs::read_to_string(p)
@@ -138,10 +154,24 @@ fn discover_token(
 
 /// [`discover_token`] over the real process environment.
 fn token_from_env() -> Option<String> {
-    let hf_token = std::env::var("HF_TOKEN").ok();
-    let hf_home = std::env::var_os("HF_HOME").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    discover_token(hf_token.as_deref(), hf_home.as_deref(), home.as_deref())
+    let path = |name| std::env::var_os(name).map(PathBuf::from);
+    let token = std::env::var("HF_TOKEN")
+        .ok()
+        .and_then(|t| clean_token(&t))
+        .or_else(|| {
+            std::env::var("HUGGING_FACE_HUB_TOKEN")
+                .ok()
+                .and_then(|t| clean_token(&t))
+        });
+    let (token_path, hf_home) = (path("HF_TOKEN_PATH"), path("HF_HOME"));
+    let (xdg, home) = (path("XDG_CACHE_HOME"), path("HOME"));
+    discover_token(&TokenEnv {
+        token: token.as_deref(),
+        token_path: token_path.as_deref(),
+        hf_home: hf_home.as_deref(),
+        xdg_cache_home: xdg.as_deref(),
+        home: home.as_deref(),
+    })
 }
 
 /// Returns the path to the cached Qwen3-VL tokenizer, fetching+verifying it on
@@ -217,6 +247,10 @@ fn gate_error(status: u16, had_token: bool) -> String {
         ),
         (401, true) => format!(
             "HTTP 401: HuggingFace rejected the token (expired, revoked, or mistyped) — {fixes}"
+        ),
+        (403, false) => format!(
+            "HTTP 403: access to the Qwen3-VL tokenizer's repo was refused and no HuggingFace \
+             token was found (a proxy or firewall can also answer 403) — {fixes}"
         ),
         _ => format!(
             "HTTP 403: the token is valid but this account has not accepted the repo's terms — \
@@ -342,30 +376,52 @@ mod tests {
     const BODY: &[u8] = b"{\"stub\":\"tokenizer\"}";
 
     #[test]
-    fn token_discovery_order_is_env_then_hf_home_then_default_cache() {
+    fn token_discovery_order_matches_the_official_client() {
         let s = Scratch::new();
+        let explicit = s.0.join("explicit-token");
         let hf_home = s.0.join("hfhome");
+        let xdg = s.0.join("xdg");
         let home = s.0.join("home");
-        std::fs::create_dir_all(&hf_home).unwrap();
-        std::fs::create_dir_all(home.join(".cache/huggingface")).unwrap();
+        for d in [
+            &hf_home,
+            &xdg.join("huggingface"),
+            &home.join(".cache/huggingface"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(&explicit, "from-token-path\n").unwrap();
         std::fs::write(hf_home.join("token"), "  from-hf-home\n").unwrap();
+        std::fs::write(xdg.join("huggingface/token"), "from-xdg\n").unwrap();
         std::fs::write(home.join(".cache/huggingface/token"), "from-default\n").unwrap();
 
-        // 1. the env var wins over both files, and is trimmed.
-        assert_eq!(
-            discover_token(Some(" from-env "), Some(&hf_home), Some(&home)).as_deref(),
-            Some("from-env")
-        );
-        // 2. no env: $HF_HOME/token beats the default location.
-        assert_eq!(
-            discover_token(None, Some(&hf_home), Some(&home)).as_deref(),
-            Some("from-hf-home")
-        );
-        // 3. no env, no HF_HOME: ~/.cache/huggingface/token.
-        assert_eq!(
-            discover_token(None, None, Some(&home)).as_deref(),
-            Some("from-default")
-        );
+        let all = TokenEnv {
+            token: Some(" from-env "),
+            token_path: Some(&explicit),
+            hf_home: Some(&hf_home),
+            xdg_cache_home: Some(&xdg),
+            home: Some(&home),
+        };
+        // 1. the env var wins over every file, and is trimmed.
+        assert_eq!(discover_token(&all).as_deref(), Some("from-env"));
+        // 2. then HF_TOKEN_PATH, 3. then $HF_HOME/token, 4. then the XDG
+        //    default, 5. then ~/.cache/huggingface/token.
+        let env = TokenEnv { token: None, ..all };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-token-path"));
+        let env = TokenEnv {
+            token_path: None,
+            ..env
+        };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-hf-home"));
+        let env = TokenEnv {
+            hf_home: None,
+            ..env
+        };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-xdg"));
+        let env = TokenEnv {
+            xdg_cache_home: None,
+            ..env
+        };
+        assert_eq!(discover_token(&env).as_deref(), Some("from-default"));
     }
 
     #[test]
@@ -378,11 +434,14 @@ mod tests {
 
         // A blank env var and a blank file fall through rather than yielding
         // an empty bearer token.
-        assert_eq!(
-            discover_token(Some("  "), Some(&hf_home), Some(&home)),
-            None
-        );
-        assert_eq!(discover_token(None, None, None), None);
+        let env = TokenEnv {
+            token: Some("  "),
+            hf_home: Some(&hf_home),
+            home: Some(&home),
+            ..Default::default()
+        };
+        assert_eq!(discover_token(&env), None);
+        assert_eq!(discover_token(&TokenEnv::default()), None);
     }
 
     /// A pin matching [`BODY`].
@@ -559,6 +618,128 @@ mod tests {
         .unwrap_err();
         assert!(format!("{err:#}").contains("SHA-256"), "{err:#}");
         assert!(!s.0.join(CACHE_NAME).exists());
+    }
+
+    #[test]
+    fn a_403_without_a_token_does_not_claim_the_token_is_valid() {
+        // A proxy or firewall can answer 403 to an anonymous request; saying
+        // "the token is valid" there would be false.
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("403 Forbidden", Vec::new());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            None,
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("403"), "{text}");
+        assert!(text.contains("no HuggingFace token was found"), "{text}");
+        assert!(!text.contains("token is valid"), "{text}");
+    }
+
+    #[test]
+    fn a_malformed_token_is_reported_without_echoing_it() {
+        // A token file with an interior newline survives `trim()` and is not a
+        // legal header value. The failure must not put it in the message.
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let (url, _req) = stub("200 OK", BODY.to_vec());
+        let err = fetch_with(
+            &s.0,
+            &url,
+            Some("hf_line1\nhf_secretline2"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .unwrap_err();
+        let text = format!("{err:#} / {err:?}");
+        assert!(!text.contains("secretline2"), "{text}");
+        assert!(!text.contains("hf_line1"), "{text}");
+    }
+
+    /// The token must not follow a redirect to a different host -- HF answers
+    /// the file request with a 302 to a pre-signed CDN URL. `127.0.0.1` and
+    /// `localhost` are different hosts to the client but the same machine, so
+    /// two loopback stubs stand in for huggingface.co and the CDN.
+    #[test]
+    fn the_token_is_not_forwarded_across_a_redirect_to_another_host() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+
+        // The "CDN": serves the body, records what it was sent.
+        let cdn = TcpListener::bind("127.0.0.1:0").unwrap();
+        let cdn_port = cdn.local_addr().unwrap().port();
+        let cdn_seen = std::thread::spawn(move || {
+            let (mut sock, _) = cdn.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            sock.write_all(BODY).unwrap();
+            String::from_utf8_lossy(&req).into_owned()
+        });
+
+        // The "hub": answers 302 to the CDN under a different hostname.
+        let hub = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/tokenizer.json", hub.local_addr().unwrap());
+        let hub_seen = std::thread::spawn(move || {
+            let (mut sock, _) = hub.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            let head = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{cdn_port}/signed\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            String::from_utf8_lossy(&req).into_owned()
+        });
+
+        fetch_with(
+            &s.0,
+            &url,
+            Some("hf_secret123"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .expect("the redirect is followed and the body verified");
+
+        let hub_req = hub_seen.join().unwrap().to_ascii_lowercase();
+        assert!(
+            hub_req.contains("authorization: bearer hf_secret123"),
+            "the first hop must carry the token:\n{hub_req}"
+        );
+        let cdn_req = cdn_seen.join().unwrap().to_ascii_lowercase();
+        assert!(
+            !cdn_req.contains("authorization") && !cdn_req.contains("hf_secret123"),
+            "the token leaked to the redirect target:\n{cdn_req}"
+        );
     }
 
     #[test]

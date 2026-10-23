@@ -107,7 +107,8 @@ A ComfyUI-layout run ships no `tokenizer.json`, so `hf::fetch_qwen3vl_tokenizer`
 falls back to `krea/Krea-2-Raw`. That repo is **gated** (`gated: "auto"`,
 verified against the HF API 2026-08-07). **Status (#200): the late failure and
 the missing auth path are fixed** — `hf.rs` now sends `HF_TOKEN` /
-`$HF_HOME/token` / `~/.cache/huggingface/token` as a Bearer token, the encode
+`HF_TOKEN_PATH` / `$HF_HOME/token` / `~/.cache/huggingface/token` as a Bearer
+token, the encode
 phase resolves the tokenizer before loading any checkpoint, and 401/403 carry
 the remedy. The signature below is what the *old* build printed; on a current
 build the same cause fails at startup with `HTTP 401: ... gated and no

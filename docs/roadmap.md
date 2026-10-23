@@ -434,9 +434,12 @@ hid it.
   order (no `Load` phase may precede the error) and was kill-tested by
   removing the call.
 - **Authenticate.** `hf::download` sends `Authorization: Bearer` from
-  `HF_TOKEN`, else `$HF_HOME/token`, else `~/.cache/huggingface/token`. The
+  `HF_TOKEN` (or legacy `HUGGING_FACE_HUB_TOKEN`), else `HF_TOKEN_PATH`, else
+  `$HF_HOME/token`, else `huggingface/token` under `$XDG_CACHE_HOME` or
+  `~/.cache` (the official client's lookup order). The
   header is not forwarded to the CDN host the file redirects to
-  (`RedirectAuthHeaders::Never`), and the token never appears in an error. 401
+  (`RedirectAuthHeaders::Never`, pinned by a two-host loopback test), and the
+  token never appears in an error. 401
   and 403 map to distinct, actionable messages (accept the terms / set
   `HF_TOKEN` / set `model.tokenizer`). The pinned length and SHA-256 are
   unchanged and apply to authenticated downloads too.
