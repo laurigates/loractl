@@ -397,10 +397,12 @@ pub fn init_telemetry(verbosity: Verbosity) -> sentry::ClientInitGuard {
     // GlitchTip speaks the Sentry ingest protocol; the DSN is read from the
     // `SENTRY_DSN` environment variable. `release` tags events with the crate
     // version so issues group by build.
-    let guard = sentry::init(sentry::ClientOptions {
-        release: sentry::release_name!(),
-        ..Default::default()
-    });
+    // `ClientOptions` is `#[non_exhaustive]` since sentry 0.49, so a struct
+    // literal (even with `..Default::default()`) no longer compiles outside the
+    // crate; assign the field on a default instead.
+    let mut options = sentry::ClientOptions::default();
+    options.release = sentry::release_name!();
+    let guard = sentry::init(options);
 
     let filter = match verbosity {
         Verbosity::Env(directives) => EnvFilter::new(directives),

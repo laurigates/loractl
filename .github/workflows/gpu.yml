@@ -14,6 +14,11 @@ name: GPU
 # ([self-hosted, gpu] + gpu,cuda / gpu,wgpu). It processes one job at a time,
 # so these jobs never contend for the GPU within a run.
 #
+# Runner version: actions/checkout and actions/upload-artifact are on v7, which
+# run on Node 24 and need an Actions runner >= 2.327.1 (a stale, auto-update-off
+# runner fails at "Set up job"). Hosted CI cannot exercise this file, so a
+# `gh workflow run gpu.yml` dispatch is the only check after bumping an action.
+#
 #   gh workflow run gpu.yml                          # cuda smokes (default)
 #   gh workflow run gpu.yml -f suite=all             # cuda + wgpu smokes
 #   gh workflow run gpu.yml -f int8_probe=true       # + the #96 int8 proof
@@ -115,13 +120,13 @@ jobs:
     runs-on: [self-hosted, gpu, cuda]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Persistent self-hosted runner: caching ~/.cargo/bin snapshots the
           # host's rustup/cargo proxies and clobbers them on restore (the CAEF
@@ -146,13 +151,13 @@ jobs:
     runs-on: [self-hosted, gpu, wgpu]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Persistent self-hosted runner — see the cuda job's cache-bin note.
           cache-bin: "false"
@@ -173,13 +178,13 @@ jobs:
     runs-on: [self-hosted, gpu, cuda]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Persistent self-hosted runner — see the cuda job's cache-bin note.
           cache-bin: "false"
@@ -206,13 +211,13 @@ jobs:
     runs-on: [self-hosted, gpu, cuda]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Persistent self-hosted runner — see the cuda job's cache-bin note.
           cache-bin: "false"
@@ -301,7 +306,7 @@ jobs:
       # lines it managed, and those are exactly what diagnosis needs.
       - name: Upload bench log
         if: always()
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: bench-log
           path: bench.log
