@@ -241,7 +241,11 @@ fn tokenizer_path(model: &ModelConfig, base: &Path) -> PathBuf {
 /// - The `base/tokenizer/tokenizer.json` snapshot-dir file is used when
 ///   present (back-compat, no network).
 /// - Otherwise (the ComfyUI case: no override, no base-dir file) the pinned
-///   Qwen3-VL tokenizer is fetched once and cached (see [`crate::hf`]).
+///   Qwen3-VL tokenizer is fetched once and cached (see [`crate::hf`]). That
+///   repo is **gated** (#200): the fetch needs `HF_TOKEN` (or a saved HF
+///   login) from an account that accepted its terms, so a cold-cache run on a
+///   fresh box can fail here — which is why `encode_phase` calls this on the
+///   first cache miss, *before* it loads any checkpoint.
 fn resolve_tokenizer(model: &ModelConfig, base: &Path) -> Result<PathBuf> {
     let path = tokenizer_path(model, base);
     if path.exists() {
@@ -576,12 +580,31 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
     let mut encoded = 0u64;
     let mut vae: Option<QwenVae<B>> = None;
     let mut conditioner: Option<Qwen3VlConditioner<B>> = None;
+    // #200: the tokenizer is needed only by the caption closure, but resolved
+    // by whichever closure runs FIRST on a cache miss — before any multi-GB
+    // checkpoint is read. A ComfyUI layout ships none, so resolving means a
+    // fetch from a gated repo; discovering a missing credential after the
+    // 4.9 GiB text encoder had loaded cost ~9 minutes per attempt. Lazy on
+    // purpose: a fully warm cache never reaches either closure, so it still
+    // needs no tokenizer and no network.
+    let tokenizer: std::cell::OnceCell<PathBuf> = std::cell::OnceCell::new();
+    let ensure_tokenizer = || -> Result<&Path> {
+        if tokenizer.get().is_none() {
+            let path = resolve_tokenizer(&config.model, &base)?;
+            // `set` cannot fail: we just observed the cell empty and nothing
+            // else writes to it.
+            let _ = tokenizer.set(path);
+        }
+        Ok(tokenizer.get().expect("just resolved").as_path())
+    };
     let prepared = prepare_dataset::<B>(
         &config.dataset,
         &fingerprint,
         &device,
         |image| {
             if vae.is_none() {
+                // Before the VAE load below — see `ensure_tokenizer`.
+                ensure_tokenizer()?;
                 // A ComfyUI-native (Qwen/WAN) keyed VAE names the same weights
                 // under a different *scheme* than the diffusers file this port
                 // mirrors — auto-detected from the header (like the fp8-vs-bf16
@@ -612,6 +635,8 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
         },
         |caption| {
             if conditioner.is_none() {
+                // Before the encoder load below — see `ensure_tokenizer`.
+                let tokenizer_path = ensure_tokenizer()?;
                 // A ComfyUI text-encoder repack (F8_E4M3 text weights, `model.*`
                 // keys, a bundled vision tower) is auto-detected from the file
                 // header and routed through the fp8 snapshot loader with the
@@ -643,7 +668,7 @@ fn encode_phase<B: burn::tensor::backend::Backend>(
                 .no_grad();
                 conditioner = Some(Qwen3VlConditioner::new(
                     encoder,
-                    &resolve_tokenizer(&config.model, &base)?,
+                    tokenizer_path,
                     max_length,
                 )?);
             }
@@ -2102,12 +2127,20 @@ mod tests {
             .save(dir.join("a.png"))
             .unwrap();
         std::fs::write(dir.join("a.txt"), "a tiny gradient").unwrap();
+        // #200: the tokenizer is now resolved BEFORE the VAE, and with none
+        // under the (absent) base the resolver would fetch from the network.
+        // An existing override file resolves offline (only its existence is
+        // checked here); the run then still fails on the missing VAE, which is
+        // what this test asserts.
+        let tokenizer = dir.join("stub-tokenizer.json");
+        std::fs::write(&tokenizer, "{}").unwrap();
 
         let config = TrainConfig {
             model: ModelConfig {
                 // Deliberately absent: the run must not get far enough to care.
                 base: dir.join("no-such-bundle").to_string_lossy().into_owned(),
                 variant: ModelVariant::Krea2,
+                tokenizer: Some(tokenizer),
                 ..Default::default()
             },
             dataset: DatasetConfig {

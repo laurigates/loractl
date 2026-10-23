@@ -395,7 +395,9 @@ are the *same* derived value rather than two literals that can disagree.
   silently, a derived one fails loud. **That golden has to be regenerated
   before this is proven** (`just qwen3vl-real-reference && just
   test-qwen3vl-real`, network + GPU box): it gained `prefix_len`/`suffix_len`
-  fields the old file does not carry.
+  fields the old file does not carry. A stale local golden now fails with a
+  "regenerate with `just qwen3vl-real-reference`" message instead of a bare
+  serde error (#203, offline half); the run itself is still outstanding.
 - **The encoder cache fingerprint was bumped** (`enc32` → `enc32-t2`,
   `diffusion_trainer.rs::encoder_fingerprint`) because the change provably
   moves the conditioning the tiny path produces while the cache reader
@@ -412,6 +414,42 @@ Nothing enforces that — `tokenize` encodes the joint string while `prefix_len`
 is measured on the prefix alone. It holds for every tokenizer in the repo
 (captions are trimmed and `PROMPT_PREFIX` ends in a newline that closes the
 pre-tokenizer), and it is recorded at the two places a reader would ask.
+
+## The tokenizer fallback authenticates and fails fast (#200, 2026-08-09)
+
+The ComfyUI layout ships no `tokenizer.json`, so `hf::fetch_qwen3vl_tokenizer`
+pulls it from `krea/Krea-2-Raw` — which is **gated** (`gated: "auto"`; verified
+against the HF API 2026-08-07), not the "ungated" repo the docs claimed. An
+anonymous GET is a 401; a valid token without accepted terms is a 403. The
+failure was expensive because the tokenizer was first needed at the first
+caption encode, after the 4.9 GiB text encoder had loaded (~9 minutes per
+attempt). Only a warm `$HF_HOME/loractl/` cache, which predates the gating,
+hid it.
+
+- **Fail fast.** `encode_phase` resolves the tokenizer on the first cache
+  *miss*, before the VAE or the text encoder is read. It stays lazy on
+  purpose: a fully warm cache still needs no tokenizer and no network (pinned
+  by the existing encoders-deleted warm-rerun test).
+  `an_unresolvable_tokenizer_fails_before_any_checkpoint_is_loaded` pins the
+  order (no `Load` phase may precede the error) and was kill-tested by
+  removing the call.
+- **Authenticate.** `hf::download` sends `Authorization: Bearer` from
+  `HF_TOKEN` (or legacy `HUGGING_FACE_HUB_TOKEN`), else `HF_TOKEN_PATH`, else
+  `$HF_HOME/token`, else `huggingface/token` under `$XDG_CACHE_HOME` or
+  `~/.cache` (the official client's lookup order). The
+  header is not forwarded to the CDN host the file redirects to
+  (`RedirectAuthHeaders::Never`, pinned by a two-host loopback test), and the
+  token never appears in an error. 401
+  and 403 map to distinct, actionable messages (accept the terms / set
+  `HF_TOKEN` / set `model.tokenizer`). The pinned length and SHA-256 are
+  unchanged and apply to authenticated downloads too.
+- **Tests are offline**: a loopback `TcpListener` stub serves 200/401/403/500
+  and the test asserts the header the client actually sent; token discovery
+  takes explicit paths so no test mutates the process environment.
+- **Not done, on purpose.** No ungated mirror (needs a repo serving the
+  identical 11 422 650-byte file, and someone to own it) and no `hf-hub`
+  adoption; both remain options on #200's thread. Setting `model.tokenizer` to
+  any copy matching the SHA-256 pin still skips the network entirely.
 
 ## The measured fit envelope is advisory, not enforced (#179, 2026-08-07)
 
