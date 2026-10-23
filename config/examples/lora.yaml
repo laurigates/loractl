@@ -34,6 +34,14 @@ dataset:
   #                            # expect more size-1 batches. See the README.)
   # min_bucket_resolution: 256 # grid only; shortest bucket side, multiple of
   #                            # 16. Defaults to resolution / 2.
+  # Caption dropout (#219; kohya's --caption_dropout_rate):
+  # caption_dropout_rate: 0.05 # per-example probability, per step, that the
+  #                            # caption is replaced by "" so the adapter also
+  #                            # trains the unconditional branch CFG uses.
+  #                            # [0, 1], default 0 (off). Style/regularization
+  #                            # tool; a subject adapter often wants 0. Env:
+  #                            # LORACTL_DATASET__CAPTION_DROPOUT_RATE. One
+  #                            # extra cached conditioning per run.
 
 optim:
   lr: 1.0e-4            # the PEAK rate (what --lr sets)

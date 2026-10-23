@@ -590,6 +590,50 @@ trajectory — is bit-identical.
   consumer reads them, so `tests/lora_metadata_keys.rs` and its omission list
   are unchanged.
 
+## Caption dropout (#219)
+
+`dataset.caption_dropout_rate` (f32, default `0.0`, validated to `[0, 1]` with
+NaN rejected; kohya's `--caption_dropout_rate`) replaces an example's caption
+with the empty string for a step with that probability, so the adapter also
+trains the unconditional branch classifier-free guidance is built from. Without
+it the adapter only ever moves `ε_cond` and a consumer's guidance scale
+multiplies its whole contribution; with it only the *difference* between the
+branches is amplified. It is a style/regularization tool more than a subject
+tool, hence off by default. It is **not** `lora.dropout` (that perturbs the
+model; this perturbs the task).
+
+- **Applied at batch assembly, never at encode time.** Conditioning is
+  stem-keyed and encoded once; baking the decision into it would freeze each
+  example's drop for the whole run — a bug that still trains and converges. The
+  per-stem cache is untouched.
+- **One shared empty entry.** `prepare_dataset` encodes `""` once through the
+  same `encode_caption` closure and caches it as
+  `{fingerprint}.empty.cond.safetensors` (60 MiB on the real model, once per
+  run — not per example). At rate `0.0` nothing is encoded or written, so a
+  default run, and a fully warm encoders-deleted rerun, are exactly what they
+  were. `plan_dataset` finds the entry or errors by name, and refuses an empty
+  entry whose `[1, s, n, d]` differs from any item's.
+- **A pure host-side generator, not `B::seed`.** `CaptionDropout` hashes
+  `(seed, global step, row)`; it has no state, so a resumed run (which restarts
+  at `plan.start_step()`) reproduces the original pattern, the pattern varies
+  across epochs, and the burn RNG stream that lazily-initialized `Param`s
+  materialize against is not perturbed. At rate `0.0` the trainer takes the
+  original `load_batch` path (which draws nothing) — bit-identical default
+  trajectories.
+- **The seam is `ConditioningPolicy`** (`PreparedDataset::load_batch_with`,
+  per-row `ConditioningChoice`, `#[non_exhaustive]`). Per-tag dropout (#220) is
+  a separate knob that needs new conditioning per step rather than a choice
+  between cached tensors; it is out of scope here and plugs in at this seam.
+- **Env/file only**, no CLI flag (`LORACTL_DATASET__CAPTION_DROPOUT_RATE`). The
+  synthetic/MNIST trainers reject a non-zero rate rather than ignore it.
+- **Metadata:** `ss_caption_dropout_rate` is written next to
+  `ss_network_dropout`. No A1111-family consumer reads it, so
+  `tests/lora_metadata_keys.rs` and its omission list are unchanged.
+- Proof: `tests/caption_dropout.rs` (policy purity/rate/variation, cache layout,
+  batch substitution, resume reproduction, and the diffusion loss trajectory
+  changing with a non-zero rate — kill-tested by routing the loop back through
+  `load_batch`).
+
 ## Opt-in loss/LR curve PNG (#215)
 
 A finished run used to leave no visual artifact: the `TrainEvent` stream was

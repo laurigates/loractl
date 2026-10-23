@@ -452,6 +452,14 @@ pub fn build_metadata(facts: &RunFacts<'_>) -> LoraMetadata {
     m.set("ss_network_dim", config.lora.rank.to_string());
     m.set("ss_network_alpha", num32(config.lora.alpha));
     m.set("ss_network_dropout", num32(config.lora.dropout));
+    // kohya's `--caption_dropout_rate` key (#219). Not one A1111 reads (so the
+    // consumer-contract golden is unaffected), but kohya-family tooling and
+    // anyone reproducing a run do — and it is the other dropout knob, so a
+    // header that recorded only the adapter's would misdescribe the run.
+    m.set(
+        "ss_caption_dropout_rate",
+        num32(config.dataset.caption_dropout_rate),
+    );
     // Per-target rank/alpha overrides and the target patterns themselves have
     // no kohya key of their own; kohya's `ss_network_args` is exactly the
     // "arguments this network was built with" slot, so they ride there.

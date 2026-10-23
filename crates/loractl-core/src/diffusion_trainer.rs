@@ -74,7 +74,7 @@ use crate::adapters::{LoraAdapters, build_adapters};
 use crate::config::{
     BackendKind, ModelConfig, ModelVariant, Precision, Quant, TaskKind, TrainConfig,
 };
-use crate::dataset::{plan_dataset, prepare_dataset};
+use crate::dataset::{CaptionDropout, plan_dataset, prepare_dataset};
 use crate::event::{PhaseCounters, PhaseName, TrainEvent};
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
@@ -320,6 +320,7 @@ impl Trainer for DiffusionTrainer {
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf> {
         // Validate before any backend work, identically on every backend.
         config.optim.validate(config.steps)?;
+        config.dataset.validate()?;
         if config.task != TaskKind::FlowMatching {
             bail!(
                 "the diffusion trainer trains the rectified-flow objective only; \
@@ -1419,14 +1420,24 @@ where
     if plans.is_empty() {
         bail!("the dataset produced no batches");
     }
+    // #219: `None` at the default rate, in which case the step loop takes the
+    // original `load_batch` path and nothing is drawn at all. A host-side,
+    // stateless generator keyed by `(seed, global step, row)` — never
+    // `B::seed`, so the burn RNG stream (and every lazily-initialized `Param`
+    // against it) is untouched, and a resumed run reproduces the pattern.
+    let caption_dropout = CaptionDropout::from_config(&config.dataset, config.seed)?;
     emit_phase(
         sink,
         PhaseName::Dataset,
         format!(
-            "{} examples, {} buckets, {} batches per epoch",
+            "{} examples, {} buckets, {} batches per epoch{}",
             prepared.entries.len(),
             prepared.buckets.len(),
-            plans.len()
+            plans.len(),
+            match &caption_dropout {
+                Some(d) => format!(", caption dropout {}", d.rate()),
+                None => String::new(),
+            }
         ),
     );
 
@@ -1649,9 +1660,14 @@ where
         // Deliberately before the `FORWARD_START` probe boundary so the
         // retention ledger keeps measuring the forward, not the load.
         let plan = &plans[((step - 1) as usize) % plans.len()];
-        let batch = prepared
-            .load_batch::<AB>(plan, &device)
-            .with_context(|| format!("loading the batch for step {step}"))?;
+        let batch = match &caption_dropout {
+            // The substitution is chosen per row from the GLOBAL step, so a
+            // resumed run (which starts its counter at `start_step`) draws
+            // exactly the pattern the uninterrupted run would have.
+            Some(dropout) => prepared.load_batch_with::<AB>(plan, step, dropout, &device),
+            None => prepared.load_batch::<AB>(plan, &device),
+        }
+        .with_context(|| format!("loading the batch for step {step}"))?;
         let [b, z, h, w] = batch.latents.dims();
         let flat = z * h * w;
         let (gh, gw) = (h / patch, w / patch);

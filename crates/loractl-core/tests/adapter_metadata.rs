@@ -125,6 +125,7 @@ fn config() -> TrainConfig {
             no_upscale: false,
             bucketing: BucketMode::Aspects,
             min_bucket_resolution: None,
+            caption_dropout_rate: 0.0,
         },
         optim: OptimConfig {
             lr: 1e-4,
@@ -244,6 +245,7 @@ fn builder_derives_the_training_record() {
     assert_eq!(meta.get("ss_network_dim"), Some("16"));
     assert_eq!(meta.get("ss_network_alpha"), Some("8"));
     assert_eq!(meta.get("ss_network_dropout"), Some("0"));
+    assert_eq!(meta.get("ss_caption_dropout_rate"), Some("0"));
     assert_eq!(
         nested(&meta, "ss_network_args"),
         serde_json::json!({"targets": [{"pattern": "blocks\\..*attn", "rank": 32}]}),
@@ -357,12 +359,14 @@ fn non_exact_f32_config_values_keep_f32_precision() {
     let mut config = config();
     config.lora.alpha = 12.8;
     config.lora.dropout = 0.05;
+    config.dataset.caption_dropout_rate = 0.1;
     config.lora.targets[0].alpha = Some(2.7);
     let entries = entries();
     let meta = metadata_for(&config, &entries);
 
     assert_eq!(meta.get("ss_network_alpha"), Some("12.8"));
     assert_eq!(meta.get("ss_network_dropout"), Some("0.05"));
+    assert_eq!(meta.get("ss_caption_dropout_rate"), Some("0.1"));
     assert_eq!(
         nested(&meta, "ss_network_args")["targets"][0]["alpha"].to_string(),
         "2.7",

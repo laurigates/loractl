@@ -60,6 +60,12 @@ dataset:
   #                            # more size-1 batches. See the README table.)
   # min_bucket_resolution: 256 # grid only; shortest bucket side, multiple of
   #                            # 16. Defaults to resolution / 2.
+  # caption_dropout_rate: 0.05 # (#219) per-example probability, per step, that
+  #                            # the caption becomes "" so the adapter also
+  #                            # trains the unconditional branch CFG uses.
+  #                            # [0, 1], default 0 (off); style adapters more
+  #                            # than subject adapters. One extra cached
+  #                            # conditioning per run.
 
 lora:
   rank: 16

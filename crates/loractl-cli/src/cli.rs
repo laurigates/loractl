@@ -1653,4 +1653,43 @@ mod tests {
             Ok(())
         });
     }
+
+    /// #219: `dataset.caption_dropout_rate` ships with no CLI flag, so the
+    /// file and env layers are its whole override surface. Pins the default
+    /// (every pre-#219 config on disk), file < env precedence for the same
+    /// key, and that an out-of-range value is a clear error at validation.
+    #[test]
+    fn env_layer_reaches_caption_dropout_rate() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.dataset.caption_dropout_rate, 0.0);
+
+            jail.create_file(
+                "dropout.yaml",
+                "steps: 10\n\
+                 model:\n  base: synthetic\n\
+                 dataset:\n  path: unused\n  caption_dropout_rate: 0.1\n\
+                 lora: {}\n",
+            )?;
+            let config = resolve_config(&cmd_for("dropout.yaml")).expect("resolve");
+            assert_eq!(config.dataset.caption_dropout_rate, 0.1);
+
+            jail.set_env("LORACTL_DATASET__CAPTION_DROPOUT_RATE", "0.4");
+            let config = resolve_config(&cmd_for("dropout.yaml")).expect("resolve");
+            assert_eq!(
+                config.dataset.caption_dropout_rate, 0.4,
+                "env beats the file for the same key"
+            );
+
+            jail.set_env("LORACTL_DATASET__CAPTION_DROPOUT_RATE", "1.5");
+            let config = resolve_config(&cmd_for("dropout.yaml")).expect("resolve");
+            let err = config.dataset.validate().expect_err("out of range");
+            assert!(
+                format!("{err:#}").contains("caption_dropout_rate"),
+                "{err:#}"
+            );
+            Ok(())
+        });
+    }
 }

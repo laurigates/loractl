@@ -496,6 +496,55 @@ pub struct DatasetConfig {
     /// Env override: `LORACTL_DATASET__MIN_BUCKET_RESOLUTION` (no CLI flag).
     #[serde(default)]
     pub min_bucket_resolution: Option<u32>,
+
+    /// Per-example probability, in `[0, 1]`, that an example's caption is
+    /// replaced by the **empty string** for one step (#219; kohya's
+    /// `--caption_dropout_rate`). Default `0.0` = off, and off is exactly the
+    /// pre-#219 behaviour: no empty-caption encode, no RNG, bit-identical
+    /// trajectories.
+    ///
+    /// This is *task* perturbation, not [`LoraConfig::dropout`]'s *model*
+    /// perturbation: on a dropped step the objective becomes "predict this
+    /// image given nothing", so the adapter also learns the unconditional
+    /// branch classifier-free guidance is built from. Without it an adapter
+    /// only ever moves `ε_cond`, and a consumer's guidance scale `w`
+    /// multiplies the adapter's whole contribution; with it, only the
+    /// *difference* between the branches is amplified. It is a style /
+    /// regularization tool more than a subject tool (a subject adapter often
+    /// wants the concept confined to the conditional branch) — hence off.
+    ///
+    /// Applied at **batch assembly**, never baked into the per-stem
+    /// conditioning cache (that would freeze each example's decision for the
+    /// whole run). The drop pattern is a pure function of
+    /// `(seed, global step, row)` from a dedicated host-side generator, so a
+    /// resumed run reproduces it and the burn backend's RNG stream is
+    /// untouched. Costs one extra cached conditioning tensor per run.
+    ///
+    /// Rejected unless finite and in `[0, 1]`
+    /// ([`validate`](Self::validate)); rejected by the synthetic/MNIST
+    /// trainers, which have no captions to drop. Whole-caption dropout does
+    /// **not** decorrelate co-occurring tags — that is per-tag dropout (#220).
+    ///
+    /// Env override: `LORACTL_DATASET__CAPTION_DROPOUT_RATE` (no CLI flag).
+    #[serde(default)]
+    pub caption_dropout_rate: f32,
+}
+
+impl DatasetConfig {
+    /// Reject a `caption_dropout_rate` outside `[0, 1]` (NaN included —
+    /// `!(0.0..=1.0).contains(&NaN)` is true, so a NaN cannot slip through a
+    /// plain `<`/`>` pair). Called by every trainer before any backend work
+    /// and again by the dataset entry points, which are `pub`.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(0.0..=1.0).contains(&self.caption_dropout_rate) {
+            anyhow::bail!(
+                "dataset.caption_dropout_rate = {} must be a probability in [0, 1] \
+                 (0 disables caption dropout)",
+                self.caption_dropout_rate
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for DatasetConfig {
@@ -511,6 +560,7 @@ impl Default for DatasetConfig {
             no_upscale: false,
             bucketing: BucketMode::default(),
             min_bucket_resolution: None,
+            caption_dropout_rate: 0.0,
         }
     }
 }

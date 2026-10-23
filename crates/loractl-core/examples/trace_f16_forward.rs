@@ -64,6 +64,7 @@ mod wgpu_main {
                 no_upscale: false,
                 bucketing: BucketMode::Aspects,
                 min_bucket_resolution: None,
+                caption_dropout_rate: 0.0,
             },
             // Derived, not transcribed: the marker moves whenever the
             // encode path changes (`enc32-t2` — #163's template offsets),
