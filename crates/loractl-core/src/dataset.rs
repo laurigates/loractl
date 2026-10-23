@@ -145,8 +145,9 @@
 //! - **One shared empty entry, not one per example.** [`prepare_dataset`]
 //!   encodes `""` through the same `encode_caption` closure and caches it once,
 //!   fingerprint-keyed, as `{fingerprint}.empty.cond.safetensors` (a name no
-//!   `{stem}.{fingerprint}.cond.safetensors` can equal: the fingerprint always
-//!   ends in a 16-hex hash, never in `empty`). Conditioning is 60 MiB per
+//!   `{stem}.{fingerprint}.cond.safetensors` can equal: equality would force
+//!   the fingerprint to end in `empty`, and every real one ends in an encoder
+//!   tag such as `-t2`). Conditioning is 60 MiB per
 //!   example on the real model, so any per-example variant is a non-starter.
 //!   With the rate at `0.0` nothing is encoded and nothing is written.
 //! - **A dedicated, pure, host-side generator — never `B::seed`.**
