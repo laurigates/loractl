@@ -38,7 +38,8 @@
 //! `MODEL` line prints the window it used so a reader can compare.
 //!
 //! Only the decode is inside the timer. Digesting each buffer (the identity
-//! check below) and dropping it happen outside it, in both arms alike.
+//! check below) and dropping it happen outside it, in both arms alike, and every
+//! input file is read once beforehand so both arms run against a warm page cache.
 //!
 //! ## Output
 //!
@@ -53,14 +54,13 @@
 //!   absolute per-image figure the issue asks for (serial minus window; negative
 //!   when the pool costs more than it saves), with the ratio beside it rather
 //!   than instead of it.
-//! - `SANITY …` per arm — each arm is timed over N and over 2N images (the list
-//!   repeated), and total time must roughly double. An elided decode would not.
+//! - `SANITY …` per arm — each arm is timed over one pass and over two more
+//!   (summed), and total time must roughly double. An elided decode would not.
+//!   The doubling is repeated passes rather than a concatenated list so the
+//!   `window` arm's tail window cannot skew it when N is not a multiple of the
+//!   window.
 //!
-//! A `sanity=SUSPECT` arm voids that arm's timing. One benign cause on the
-//! `window` arm: when N is not a multiple of the window, the N-image pass ends
-//! in a short tail window that the 2N pass amortizes differently, so the ratio
-//! drifts off 2 without any work having been elided — pick N as a multiple of
-//! the printed `window=` (the default 16 is, for 1, 2, 4, 8 or 16 threads).
+//! A `sanity=SUSPECT` arm voids that arm's timing.
 //! The probe also fails (exit non-zero) if the two arms do not produce
 //! byte-identical buffers, or if any buffer is the wrong length or fails
 //! `plausible` (all zero / non-finite) — a faster number from a different
@@ -314,15 +314,34 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
 }
 
-/// Time one arm over `paths` and over `paths` repeated twice, returning the
-/// N-image pass (whose digests are checked) and its 2x sanity verdict.
+/// Time one arm over `paths`, then twice more over the same `paths`, returning
+/// the first pass (whose digests are checked) and the 2x sanity verdict.
+///
+/// The 2N figure is **two summed N-passes, not one pass over the list
+/// concatenated with itself**. The windowed arm decodes in chunks of `window`,
+/// so a concatenated list has a different tail-window shape from the N list
+/// whenever N is not a multiple of the window (12 threads, N = 16: two
+/// chunk-times against three, ratio 1.5), and `Sanity` would call a healthy
+/// arm `SUSPECT`. Summing whole passes keeps the shape identical by
+/// construction, so the ratio is ~2 unless work was elided.
 fn timed_arm(run: &dyn Fn(&[PathBuf]) -> Result<Arm>, paths: &[PathBuf]) -> Result<(Arm, Sanity)> {
     let n = paths.len() as u32;
     let one = run(paths)?;
-    let doubled: Vec<PathBuf> = paths.iter().chain(paths).cloned().collect();
-    let two = run(&doubled)?;
-    let sanity = Sanity::from_avgs(one.elapsed / n, two.elapsed / (2 * n));
+    let two = run(paths)?.elapsed + run(paths)?.elapsed;
+    let sanity = Sanity::from_avgs(one.elapsed / n, two / (2 * n));
     Ok((one, sanity))
+}
+
+/// Read every file once, untimed, so neither arm pays a cold page cache for
+/// the files the other already touched. Returns the bytes read.
+fn warm_page_cache(paths: &[PathBuf]) -> Result<u64> {
+    let mut bytes = 0u64;
+    for path in paths {
+        bytes += std::fs::read(path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .len() as u64;
+    }
+    Ok(bytes)
 }
 
 /// Everything the probe prints, as lines, so tests can read them.
@@ -330,8 +349,11 @@ fn probe(paths: &[PathBuf], bucket: Bucket, source: &str, window: usize) -> Resu
     ensure!(!paths.is_empty(), "no images to decode");
     let n = paths.len();
 
-    // Warm-up, untimed: page cache for the files, the rayon pool's threads, and
-    // the allocator. Without it the first arm pays for all three.
+    // Warm-up, untimed: page cache for EVERY file (the serial arm is timed
+    // first, so warming only one window's worth would hand it the cold reads
+    // for the rest whenever N > window), the rayon pool's threads, and the
+    // allocator. Without it the first arm pays for all three.
+    warm_page_cache(paths)?;
     run_windowed(&paths[..window.min(n)], bucket, window)?;
     run_serial(&paths[..1], bucket)?;
 
@@ -675,5 +697,59 @@ mod tests {
         );
         assert!(delta.contains("saved_total_ms=") && delta.contains("speedup_x="));
         assert_eq!(lines.iter().filter(|l| l.starts_with("SANITY ")).count(), 2);
+    }
+
+    /// The 2x sanity pass must not depend on the window's tail shape. A fake
+    /// arm that costs one unit per chunk of 12 models the windowed arm on a
+    /// 12-thread box with N = 16 (2 chunks) — a concatenated 2N list would be
+    /// 3 chunks and read as 1.5.
+    #[test]
+    fn the_sanity_ratio_is_independent_of_the_tail_window() {
+        let paths: Vec<PathBuf> = (0..16).map(|i| PathBuf::from(format!("{i}.jpg"))).collect();
+        let chunked = |p: &[PathBuf]| -> Result<Arm> {
+            Ok(Arm {
+                elapsed: Duration::from_millis(10) * p.len().div_ceil(12) as u32,
+                digests: Vec::new(),
+            })
+        };
+        let (_, sanity) = timed_arm(&chunked, &paths).unwrap();
+        assert!(sanity.ok, "{sanity}");
+        assert!((sanity.ratio - 2.0).abs() < 1e-9, "{sanity}");
+    }
+
+    /// Teeth: an arm whose repeat passes cost nothing (work elided / memoized)
+    /// must still read as SUSPECT.
+    #[test]
+    fn the_sanity_pass_still_catches_elided_work() {
+        let paths: Vec<PathBuf> = vec![PathBuf::from("a.jpg"); 4];
+        let calls = std::cell::Cell::new(0);
+        let memoized = |_: &[PathBuf]| -> Result<Arm> {
+            calls.set(calls.get() + 1);
+            let first = calls.get() == 1;
+            Ok(Arm {
+                elapsed: if first {
+                    Duration::from_millis(40)
+                } else {
+                    Duration::from_millis(1)
+                },
+                digests: Vec::new(),
+            })
+        };
+        let (_, sanity) = timed_arm(&memoized, &paths).unwrap();
+        assert!(!sanity.ok, "{sanity}");
+    }
+
+    #[test]
+    fn warming_reads_every_file_and_fails_on_a_missing_one() {
+        let scratch = Scratch::new("decode-probe-test-warm").unwrap();
+        let paths = write_synthetic(&scratch.0, 3, (32, 24)).unwrap();
+        let want: u64 = paths
+            .iter()
+            .map(|p| std::fs::metadata(p).unwrap().len())
+            .sum();
+        assert_eq!(warm_page_cache(&paths).unwrap(), want);
+        let mut missing = paths;
+        missing.push(scratch.0.join("absent.jpg"));
+        assert!(warm_page_cache(&missing).is_err());
     }
 }
