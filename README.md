@@ -98,6 +98,9 @@ with `just install <features>` or `just install cpu`. On a Linux/NVIDIA host
 that lacks the CUDA toolkit, `just install-cuda` installs it from NVIDIA's
 official apt repo (toolkit only, never the driver).
 
+Beyond the backends, one opt-in CLI feature exists: `plot` (see [Loss / LR
+curve](#loss--lr-curve-opt-in-plot-feature)).
+
 A compiled-in feature only makes a backend *available* — the backend a run
 actually uses is selected at runtime by `compute.backend` (see [Compute
 backend](#compute-backend)), and selecting one the binary wasn't built with
@@ -128,10 +131,37 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   explicitly (any `checkpoint-N.safetensors` works), `--no-resume` forces a
   fresh start, and an artifact whose `__metadata__` says its run did not finish
   is refused by name unless `--resume-unfinished` is passed.
+- **Learning-rate schedules** (#212). `optim.lr` is the peak rate; an optional
+  `optim.schedule` block adds linear warmup and a `linear` / `cosine` /
+  `exponential` / `step` decay (`constant` is the default, so existing configs
+  are unchanged — see `config/examples/lora.yaml`). The rate is a pure function
+  of the global step, so a resumed run continues on the curve rather than
+  restarting its warmup; each `step` event carries the rate that was applied.
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box
   convergence test. `just test-mnist` adds an opt-in real-MNIST accuracy proof.
+
+### Loss / LR curve (opt-in `plot` feature)
+
+A finished run normally leaves no visual record — the `TrainEvent` stream is
+rendered live and gone. Build the CLI with the `plot` feature and `loractl train`
+also writes **`<output.dir>/<output.name>.curve.png`** beside the adapter (same
+stem) at the end of the run: the loss series on top, the learning rate beneath it (flat
+today; it moves once an LR schedule lands, #212), both against step.
+
+```
+cargo install --path crates/loractl-cli --features plot      # or: just install wgpu,plot
+```
+
+Off by default so the stock build stays small. It is a renderer over the same
+event stream as the progress bar (core is untouched), pure Rust — `plotters`
+with an embedded font, no system freetype/fontconfig. A failed plot is logged
+as a warning and **never fails the run**: the adapter already exists by then.
+It is only written when the run reaches `Finished`, so an aborted run leaves
+no curve. A resumed run plots only the steps it ran (its x axis starts at the
+resume step), and steps with a NaN/inf loss are omitted with a warning saying
+how many. `just lint-plot` / `just test-plot` cover it in CI.
 
 ### Sampling & adapter I/O
 

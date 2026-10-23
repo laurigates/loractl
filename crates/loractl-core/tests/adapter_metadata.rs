@@ -129,6 +129,7 @@ fn config() -> TrainConfig {
         optim: OptimConfig {
             lr: 1e-4,
             weight_decay: 0.01,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: PathBuf::from("output"),
@@ -267,6 +268,10 @@ fn builder_derives_the_training_record() {
     );
     assert_eq!(meta.get("ss_learning_rate"), Some("0.0001"));
     assert_eq!(meta.get("ss_unet_lr"), Some("0.0001"));
+    // #212: `ss_learning_rate` is the PEAK; the default config is a constant
+    // schedule with no warmup, and says so (kohya's key names).
+    assert_eq!(meta.get("ss_lr_scheduler"), Some("constant"));
+    assert_eq!(meta.get("ss_lr_warmup_steps"), Some("0"));
     assert_eq!(meta.get("ss_text_encoder_lr"), Some("0.0"));
     assert_eq!(meta.get("ss_max_train_steps"), Some("10"));
     assert_eq!(meta.get("ss_seed"), Some("7"));
@@ -363,6 +368,40 @@ fn non_exact_f32_config_values_keep_f32_precision() {
         "2.7",
         "the JSON number must render at f32 precision too"
     );
+}
+
+#[test]
+fn a_decaying_schedule_is_recorded_with_the_peak_lr() {
+    use loractl_core::config::{ScheduleConfig, ScheduleKind};
+    let mut config = config();
+    config.optim.schedule = ScheduleConfig {
+        kind: ScheduleKind::Cosine,
+        warmup_steps: 4,
+        ..ScheduleConfig::default()
+    };
+    let entries = entries();
+    let meta = metadata_for(&config, &entries);
+    assert_eq!(meta.get("ss_lr_scheduler"), Some("cosine"));
+    assert_eq!(meta.get("ss_lr_warmup_steps"), Some("4"));
+    assert_eq!(
+        meta.get("ss_learning_rate"),
+        Some("0.0001"),
+        "the learning-rate keys stay the PEAK rate"
+    );
+}
+
+#[test]
+fn constant_after_warmup_uses_kohyas_name() {
+    use loractl_core::config::ScheduleConfig;
+    let mut config = config();
+    config.optim.schedule = ScheduleConfig {
+        warmup_steps: 3,
+        ..ScheduleConfig::default()
+    };
+    let entries = entries();
+    let meta = metadata_for(&config, &entries);
+    assert_eq!(meta.get("ss_lr_scheduler"), Some("constant_with_warmup"));
+    assert_eq!(meta.get("ss_lr_warmup_steps"), Some("3"));
 }
 
 #[test]

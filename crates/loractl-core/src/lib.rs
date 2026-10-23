@@ -93,6 +93,7 @@ pub mod qwen3vl;
 pub mod qwen_vae;
 pub mod resume;
 pub mod sample;
+pub mod schedule;
 pub mod train;
 pub mod training_adapter;
 
@@ -101,7 +102,7 @@ pub use bench::{StepBench, StepWork};
 pub use burn_trainer::BurnTrainer;
 pub use config::{
     BackendKind, BucketMode, ComputeConfig, FlowConfig, MetadataConfig, ModelVariant, Precision,
-    Quant, ResumeConfig, ShiftMode, TaskKind, TrainConfig,
+    Quant, ResumeConfig, ScheduleConfig, ScheduleKind, ShiftMode, TaskKind, TrainConfig,
 };
 pub use diffusion_trainer::{CastFloatsAdapter, DiffusionTrainer};
 pub use event::{PhaseCounters, PhaseName, TrainEvent};

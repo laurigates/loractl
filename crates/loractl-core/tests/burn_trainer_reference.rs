@@ -131,6 +131,7 @@ fn config(out_dir: &Path, weight_decay: f64) -> TrainConfig {
         optim: OptimConfig {
             lr: LR,
             weight_decay,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out_dir.to_path_buf(),

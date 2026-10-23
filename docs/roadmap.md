@@ -405,7 +405,9 @@ are the *same* derived value rather than two literals that can disagree.
   silently, a derived one fails loud. **That golden has to be regenerated
   before this is proven** (`just qwen3vl-real-reference && just
   test-qwen3vl-real`, network + GPU box): it gained `prefix_len`/`suffix_len`
-  fields the old file does not carry.
+  fields the old file does not carry. A stale local golden now fails with a
+  "regenerate with `just qwen3vl-real-reference`" message instead of a bare
+  serde error (#203, offline half); the run itself is still outstanding.
 - **The encoder cache fingerprint was bumped** (`enc32` → `enc32-t2`,
   `diffusion_trainer.rs::encoder_fingerprint`) because the change provably
   moves the conditioning the tiny path produces while the cache reader
@@ -422,6 +424,42 @@ Nothing enforces that — `tokenize` encodes the joint string while `prefix_len`
 is measured on the prefix alone. It holds for every tokenizer in the repo
 (captions are trimmed and `PROMPT_PREFIX` ends in a newline that closes the
 pre-tokenizer), and it is recorded at the two places a reader would ask.
+
+## The tokenizer fallback authenticates and fails fast (#200, 2026-08-09)
+
+The ComfyUI layout ships no `tokenizer.json`, so `hf::fetch_qwen3vl_tokenizer`
+pulls it from `krea/Krea-2-Raw` — which is **gated** (`gated: "auto"`; verified
+against the HF API 2026-08-07), not the "ungated" repo the docs claimed. An
+anonymous GET is a 401; a valid token without accepted terms is a 403. The
+failure was expensive because the tokenizer was first needed at the first
+caption encode, after the 4.9 GiB text encoder had loaded (~9 minutes per
+attempt). Only a warm `$HF_HOME/loractl/` cache, which predates the gating,
+hid it.
+
+- **Fail fast.** `encode_phase` resolves the tokenizer on the first cache
+  *miss*, before the VAE or the text encoder is read. It stays lazy on
+  purpose: a fully warm cache still needs no tokenizer and no network (pinned
+  by the existing encoders-deleted warm-rerun test).
+  `an_unresolvable_tokenizer_fails_before_any_checkpoint_is_loaded` pins the
+  order (no `Load` phase may precede the error) and was kill-tested by
+  removing the call.
+- **Authenticate.** `hf::download` sends `Authorization: Bearer` from
+  `HF_TOKEN` (or legacy `HUGGING_FACE_HUB_TOKEN`), else `HF_TOKEN_PATH`, else
+  `$HF_HOME/token`, else `huggingface/token` under `$XDG_CACHE_HOME` or
+  `~/.cache` (the official client's lookup order). The
+  header is not forwarded to the CDN host the file redirects to
+  (`RedirectAuthHeaders::Never`, pinned by a two-host loopback test), and the
+  token never appears in an error. 401
+  and 403 map to distinct, actionable messages (accept the terms / set
+  `HF_TOKEN` / set `model.tokenizer`). The pinned length and SHA-256 are
+  unchanged and apply to authenticated downloads too.
+- **Tests are offline**: a loopback `TcpListener` stub serves 200/401/403/500
+  and the test asserts the header the client actually sent; token discovery
+  takes explicit paths so no test mutates the process environment.
+- **Not done, on purpose.** No ungated mirror (needs a repo serving the
+  identical 11 422 650-byte file, and someone to own it) and no `hf-hub`
+  adoption; both remain options on #200's thread. Setting `model.tokenizer` to
+  any copy matching the SHA-256 pin still skips the network entirely.
 
 ## The measured fit envelope is advisory, not enforced (#179, 2026-08-07)
 
@@ -534,6 +572,66 @@ alternatives they were chosen over — are
 - **The synthetic/`BurnTrainer` path has no resume, deliberately** — see the
   comment in its training loop for the three reasons, pinned by
   `tests/resume.rs::the_synthetic_trainer_does_not_resume`.
+
+## Learning-rate schedules (#212)
+
+`optim.lr` used to be applied unchanged for a whole run. `optim.schedule`
+(`crates/loractl-core/src/schedule.rs`) adds warmup plus a `constant` (default),
+`linear`, `cosine`, `exponential` or `step` curve, validated before any backend
+work and defaulting to constant so every existing config — and every pinned loss
+trajectory — is bit-identical.
+
+- **A pure function of the 1-based global step**, not a stateful scheduler. That
+  is what makes resume correct with nothing to persist: the diffusion loop
+  resumes at `plan.start_step()` and evaluates the same function at the same
+  global step. `burn::lr_scheduler` was considered and not used for this reason
+  (its schedulers are `.step()`ped iterators, so a resume would need its
+  position saved alongside the optimizer sidecar). Pinned by
+  `tests/lr_schedule.rs::a_resumed_run_continues_on_the_curve`, which fails under
+  a sabotaged loop-relative step.
+- **`steps` is the decay horizon**, consistent with its resume meaning (a
+  total). Resuming with a different `steps` therefore stretches the decay.
+- **`--lr` stays the peak.** The schedule has no CLI flags; env overrides work
+  (`LORACTL_OPTIM__SCHEDULE__KIND`, `..__WARMUP_STEPS`, ...).
+- **`TrainEvent::Step.lr` is the applied rate** (no wire-shape change).
+  `ss_learning_rate`/`ss_unet_lr` remain the peak; `ss_lr_scheduler`
+  (`constant_with_warmup` for flat-after-warmup) and `ss_lr_warmup_steps` are
+  written in kohya's vocabulary. No A1111-family
+  consumer reads them, so `tests/lora_metadata_keys.rs` and its omission list
+  are unchanged.
+
+## Opt-in loss/LR curve PNG (#215)
+
+A finished run used to leave no visual artifact: the `TrainEvent` stream was
+rendered live (indicatif bar, SSE) and gone, so comparing two runs meant reading
+numbers out of logs. `loractl-cli`'s opt-in **`plot`** feature
+(`crates/loractl-cli/src/plot.rs`) adds a second renderer over the same stream:
+it accumulates `(step, loss, lr)` from `TrainEvent::Step`, remembers the adapter
+path from `TrainEvent::Finished`, and — after the trainer returns, so its log
+lines cannot tear the progress bar — writes `<adapter stem>.curve.png` beside
+the adapter (`<output.dir>/<output.name>.curve.png`): loss above, learning rate
+below. With `optim.schedule` (#212, above) the LR panel shows the applied
+warmup/decay curve; under the default constant schedule it is a flat line.
+
+- **Core is untouched.** The recorder lives in the CLI beside `render_event`;
+  `loractl-core` gains no plotting dependency and no new event.
+- **Pure Rust, off by default.** `plotters` with only the bitmap backend and the
+  `ab_glyph` font path (`default-features = false`; the default `ttf` feature
+  would pull system freetype/fontconfig). The one font is embedded —
+  `assets/fonts/DejaVuSansMono.ttf`, unmodified, with its Bitstream Vera license
+  beside it. The new crates (plotters, png, image, ab_glyph, ttf-parser) are all
+  MIT/Apache-compatible and pass `cargo deny` with no allow-list change;
+  `ttf-parser` carries a RustSec *unmaintained* advisory (RUSTSEC-2026-0192), a
+  warning that does not fail `cargo audit`, reachable only through this feature.
+- **Never fails a run.** `finish` logs a `tracing` warning and swallows a
+  render/write error; the fallible `write_to` is what the offline tests drive.
+  Empty, single-point, all-NaN and out-of-order series produce a valid image
+  rather than panicking; non-finite steps are omitted and counted in a warning.
+- **Gated.** `just lint-plot` (CI `feature-lints`) and `just test-plot` (CI
+  `test` job) cover the feature.
+- **`rerun` is a separate, later evaluation** (live scalars plus validation
+  samples on one timeline) and is deliberately not bundled — it is a far larger
+  dependency that has to earn its place.
 
 ## A note on the text side
 

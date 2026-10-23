@@ -28,8 +28,9 @@ just fmt-check && just lint && just test
 - Supply-chain gates: `just audit` (RustSec advisories) and `just deny`
   (licenses/bans/sources). CI additionally runs `feature-lints` over the
   opt-in `mnist` / `gpt2-real` / `wgpu` paths — mirror those locally with
-  `just lint-mnist` / `lint-gpt2-real` / `lint-wgpu` when you touch a
-  feature-gated path.
+  `just lint-mnist` / `lint-gpt2-real` / `lint-wgpu` / `lint-plot` when you
+  touch a feature-gated path. The CLI's opt-in `plot` feature (#215) also has
+  offline tests: `just test-plot`.
 
 Features are **offline by default**: `mnist`, `gpt2-real`, and `wgpu` are
 opt-in and never part of the default build or `just test`.

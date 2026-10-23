@@ -397,10 +397,12 @@ pub fn init_telemetry(verbosity: Verbosity) -> sentry::ClientInitGuard {
     // GlitchTip speaks the Sentry ingest protocol; the DSN is read from the
     // `SENTRY_DSN` environment variable. `release` tags events with the crate
     // version so issues group by build.
-    let guard = sentry::init(sentry::ClientOptions {
-        release: sentry::release_name!(),
-        ..Default::default()
-    });
+    // `ClientOptions` is `#[non_exhaustive]` since sentry 0.49, so a struct
+    // literal (even with `..Default::default()`) no longer compiles outside the
+    // crate; assign the field on a default instead.
+    let mut options = sentry::ClientOptions::default();
+    options.release = sentry::release_name!();
+    let guard = sentry::init(options);
 
     let filter = match verbosity {
         Verbosity::Env(directives) => EnvFilter::new(directives),
@@ -811,9 +813,25 @@ fn train(cmd: TrainCmd) -> Result<()> {
     // protects. Routing on `model.base` lives in core (`select_trainer`) so
     // the CLI and the API cannot drift apart.
     let mut trainer = select_trainer(&config);
+
+    // Opt-in (`--features plot`, #215): a second renderer over the same event
+    // stream that accumulates (step, loss, lr) and, once the run has finished,
+    // writes `<adapter stem>.curve.png` beside the adapter. Its failures are
+    // logged and swallowed — the adapter already exists by then.
+    #[cfg(feature = "plot")]
+    let mut curve = crate::plot::CurveRecorder::new();
+
     let adapter = trainer.train(&config, &mut |event| {
+        // Observe before `render_event` consumes the event.
+        #[cfg(feature = "plot")]
+        curve.observe(&event);
         render_event(&bar, &mut phase_log, event);
     })?;
+
+    // After the trainer returns, not from the callback: the progress bar has
+    // finished, so the recorder's `tracing` lines cannot tear a live bar.
+    #[cfg(feature = "plot")]
+    curve.finish();
 
     println!("adapter: {}", adapter.display());
     Ok(())
@@ -965,6 +983,94 @@ mod tests {
                 std::path::PathBuf::from("/tmp/from-env"),
                 "`__` must split into the nested output.dir key"
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn optim_schedule_defaults_to_constant_when_the_block_is_absent() {
+        // #212: existing configs (no `schedule:`) must keep the bare `optim.lr`.
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(
+                config.optim.schedule,
+                loractl_core::ScheduleConfig::default()
+            );
+            assert_eq!(config.optim.lr_at(7, 10), 0.0001);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn optim_schedule_layers_file_then_env_and_the_lr_flag_stays_the_peak() {
+        // #212: `LORACTL_OPTIM__SCHEDULE__*` splits on `__` like every nested
+        // key; env beats the file per field (untouched fields survive); and
+        // `--lr` replaces the PEAK, leaving the schedule shape alone.
+        use loractl_core::ScheduleKind;
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!(
+                    "{YAML}  schedule:\n    kind: cosine\n    warmup_steps: 3\n    min_lr: 0.00001\n"
+                ),
+            )?;
+            let from_file = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            let s = &from_file.optim.schedule;
+            assert_eq!(s.kind, ScheduleKind::Cosine);
+            assert_eq!((s.warmup_steps, s.min_lr), (3, 0.00001));
+
+            jail.set_env("LORACTL_OPTIM__SCHEDULE__KIND", "linear");
+            jail.set_env("LORACTL_OPTIM__SCHEDULE__WARMUP_STEPS", "5");
+            jail.set_env("LORACTL_OPTIM__SCHEDULE__GAMMA", "0.5");
+            let from_env = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            let s = &from_env.optim.schedule;
+            assert_eq!(s.kind, ScheduleKind::Linear, "env beats the file");
+            assert_eq!(s.warmup_steps, 5, "an env integer reaches a u64 field");
+            assert_eq!(s.min_lr, 0.00001, "untouched fields keep the file value");
+            assert_eq!(s.gamma, Some(0.5), "env can set an absent Option field");
+
+            let mut cmd = cmd_for("config.yaml");
+            cmd.lr = Some(0.001);
+            let flagged = resolve_config(&cmd).expect("resolve");
+            assert_eq!(flagged.optim.lr, 0.001);
+            assert_eq!(flagged.optim.schedule, from_env.optim.schedule);
+            assert_eq!(
+                flagged.optim.lr_at(5, 10),
+                0.001,
+                "--lr is the peak: warmup ends exactly at it"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn an_unknown_schedule_kind_is_a_config_error() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!("{YAML}  schedule:\n    kind: poly\n"),
+            )?;
+            let err = resolve_config(&cmd_for("config.yaml")).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("unknown lr schedule"),
+                "{err:#}"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn a_misspelled_schedule_key_is_a_config_error_not_silently_ignored() {
+        // #212 review: `warmup:` (for `warmup_steps:`) must not quietly mean
+        // "no warmup" for a whole training run.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!("{YAML}  schedule:\n    kind: cosine\n    warmup: 50\n"),
+            )?;
+            let err = resolve_config(&cmd_for("config.yaml")).unwrap_err();
+            assert!(format!("{err:#}").contains("warmup"), "{err:#}");
             Ok(())
         });
     }
