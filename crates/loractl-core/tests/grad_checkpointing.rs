@@ -62,6 +62,7 @@ fn config(compute: ComputeConfig, out: &TempDir) -> TrainConfig {
         optim: OptimConfig {
             lr: 0.01,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out.0.clone(),

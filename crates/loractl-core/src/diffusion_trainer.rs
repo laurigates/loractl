@@ -315,6 +315,7 @@ pub struct DiffusionTrainer;
 impl Trainer for DiffusionTrainer {
     fn train(&mut self, config: &TrainConfig, sink: &mut dyn FnMut(TrainEvent)) -> Result<PathBuf> {
         // Validate before any backend work, identically on every backend.
+        config.optim.validate(config.steps)?;
         if config.task != TaskKind::FlowMatching {
             bail!(
                 "the diffusion trainer trains the rectified-flow objective only; \
@@ -1612,6 +1613,10 @@ where
     let mmdit_inner = config.compute.grad_checkpointing.then(|| mmdit.valid());
 
     for step in start_step..=total {
+        // #212: the scheduled rate for this GLOBAL step. Pure in `(step, total)`,
+        // so a resumed run (which starts at `plan.start_step()`) is already on
+        // the curve — no warmup restart, no scheduler state to restore.
+        let lr = config.optim.lr_at(step, total);
         // Round-robin over the plans, then materialize THIS batch only: read
         // its cached tensors, upload, use, drop at the end of the iteration
         // (#175). Batch order is unchanged, and the loader draws no RNG, so
@@ -1680,7 +1685,7 @@ where
             sink(TrainEvent::Step {
                 step,
                 loss: loss_value,
-                lr: config.optim.lr,
+                lr,
             });
             grads
         } else {
@@ -1706,7 +1711,7 @@ where
             sink(TrainEvent::Step {
                 step,
                 loss: loss_value,
-                lr: config.optim.lr,
+                lr,
             });
 
             // Loss scaling: backprop S·loss instead of loss. In f16 the
@@ -1749,7 +1754,7 @@ where
         };
 
         if grads_finite {
-            set = optim.step(config.optim.lr, set, grads);
+            set = optim.step(lr, set, grads);
             clean_streak += 1;
             if clean_streak >= SCALE_GROWTH_INTERVAL && loss_scale < MAX_LOSS_SCALE {
                 loss_scale = (loss_scale * 2.0).min(MAX_LOSS_SCALE);

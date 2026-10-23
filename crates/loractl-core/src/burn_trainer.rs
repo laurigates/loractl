@@ -144,6 +144,7 @@ impl Trainer for BurnTrainer {
         // it is compiled once (not per backend arm) and an invalid combination
         // fails identically on every backend: before `B::seed`, before any
         // TrainEvent reaches the sink, before any filesystem I/O.
+        config.optim.validate(config.steps)?;
         if config.task == TaskKind::FlowMatching && config.output.sample_every > 0 {
             anyhow::bail!(
                 "validation sampling (output.sample_every = {}) is classification-specific — \
@@ -462,6 +463,8 @@ fn run_classification<B: AutodiffBackend>(
     let sample_every = config.output.sample_every;
 
     for step in 1..=total {
+        // #212: the scheduled rate for this global step (== `optim.lr` by default).
+        let lr = config.optim.lr_at(step, total);
         let (x, y) = &batches[(step as usize - 1) % batches.len()];
         let logits = model.forward(x.clone());
         let loss = loss_fn.forward(logits, y.clone());
@@ -474,12 +477,12 @@ fn run_classification<B: AutodiffBackend>(
         sink(TrainEvent::Step {
             step,
             loss: loss_value,
-            lr: config.optim.lr,
+            lr,
         });
 
         let grads = GradientsParams::from_grads(loss.backward(), &model);
         // `step` consumes the module and returns a new one — must reassign.
-        model = optim.step(config.optim.lr, model, grads);
+        model = optim.step(lr, model, grads);
 
         let want_checkpoint = step % checkpoint_every == 0;
         let want_sample = sample_every > 0 && step % sample_every == 0;
@@ -589,6 +592,8 @@ fn run_flow_matching<B: AutodiffBackend>(
     let checkpoint_every = config.output.checkpoint_every.max(1);
 
     for step in 1..=total {
+        // #212: the scheduled rate for this global step (== `optim.lr` by default).
+        let lr = config.optim.lr_at(step, total);
         let (input, target) = &batches[(step as usize - 1) % batches.len()];
         let pred = model.forward(input.clone());
         let diff = pred - target.clone();
@@ -601,12 +606,12 @@ fn run_flow_matching<B: AutodiffBackend>(
         sink(TrainEvent::Step {
             step,
             loss: loss_value,
-            lr: config.optim.lr,
+            lr,
         });
 
         let grads = GradientsParams::from_grads(loss.backward(), &model);
         // `step` consumes the module and returns a new one — must reassign.
-        model = optim.step(config.optim.lr, model, grads);
+        model = optim.step(lr, model, grads);
 
         if step % checkpoint_every == 0 {
             let path = config

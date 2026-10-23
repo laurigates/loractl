@@ -99,6 +99,7 @@ fn mnist_lora_converges() {
         optim: OptimConfig {
             lr: 0.005,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out_dir.clone(),

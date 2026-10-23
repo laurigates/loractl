@@ -138,6 +138,12 @@ discriminator. Seven event types come from core's `TrainEvent`:
 verbatim from that test. If this document and that test ever disagree, the
 document has drifted; fix the document.
 
+`step.lr` is the learning rate **applied on that step** — the scheduled rate when
+`optim.schedule` is set (warmup/decay, #212), so a client can plot the curve
+straight from the stream; with the default constant schedule it is `optim.lr` on
+every step. It is a pure function of the global step number, so a resumed run
+reports the same values an uninterrupted one would for those steps.
+
 `phase` reports progress through a long setup or background phase that is not
 an optimization step — the one-time dataset encode, a multi-gigabyte
 checkpoint load, LoRA injection. `detail` is human-readable text for this

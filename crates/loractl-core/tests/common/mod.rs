@@ -85,6 +85,7 @@ pub fn smoke_config(compute: ComputeConfig, tag: &str, steps: u64) -> (TrainConf
         optim: OptimConfig {
             lr: 0.01,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out_dir.clone(),

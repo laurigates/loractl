@@ -525,6 +525,33 @@ alternatives they were chosen over — are
   comment in its training loop for the three reasons, pinned by
   `tests/resume.rs::the_synthetic_trainer_does_not_resume`.
 
+## Learning-rate schedules (#212)
+
+`optim.lr` used to be applied unchanged for a whole run. `optim.schedule`
+(`crates/loractl-core/src/schedule.rs`) adds warmup plus a `constant` (default),
+`linear`, `cosine`, `exponential` or `step` curve, validated before any backend
+work and defaulting to constant so every existing config — and every pinned loss
+trajectory — is bit-identical.
+
+- **A pure function of the 1-based global step**, not a stateful scheduler. That
+  is what makes resume correct with nothing to persist: the diffusion loop
+  resumes at `plan.start_step()` and evaluates the same function at the same
+  global step. `burn::lr_scheduler` was considered and not used for this reason
+  (its schedulers are `.step()`ped iterators, so a resume would need its
+  position saved alongside the optimizer sidecar). Pinned by
+  `tests/lr_schedule.rs::a_resumed_run_continues_on_the_curve`, which fails under
+  a sabotaged loop-relative step.
+- **`steps` is the decay horizon**, consistent with its resume meaning (a
+  total). Resuming with a different `steps` therefore stretches the decay.
+- **`--lr` stays the peak.** The schedule has no CLI flags; env overrides work
+  (`LORACTL_OPTIM__SCHEDULE__KIND`, `..__WARMUP_STEPS`, ...).
+- **`TrainEvent::Step.lr` is the applied rate** (no wire-shape change).
+  `ss_learning_rate`/`ss_unet_lr` remain the peak; `ss_lr_scheduler`
+  (`constant_with_warmup` for flat-after-warmup) and `ss_lr_warmup_steps` are
+  written in kohya's vocabulary. No A1111-family
+  consumer reads them, so `tests/lora_metadata_keys.rs` and its omission list
+  are unchanged.
+
 ## A note on the text side
 
 A smaller optional detour on the *text* side is **SmolLM2-135M** — a modern

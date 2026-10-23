@@ -970,6 +970,79 @@ mod tests {
     }
 
     #[test]
+    fn optim_schedule_defaults_to_constant_when_the_block_is_absent() {
+        // #212: existing configs (no `schedule:`) must keep the bare `optim.lr`.
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(
+                config.optim.schedule,
+                loractl_core::ScheduleConfig::default()
+            );
+            assert_eq!(config.optim.lr_at(7, 10), 0.0001);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn optim_schedule_layers_file_then_env_and_the_lr_flag_stays_the_peak() {
+        // #212: `LORACTL_OPTIM__SCHEDULE__*` splits on `__` like every nested
+        // key; env beats the file per field (untouched fields survive); and
+        // `--lr` replaces the PEAK, leaving the schedule shape alone.
+        use loractl_core::ScheduleKind;
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!(
+                    "{YAML}  schedule:\n    kind: cosine\n    warmup_steps: 3\n    min_lr: 0.00001\n"
+                ),
+            )?;
+            let from_file = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            let s = &from_file.optim.schedule;
+            assert_eq!(s.kind, ScheduleKind::Cosine);
+            assert_eq!((s.warmup_steps, s.min_lr), (3, 0.00001));
+
+            jail.set_env("LORACTL_OPTIM__SCHEDULE__KIND", "linear");
+            jail.set_env("LORACTL_OPTIM__SCHEDULE__WARMUP_STEPS", "5");
+            jail.set_env("LORACTL_OPTIM__SCHEDULE__GAMMA", "0.5");
+            let from_env = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            let s = &from_env.optim.schedule;
+            assert_eq!(s.kind, ScheduleKind::Linear, "env beats the file");
+            assert_eq!(s.warmup_steps, 5, "an env integer reaches a u64 field");
+            assert_eq!(s.min_lr, 0.00001, "untouched fields keep the file value");
+            assert_eq!(s.gamma, Some(0.5), "env can set an absent Option field");
+
+            let mut cmd = cmd_for("config.yaml");
+            cmd.lr = Some(0.001);
+            let flagged = resolve_config(&cmd).expect("resolve");
+            assert_eq!(flagged.optim.lr, 0.001);
+            assert_eq!(flagged.optim.schedule, from_env.optim.schedule);
+            assert_eq!(
+                flagged.optim.lr_at(5, 10),
+                0.001,
+                "--lr is the peak: warmup ends exactly at it"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn an_unknown_schedule_kind_is_a_config_error() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                &format!("{YAML}  schedule:\n    kind: poly\n"),
+            )?;
+            let err = resolve_config(&cmd_for("config.yaml")).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("unknown lr schedule"),
+                "{err:#}"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn model_training_adapter_env_layer() {
         // #83: the optional `model.training_adapter` path is env-overridable via
         // figment's `__` nesting (no CLI flag), like `model.checkpoint`.

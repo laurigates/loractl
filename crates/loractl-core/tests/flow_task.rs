@@ -40,6 +40,7 @@ fn flow_sampling_cfg(backend: BackendKind) -> TrainConfig {
         optim: OptimConfig {
             lr: 0.01,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: std::env::temp_dir().join("loractl-flow-task"),

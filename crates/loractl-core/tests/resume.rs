@@ -102,6 +102,7 @@ fn config(dir: PathBuf, dataset: PathBuf, steps: u64) -> TrainConfig {
         optim: OptimConfig {
             lr: 0.01,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir,

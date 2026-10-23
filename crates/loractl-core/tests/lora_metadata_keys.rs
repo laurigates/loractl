@@ -158,6 +158,7 @@ fn config() -> TrainConfig {
         optim: OptimConfig {
             lr: 1e-4,
             weight_decay: 0.0,
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: PathBuf::from("output"),

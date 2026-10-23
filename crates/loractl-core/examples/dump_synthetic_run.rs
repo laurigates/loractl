@@ -76,6 +76,7 @@ fn config(out_dir: &Path) -> TrainConfig {
             // Irrelevant to the dump: weight decay touches only the optimizer,
             // never the init or the data, so ONE dump serves both trajectories.
             weight_decay: WEIGHT_DECAYS[0],
+            ..OptimConfig::default()
         },
         output: OutputConfig {
             dir: out_dir.to_path_buf(),
