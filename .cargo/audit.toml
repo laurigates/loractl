@@ -3,9 +3,10 @@
 #
 # The `ignore` list holds advisories that no compatible dependency bump can
 # clear because they are transitively pinned by burn 0.21 (the latest burn
-# release — no upgrade path exists yet). Both are RustSec `unmaintained`
-# warnings, not vulnerabilities. Re-check and drop these entries when burn is
-# bumped past 0.21.
+# release — no upgrade path exists yet). The first two are RustSec
+# `unmaintained` warnings; the zip entries are vulnerabilities in APIs that no
+# dependent in this tree calls (reasoning inline). Re-check and drop these
+# entries when burn is bumped past 0.21.
 
 [advisories]
 ignore = [
@@ -15,4 +16,16 @@ ignore = [
     # paste 1.0.15 (unmaintained) <- burn-ndarray 0.21.0 / macerator 0.3.3.
     # Re-check when burn is bumped.
     "RUSTSEC-2024-0436",
+    # zip 0.6.6 <- tch 0.22.0 / torch-sys 0.22.0 (build script) <- burn-tch 0.21.0,
+    # and zip 7.x <- candle-core 0.10.2 <- burn-candle 0.21.0. Both reach the
+    # tree only through burn's opt-in `tch` / `candle` backends; the fix
+    # (zip >= 9) is unreachable under burn 0.21. All three advisories are in the
+    # archive `extract()` APIs (ZipArchive::extract / ZipStreamReader::extract),
+    # which neither dependent calls: candle-core and tch only read .npy/.pth
+    # entries via `by_name`, and torch-sys's build script copies entries by hand
+    # through `by_index` + `mangled_name` (no permission or symlink handling).
+    # Re-check when burn is bumped (#79).
+    "RUSTSEC-2026-0367", # extract() preserves SUID/SGID bits
+    "RUSTSEC-2026-0368", # extract() creates symlinks escaping the destination
+    "RUSTSEC-2026-0369", # extract() applies permissions through symlinks
 ]
