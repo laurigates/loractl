@@ -111,7 +111,11 @@ safetensors = "=0.7.0"
 # Qwen3-VL caption conditioning (M10, #21): loads the HF `tokenizer.json`
 # shipped with Krea-2-Raw so `Qwen3VlConditioner` can tokenize captions
 # through the krea-2 chat template. Pure offline — file-based loading only,
-# no hub/HTTP features.
+# no hub/HTTP features. Cargo.lock also carries tokenizers 0.22.2: candle-core
+# (burn's opt-in `candle` backend) pins it, so that copy only compiles with
+# `--features candle`; the default tree has just this one. Parity of 0.23's
+# added-token matcher (aho-corasick -> daachorse) against 0.22 was checked
+# id- and offset-for-offset on the Qwen3 chat-template prefix/suffix.
 tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
 # Scaled-fp8 checkpoint loading (M15, #82): `fp8.rs` mmaps the safetensors
 # file once and shares it across its lazy dequant closures — the same crate
