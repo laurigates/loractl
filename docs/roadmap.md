@@ -531,9 +531,11 @@ A finished run used to leave no visual artifact: the `TrainEvent` stream was
 rendered live (indicatif bar, SSE) and gone, so comparing two runs meant reading
 numbers out of logs. `loractl-cli`'s opt-in **`plot`** feature
 (`crates/loractl-cli/src/plot.rs`) adds a second renderer over the same stream:
-it accumulates `(step, loss, lr)` from `TrainEvent::Step` and, on
-`TrainEvent::Finished`, writes `<output.dir>/<output.name>.curve.png` — loss
-above, learning rate below. The LR panel is a flat line today and becomes
+it accumulates `(step, loss, lr)` from `TrainEvent::Step`, remembers the adapter
+path from `TrainEvent::Finished`, and — after the trainer returns, so its log
+lines cannot tear the progress bar — writes `<adapter stem>.curve.png` beside
+the adapter (`<output.dir>/<output.name>.curve.png`): loss above, learning rate
+below. The LR panel is a flat line today and becomes
 informative when #212 makes the rate vary.
 
 - **Core is untouched.** The recorder lives in the CLI beside `render_event`;
@@ -546,9 +548,10 @@ informative when #212 makes the rate vary.
   MIT/Apache-compatible and pass `cargo deny` with no allow-list change;
   `ttf-parser` carries a RustSec *unmaintained* advisory (RUSTSEC-2026-0192), a
   warning that does not fail `cargo audit`, reachable only through this feature.
-- **Never fails a run.** `observe` logs a `tracing` warning and swallows a
-  render/write error; the fallible `write` is what the offline tests drive.
-  Empty and single-point series produce a valid image rather than panicking.
+- **Never fails a run.** `finish` logs a `tracing` warning and swallows a
+  render/write error; the fallible `write_to` is what the offline tests drive.
+  Empty, single-point, all-NaN and out-of-order series produce a valid image
+  rather than panicking; non-finite steps are omitted and counted in a warning.
 - **Gated.** `just lint-plot` (CI `feature-lints`) and `just test-plot` (CI
   `test` job) cover the feature.
 - **`rerun` is a separate, later evaluation** (live scalars plus validation

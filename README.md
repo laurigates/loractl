@@ -140,8 +140,8 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
 
 A finished run normally leaves no visual record — the `TrainEvent` stream is
 rendered live and gone. Build the CLI with the `plot` feature and `loractl train`
-also writes **`<output.dir>/<output.name>.curve.png`** next to the adapter at
-the end of the run: the loss series on top, the learning rate beneath it (flat
+also writes **`<output.dir>/<output.name>.curve.png`** beside the adapter (same
+stem) at the end of the run: the loss series on top, the learning rate beneath it (flat
 today; it moves once an LR schedule lands, #212), both against step.
 
 ```
@@ -153,7 +153,9 @@ event stream as the progress bar (core is untouched), pure Rust — `plotters`
 with an embedded font, no system freetype/fontconfig. A failed plot is logged
 as a warning and **never fails the run**: the adapter already exists by then.
 It is only written when the run reaches `Finished`, so an aborted run leaves
-no curve. `just lint-plot` / `just test-plot` cover it in CI.
+no curve. A resumed run plots only the steps it ran (its x axis starts at the
+resume step), and steps with a NaN/inf loss are omitted with a warning saying
+how many. `just lint-plot` / `just test-plot` cover it in CI.
 
 ### Sampling & adapter I/O
 

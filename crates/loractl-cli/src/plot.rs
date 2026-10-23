@@ -3,12 +3,16 @@
 //! A CLI-side renderer over the [`TrainEvent`] stream, exactly like the
 //! `indicatif` bar: [`CurveRecorder`] accumulates `(step, loss, lr)` from
 //! [`TrainEvent::Step`] and, on [`TrainEvent::Finished`], writes
-//! `<output.dir>/<output.name>.curve.png` next to the adapter. `loractl-core`
-//! knows nothing about it — core emits events, front-ends render.
+//! `<adapter stem>.curve.png` next to the adapter (the path comes from the
+//! `Finished` event, so it can never disagree with where the adapter went).
+//! `loractl-core` knows nothing about it — core emits events, front-ends render.
 //!
-//! A failed plot must never fail a run that already produced a good adapter,
-//! so [`CurveRecorder::observe`] logs a `tracing` warning and swallows the
-//! error; [`CurveRecorder::write`] is the fallible, testable half.
+//! The PNG is written by [`CurveRecorder::finish`], which the caller invokes
+//! *after* the trainer returns — not from inside the event callback — so its
+//! `tracing` output cannot interleave with a live progress bar. A failed plot
+//! must never fail a run that already produced a good adapter, so `finish`
+//! logs a warning and swallows the error; [`CurveRecorder::write_to`] is the
+//! fallible, testable half.
 //!
 //! The font is embedded (`assets/fonts/DejaVuSansMono.ttf`, license alongside)
 //! and drawn through plotters' pure-Rust `ab_glyph` path, so the feature needs
@@ -44,9 +48,12 @@ fn register_font() -> Result<()> {
         .map_err(|e| anyhow!(e))
 }
 
-/// Where the curve lands: next to the adapter, `<dir>/<name>.curve.png`.
-pub fn curve_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{name}.curve.png"))
+/// Where the curve lands: beside the adapter, sharing its stem
+/// (`out/lora.safetensors` -> `out/lora.curve.png`). Derived from the adapter
+/// path the trainer reported rather than re-derived from `output.name`, so a
+/// name with dots or separators lands exactly where the adapter did.
+pub fn curve_path(adapter: &Path) -> PathBuf {
+    adapter.with_extension("curve.png")
 }
 
 /// One recorded optimization step.
@@ -60,15 +67,23 @@ struct Point {
 /// Accumulates the step series and writes the curve PNG at the end of a run.
 #[derive(Debug)]
 pub struct CurveRecorder {
-    path: PathBuf,
+    /// The adapter path from `Finished`; `None` until the run completes, so an
+    /// aborted run (no `Finished`) writes no curve.
+    adapter: Option<PathBuf>,
     points: Vec<Point>,
 }
 
+impl Default for CurveRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CurveRecorder {
-    /// A recorder that will write to `path` (see [`curve_path`]).
-    pub fn new(path: PathBuf) -> Self {
+    /// An empty recorder.
+    pub fn new() -> Self {
         Self {
-            path,
+            adapter: None,
             points: Vec::new(),
         }
     }
@@ -79,8 +94,8 @@ impl CurveRecorder {
         self.points.len()
     }
 
-    /// Feed one event. `Step` is recorded; `Finished` writes the PNG, and a
-    /// failure there is logged and swallowed — the adapter already exists.
+    /// Feed one event. `Step` is recorded and `Finished` remembers where the
+    /// adapter went; nothing is written until [`finish`](Self::finish).
     pub fn observe(&mut self, event: &TrainEvent) {
         match event {
             TrainEvent::Step { step, loss, lr } => self.points.push(Point {
@@ -88,22 +103,50 @@ impl CurveRecorder {
                 loss: *loss,
                 lr: *lr,
             }),
-            TrainEvent::Finished { .. } => match self.write() {
-                Ok(()) => tracing::info!(path = %self.path.display(), "wrote loss/LR curve"),
-                Err(err) => tracing::warn!(
-                    path = %self.path.display(),
-                    "could not write loss/LR curve (the adapter is unaffected): {err:#}"
-                ),
-            },
+            TrainEvent::Finished { adapter_path } => self.adapter = Some(adapter_path.clone()),
             _ => {}
         }
     }
 
-    /// Render the recorded series to the PNG at the recorder's path.
+    /// Steps whose loss or lr is NaN/inf. They cannot be placed on an axis, so
+    /// the plot omits them; a diverged run is exactly when the operator needs
+    /// to be told rather than shown a curve that quietly stops.
+    fn non_finite(&self) -> usize {
+        self.points
+            .iter()
+            .filter(|p| !(p.loss.is_finite() && p.lr.is_finite()))
+            .count()
+    }
+
+    /// If the run reached `Finished`, write the curve beside the adapter. A
+    /// failure is logged and swallowed — the adapter already exists. Call this
+    /// after the trainer returns (the progress bar is done by then).
+    pub fn finish(&self) {
+        let Some(adapter) = &self.adapter else {
+            return;
+        };
+        let path = curve_path(adapter);
+        match self.write_to(&path) {
+            Ok(()) => tracing::info!(path = %path.display(), "wrote loss/LR curve"),
+            Err(err) => tracing::warn!(
+                path = %path.display(),
+                "could not write loss/LR curve (the adapter is unaffected): {err:#}"
+            ),
+        }
+        let skipped = self.non_finite();
+        if skipped > 0 {
+            tracing::warn!(
+                "{skipped} of {} steps had a non-finite loss or learning rate and are omitted from the curve",
+                self.points.len()
+            );
+        }
+    }
+
+    /// Render the recorded series to the PNG at `path`.
     ///
     /// An empty series still produces a valid (axes-only) image rather than
     /// panicking on an empty range; non-finite values are skipped.
-    pub fn write(&self) -> Result<()> {
+    pub fn write_to(&self, path: &Path) -> Result<()> {
         register_font()?;
         let finite: Vec<&Point> = self
             .points
@@ -114,10 +157,10 @@ impl CurveRecorder {
         let loss: Vec<f64> = finite.iter().map(|p| f64::from(p.loss)).collect();
         let lr: Vec<f64> = finite.iter().map(|p| p.lr).collect();
 
-        let root = BitMapBackend::new(&self.path, SIZE).into_drawing_area();
+        let root = BitMapBackend::new(path, SIZE).into_drawing_area();
         root.fill(&WHITE).map_err(plot_err)?;
         let (top, bottom) = root.split_vertically(SIZE.1 / 2);
-        panel(&top, "loss", &xs, &loss, &BLUE, |v| format!("{v:.4}"))?;
+        panel(&top, "loss", &xs, &loss, &BLUE, fmt_loss)?;
         panel(&bottom, "learning rate", &xs, &lr, &RED, |v| {
             format!("{v:.2e}")
         })?;
@@ -131,6 +174,18 @@ impl CurveRecorder {
 /// plotters' backend errors are not `Send + Sync`; keep the message only.
 fn plot_err<E: std::fmt::Display>(e: E) -> anyhow::Error {
     anyhow!("plot: {e}")
+}
+
+/// Loss tick label. Fixed-point is readable for ordinary losses but overflows
+/// the label gutter for a diverged run (1e30) and collapses to `0.0000` for a
+/// tiny one (1e-6), so those fall back to scientific notation.
+fn fmt_loss(v: &f64) -> String {
+    let a = v.abs();
+    if a != 0.0 && !(1e-3..1e4).contains(&a) {
+        format!("{v:.2e}")
+    } else {
+        format!("{v:.4}")
+    }
 }
 
 /// `(lo, hi)` padded so a flat or single-value series still has a non-empty
@@ -167,10 +222,15 @@ fn panel(
     color: &RGBColor,
     fmt_y: impl Fn(&f64) -> String,
 ) -> Result<()> {
-    let (x_lo, x_hi) = match (xs.first(), xs.last()) {
-        (Some(&a), Some(&b)) if b > a => (a, b),
-        (Some(&a), _) => (a, a + 1.0),
-        _ => (0.0, 1.0),
+    // min/max, not first/last: nothing in the event contract forbids a step
+    // sequence that is not strictly increasing, and a resumed run starts at
+    // `resume_step + 1`, not 1.
+    let (x_lo, x_hi) = match xs.iter().copied().reduce(f64::min) {
+        Some(a) => {
+            let b = xs.iter().copied().fold(a, f64::max);
+            if b > a { (a, b) } else { (a, a + 1.0) }
+        }
+        None => (0.0, 1.0),
     };
     let (y_lo, y_hi) = padded(ys);
 
@@ -222,9 +282,9 @@ mod tests {
         TrainEvent::Step { step, loss, lr }
     }
 
-    fn finished() -> TrainEvent {
+    fn finished_at(adapter: &Path) -> TrainEvent {
         TrainEvent::Finished {
-            adapter_path: PathBuf::from("unused.safetensors"),
+            adapter_path: adapter.to_path_buf(),
         }
     }
 
@@ -258,96 +318,160 @@ mod tests {
         }
     }
 
+    fn png(path: &Path) -> Vec<u8> {
+        std::fs::read(path).expect("curve written")
+    }
+
     #[test]
-    fn curve_path_sits_next_to_the_adapter() {
+    fn curve_path_shares_the_adapter_stem() {
         assert_eq!(
-            curve_path(Path::new("out"), "lora"),
+            curve_path(Path::new("out/lora.safetensors")),
             PathBuf::from("out/lora.curve.png")
+        );
+        // A dotted name must not lose its tail to `with_extension`.
+        assert_eq!(
+            curve_path(Path::new("out/lora.v2.safetensors")),
+            PathBuf::from("out/lora.v2.curve.png")
         );
     }
 
     #[test]
-    fn finished_writes_a_valid_nonempty_png() {
+    fn finish_after_finished_writes_a_valid_nonempty_png() {
         let dir = tmp();
-        let path = curve_path(dir.path(), "run");
-        let mut rec = CurveRecorder::new(path.clone());
+        let adapter = dir.path().join("run.safetensors");
+        let mut rec = CurveRecorder::new();
         for i in 1..=50u64 {
             rec.observe(&step(i, 2.0 / i as f32, 1e-4 * (1.0 - i as f64 / 60.0)));
         }
         assert_eq!(rec.len(), 50);
-        rec.observe(&finished());
+        rec.observe(&finished_at(&adapter));
+        rec.finish();
 
-        let bytes = std::fs::read(&path).expect("curve written on Finished");
+        let bytes = png(&dir.path().join("run.curve.png"));
         assert!(bytes.len() > 1000, "suspiciously small: {}", bytes.len());
         assert_eq!(&bytes[..8], PNG_MAGIC);
     }
 
     #[test]
-    fn non_step_events_are_not_recorded_and_write_nothing() {
+    fn observe_alone_writes_nothing_and_unfinished_runs_write_no_curve() {
         let dir = tmp();
-        let path = curve_path(dir.path(), "run");
-        let mut rec = CurveRecorder::new(path.clone());
+        let mut rec = CurveRecorder::new();
         rec.observe(&TrainEvent::Started { total_steps: 3 });
         rec.observe(&TrainEvent::Warning {
             message: "w".into(),
         });
         assert_eq!(rec.len(), 0);
-        assert!(!path.exists(), "nothing is written before Finished");
+        rec.observe(&step(1, 0.5, 1e-4));
+        // No `Finished` (an aborted run): finish() is a no-op.
+        rec.finish();
+        // And even with `Finished`, observe() itself never touches the disk.
+        rec.observe(&finished_at(&dir.path().join("a.safetensors")));
+        assert!(!dir.path().join("a.curve.png").exists());
     }
 
     #[test]
     fn empty_series_does_not_panic_and_still_yields_a_png() {
         let dir = tmp();
-        let path = curve_path(dir.path(), "empty");
-        CurveRecorder::new(path.clone())
-            .write()
+        let path = dir.path().join("empty.curve.png");
+        CurveRecorder::new()
+            .write_to(&path)
             .expect("empty series renders");
-        assert_eq!(&std::fs::read(&path).unwrap()[..8], PNG_MAGIC);
+        assert_eq!(&png(&path)[..8], PNG_MAGIC);
     }
 
     #[test]
     fn single_point_and_constant_series_do_not_panic() {
         let dir = tmp();
-        let one = curve_path(dir.path(), "one");
-        let mut rec = CurveRecorder::new(one.clone());
+        let one = dir.path().join("one.curve.png");
+        let mut rec = CurveRecorder::new();
         rec.observe(&step(1, 0.5, 1e-4));
-        rec.write().expect("single point renders");
-        assert_eq!(&std::fs::read(&one).unwrap()[..8], PNG_MAGIC);
+        rec.write_to(&one).expect("single point renders");
+        assert_eq!(&png(&one)[..8], PNG_MAGIC);
 
         // Flat loss and flat LR: a degenerate y range must be padded, not
         // handed to plotters as an empty interval.
-        let flat = curve_path(dir.path(), "flat");
-        let mut rec = CurveRecorder::new(flat.clone());
+        let flat = dir.path().join("flat.curve.png");
+        let mut rec = CurveRecorder::new();
         for i in 1..=5 {
             rec.observe(&step(i, 1.0, 1e-4));
         }
-        rec.write().expect("flat series renders");
-        assert_eq!(&std::fs::read(&flat).unwrap()[..8], PNG_MAGIC);
+        rec.write_to(&flat).expect("flat series renders");
+        assert_eq!(&png(&flat)[..8], PNG_MAGIC);
     }
 
     #[test]
-    fn non_finite_points_are_skipped_not_fatal() {
+    fn resumed_and_out_of_order_steps_render() {
         let dir = tmp();
-        let path = curve_path(dir.path(), "nan");
-        let mut rec = CurveRecorder::new(path.clone());
+        let path = dir.path().join("resume.curve.png");
+        let mut rec = CurveRecorder::new();
+        // A resumed run starts mid-count; a (contract-legal) non-monotonic
+        // sequence must not collapse the x range to first..last.
+        for s in [501, 502, 503, 700, 650, 600] {
+            rec.observe(&step(s, 1.0 / s as f32, 1e-4));
+        }
+        rec.write_to(&path).expect("resumed series renders");
+        assert_eq!(&png(&path)[..8], PNG_MAGIC);
+    }
+
+    #[test]
+    fn extreme_losses_render() {
+        let dir = tmp();
+        let path = dir.path().join("extreme.curve.png");
+        let mut rec = CurveRecorder::new();
+        rec.observe(&step(1, 1e-9, 1e-4));
+        rec.observe(&step(2, 3.0e38, 1e-4));
+        rec.write_to(&path).expect("extreme magnitudes render");
+        assert_eq!(&png(&path)[..8], PNG_MAGIC);
+    }
+
+    #[test]
+    fn non_finite_points_are_skipped_and_counted() {
+        let dir = tmp();
+        let path = dir.path().join("nan.curve.png");
+        let mut rec = CurveRecorder::new();
         rec.observe(&step(1, f32::NAN, 1e-4));
         rec.observe(&step(2, 0.4, 1e-4));
         rec.observe(&step(3, f32::INFINITY, 1e-4));
-        rec.write().expect("non-finite values are filtered");
-        assert_eq!(&std::fs::read(&path).unwrap()[..8], PNG_MAGIC);
+        rec.observe(&step(4, 0.3, f64::NAN));
+        assert_eq!(rec.non_finite(), 3);
+        rec.write_to(&path).expect("non-finite values are filtered");
+        assert_eq!(&png(&path)[..8], PNG_MAGIC);
+
+        // Entirely non-finite (a run that diverged on step 1) still renders.
+        let mut all = CurveRecorder::new();
+        all.observe(&step(1, f32::NAN, 1e-4));
+        all.write_to(&dir.path().join("all.curve.png"))
+            .expect("all-NaN series renders axes only");
     }
 
     #[test]
-    fn unwritable_destination_is_an_error_and_observe_swallows_it() {
+    fn unwritable_destination_is_an_error_and_finish_swallows_it() {
         let dir = tmp();
         // The parent directory does not exist, so the PNG cannot be created.
-        let path = curve_path(&dir.path().join("missing").join("nested"), "run");
-        let mut rec = CurveRecorder::new(path.clone());
+        let adapter = dir
+            .path()
+            .join("missing")
+            .join("nested")
+            .join("run.safetensors");
+        let mut rec = CurveRecorder::new();
         rec.observe(&step(1, 0.5, 1e-4));
-        assert!(rec.write().is_err(), "write must report the failure");
+        assert!(
+            rec.write_to(&curve_path(&adapter)).is_err(),
+            "write must report the failure"
+        );
         // The run-facing path must not panic or propagate.
-        rec.observe(&finished());
-        assert!(!path.exists());
+        rec.observe(&finished_at(&adapter));
+        rec.finish();
+        assert!(!curve_path(&adapter).exists());
+    }
+
+    #[test]
+    fn loss_labels_stay_short_at_both_extremes() {
+        assert_eq!(fmt_loss(&0.0), "0.0000");
+        assert_eq!(fmt_loss(&0.1234), "0.1234");
+        assert_eq!(fmt_loss(&1e-6), "1.00e-6");
+        assert_eq!(fmt_loss(&1e30), "1.00e30");
+        assert_eq!(fmt_loss(&-2.5), "-2.5000");
     }
 
     #[test]
