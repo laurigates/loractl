@@ -17,4 +17,5 @@
 | [ADR-0011](0011-comfyui-cross-process-vram-sharing.md) | 0011 — Cross-process VRAM sharing with ComfyUI is closed at the cubecl storage layer, and would not fit the card even if it were open | Accepted |
 | [ADR-0012](0012-diffusion-resume-semantics.md) | 0012 — Diffusion resume: `steps` is a total, provenance is read, and the optimizer state lives in a sidecar | Accepted |
 | [ADR-0013](0013-minimax-h3-conditioner.md) | 0013 — MiniMax H3's conditioner: loractl's f32 encode path rules out the 32B, and a projected 4B is the only route that fits the box | Proposed |
+| [ADR-0014](0014-binary-releases-with-dist-and-homebrew.md) | 0014 — Binary releases: release-please tags, dist builds, and a Homebrew formula pushed with a GitHub App | Accepted |
 <!-- ADR-INDEX:END -->

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 
 [[bin]]
@@ -74,3 +75,7 @@ plotters = { version = "=0.3.7", default-features = false, features = [
 # `figment::Jail` (env + cwd isolation for the config-precedence tests) is
 # gated behind figment's `test` feature.
 figment = { version = "=0.10.19", features = ["yaml", "env", "test"] }
+
+# Released by dist as `loractl` (ADR-0014): `brew install laurigates/tap/loractl`
+[package.metadata.dist]
+formula = "loractl"
