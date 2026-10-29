@@ -29,4 +29,12 @@ ignore = [
     "RUSTSEC-2026-0367", # extract() preserves SUID/SGID bits
     "RUSTSEC-2026-0368", # extract() creates symlinks escaping the destination
     "RUSTSEC-2026-0369", # extract() applies permissions through symlinks
+    # zstd-safe 5.0.2 <- zstd 0.11.2 <- zip 0.6.6 <- tch 0.22.0 / torch-sys
+    # 0.22.0 <- burn-tch 0.21.0: the same opt-in `tch` path as the zip entries
+    # above, and absent from the default and every exercised feature set
+    # (`cargo tree -i zstd-safe` prints nothing without `--features tch`). The
+    # fix (zstd-safe >= 8.2) is unreachable while tch pins zip 0.6. The
+    # sibling zstd-safe `unsound` warnings (0395, 0397, 0399–0402, 0404, 0406)
+    # do not fail the audit and are left visible. Re-check when burn is bumped (#79).
+    "RUSTSEC-2026-0403", # DCtx::decompress_stream exposes uninit memory on a failed legacy frame
 ]
