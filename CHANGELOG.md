@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/laurigates/loractl/compare/v0.23.0...v0.24.0) (2026-10-29)
+
+
+### Features
+
+* **release:** ship prebuilt binaries and a Homebrew formula ([#259](https://github.com/laurigates/loractl/issues/259)) ([3e9daea](https://github.com/laurigates/loractl/commit/3e9daeae7b08f2b7a5a25510448fcc45d38e1efd))
+
 ## [0.23.0](https://github.com/laurigates/loractl/compare/v0.22.1...v0.23.0) (2026-10-23)
 
 
