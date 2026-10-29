@@ -13,6 +13,7 @@ edition = "2024"
 license = "MIT"
 authors = ["Lauri Gates"]
 repository = "https://github.com/laurigates/loractl"
+homepage = "https://github.com/laurigates/loractl"
 # Bumped from 1.85 to satisfy burn 0.21's MSRV (see loractl-core dependency).
 rust-version = "1.92"
 
@@ -44,3 +45,8 @@ async-stream = "=0.3.6"
 # serial. Already in the resolved tree via `tokenizers`, so this adds no new
 # external surface; MIT OR Apache-2.0, both on cargo-deny's allow list.
 rayon = "=1.12.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

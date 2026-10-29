@@ -41,3 +41,7 @@ tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 [dev-dependencies]
 tower = { version = "=0.5.3", features = ["util"] }
 http-body-util = "=0.1.5"
+
+# The HTTP server is not released by dist; only the CLI is (ADR-0014)
+[package.metadata.dist]
+dist = false
