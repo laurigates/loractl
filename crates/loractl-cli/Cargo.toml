@@ -51,7 +51,7 @@ tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 # toolchain to build) and verifies certificates against the OS trust store, not
 # embedded webpki roots — an https DSN needs CA certificates installed on the
 # host. An http:// DSN (the README example) never touches TLS.
-sentry = { version = "=0.49.3", default-features = false, features = [
+sentry = { version = "=0.49.5", default-features = false, features = [
     "backtrace",
     "contexts",
     "panic",

@@ -143,7 +143,7 @@ rayon.workspace = true
 # add a duplicate copy. Revisit with the burn bump (#79).
 # The fetch is lazy — a run with a local tokenizer never touches the network,
 # so offline CI is unaffected.
-ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.5.0", default-features = false, features = ["rustls"] }
 sha2 = "=0.10.9"
 
 [features]
