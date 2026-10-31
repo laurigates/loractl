@@ -32,7 +32,7 @@ axum = { version = "=0.8.9", default-features = false, features = [
 ] }
 # `time` is deliberate: axum's SSE keep-alive timer and the test timeout
 # guards both need it.
-tokio = { version = "=1.53.3", features = [
+tokio = { version = "=1.54.1", features = [
     "rt-multi-thread",
     "macros",
     "sync",
