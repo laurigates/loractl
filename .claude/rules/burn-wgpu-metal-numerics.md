@@ -85,16 +85,22 @@ Consequences:
 - **Not distillable to plain burn**: six standalone attempts (generic
   transformer block, expand-GQA, pad-row masks, broadcast-matmul micro)
   all pass — the trigger needs the MMDiT graph.
-- candle-metal bf16 is numerically sound but does not fit the 12B step on
-  this host. The first-forward `Failed to create metal resource: Buffer` is
-  not allocator lifetime. candle's `broadcast_matmul` copied burn's
-  `[1, k, n]` linear weight across the 512-row text-fusion layerwise batch,
-  a single 16.875 GiB buffer that rounds to 32 GiB, past `maxBufferLength`
-  (measured 2026-11-18 on candle 0.10.2 and 0.11.1,
-  [huggingface/candle#3464]). With that copy removed, the step still OOMs
-  at a 41.3 GB peak on our own retained live set (#266). wgpu f32 is
-  correct with input tracking but f32 weights (~49 GB) don't fit this
-  48 GB host. **There is no practical workaround on this Metal host.** The pure-Rust real run is no
+- candle-metal bf16 is numerically sound, and the 12B step fits this host
+  once two candle bugs are fixed; neither fix is in a release yet
+  (measured 2026-11-18, [huggingface/candle#3464], #266):
+  1. `broadcast_matmul` copied burn's `[1, k, n]` linear weight across the
+     512-row text-fusion layerwise batch: one 16.875 GiB buffer, rounded to
+     32 GiB, past `maxBufferLength`. Fix: huggingface/candle#4134.
+  2. The Metal pool reuses the smallest free buffer of any larger size, so
+     the reverse sweep's small, long-lived adapter grads each pinned a
+     64–256 MiB buffer freed by the previous block (OOM at 41.3 GB). Fix:
+     huggingface/candle#3851 (reuse cap).
+
+  With both applied (burn-candle 0.21 patched to candle 0.11.1), one bf16
+  512px step completes at a 35.6 GB peak with all 196 adapters updated.
+  Until they ship and burn-candle moves to that candle, **there is no
+  practical workaround on this Metal host**: wgpu f32 is correct with input
+  tracking but f32 weights (~49 GB) don't fit 48 GB. The pure-Rust real run is no
   longer blocked, though: #25 closed 2026-07-23 on the Linux RTX 4090 via
   cuda f32 + `quant: int4` + `grad_checkpointing: true` (ADR-0005
   Addendum 3, #134/PR #135). The wgpu and f16 routes remain unvalidated
