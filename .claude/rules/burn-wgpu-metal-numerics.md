@@ -85,10 +85,16 @@ Consequences:
 - **Not distillable to plain burn**: six standalone attempts (generic
   transformer block, expand-GQA, pad-row masks, broadcast-matmul micro)
   all pass — the trigger needs the MMDiT graph.
-- candle-metal bf16 is numerically sound but its allocator cannot host the
-  12B model ([huggingface/candle#3464]); wgpu f32 is correct with input
-  tracking but f32 weights (~49 GB) don't fit this 48 GB host. **There is no
-  practical workaround on this Metal host.** The pure-Rust real run is no
+- candle-metal bf16 is numerically sound but does not fit the 12B step on
+  this host. The first-forward `Failed to create metal resource: Buffer` is
+  not allocator lifetime. candle's `broadcast_matmul` copied burn's
+  `[1, k, n]` linear weight across the 512-row text-fusion layerwise batch,
+  a single 16.875 GiB buffer that rounds to 32 GiB, past `maxBufferLength`
+  (measured 2026-11-18 on candle 0.10.2 and 0.11.1,
+  [huggingface/candle#3464]). With that copy removed, the step still OOMs
+  at a 41.3 GB peak on our own retained live set (#266). wgpu f32 is
+  correct with input tracking but f32 weights (~49 GB) don't fit this
+  48 GB host. **There is no practical workaround on this Metal host.** The pure-Rust real run is no
   longer blocked, though: #25 closed 2026-07-23 on the Linux RTX 4090 via
   cuda f32 + `quant: int4` + `grad_checkpointing: true` (ADR-0005
   Addendum 3, #134/PR #135). The wgpu and f16 routes remain unvalidated
