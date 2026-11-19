@@ -96,6 +96,11 @@ Consequences:
      64–256 MiB buffer freed by the previous block (OOM at 41.3 GB). Fix:
      huggingface/candle#3851 (reuse cap).
 
+     The trap in diagnosing it: a pooled buffer counted as in-use can be a
+     small tensor sitting in a far larger buffer. Before blaming retention on
+     the caller, count reuses where the served buffer is many times the
+     request; this one was first misread as our own live set.
+
   With both applied (burn-candle 0.21 patched to candle 0.11.1), one bf16
   512px step completes at a 35.6 GB peak with all 196 adapters updated.
   Until they ship and burn-candle moves to that candle, **there is no
