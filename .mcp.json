@@ -58,6 +58,10 @@
         "MCP_TIMEOUT": "300000",
         "MCP_TOOL_TIMEOUT": "300000"
       }
+    },
+    "runpod": {
+      "type": "http",
+      "url": "https://mcp.runpod.io/"
     }
   }
 }
