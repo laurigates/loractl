@@ -9,9 +9,10 @@
 # ///
 """Reference LoRA trainer for Krea-2-Raw on torch/MPS — the known-good
 substrate for the M14 real-run proof while burn's Metal backends are blocked
-(wgpu autodiff produces corrupt gradients; candle's Metal allocator cannot
-run the ~25 GB model — see crates/loractl-core/examples/grad_compare.rs and
-the fix/m14-f32-encode-phase branch).
+(wgpu autodiff produces corrupt gradients; the candle Metal backend needs
+two unreleased candle fixes to fit the ~25 GB model's training step — see
+crates/loractl-core/examples/grad_compare.rs, huggingface/candle#3464 and
+loractl#266).
 
 Everything except the backward pass is loractl's own work product:
 
