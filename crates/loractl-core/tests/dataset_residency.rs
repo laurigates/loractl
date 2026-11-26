@@ -338,17 +338,31 @@ const DECODED: isize = 3 * (SIDE as isize) * (SIDE as isize) * 4;
 const WINDOW: usize = 2;
 
 /// A pool of exactly [`WINDOW`] threads, already spawned.
+fn fixed_pool() -> rayon::ThreadPool {
+    pool_of(WINDOW)
+}
+
+/// A pool of exactly `threads` threads, already spawned.
 ///
 /// The warm-up is not decoration: rayon spawns its workers lazily, and their
 /// first-touch bookkeeping would otherwise land inside a measurement window
 /// and read as residency.
-fn fixed_pool() -> rayon::ThreadPool {
+fn pool_of(threads: usize) -> rayon::ThreadPool {
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(WINDOW)
+        .num_threads(threads)
         .build()
         .unwrap();
     pool.broadcast(|_| {});
     pool
+}
+
+/// Peak host allocation of one cold `prepare_dataset` over a fresh dataset of
+/// `count` [`SIDE`]-square images, run inside `pool`.
+fn cold_peak(pool: &rayon::ThreadPool, tag: &str, count: usize) -> isize {
+    let dir = temp_dataset_sized(tag, count, SIDE);
+    let peak = peak_during_prepare(pool, &dir, 8);
+    std::fs::remove_dir_all(&dir).ok();
+    peak
 }
 
 /// Run a cold-or-warm `prepare_dataset` over `dir` inside `pool` and return
@@ -387,17 +401,28 @@ fn peak_during_prepare(pool: &rayon::ThreadPool, dir: &Path, seq: usize) -> isiz
 /// outside every one of their measurement windows. Kill test: replacing
 /// `decode_window()` with `total.max(1)` — the exact regression — fails this
 /// and no other test in the suite.
+///
+/// **Why the flatness half runs on one thread.** On [`WINDOW`] threads the
+/// peak depends on whether the two in-flight decodes reach their own peaks at
+/// the same moment, which the scheduler decides. Measured over 200 runs on
+/// aarch64 macOS, the
+/// 8-example peak was either ~597 KB or 499,037 B — a step of exactly
+/// 98,304 B, two `SIDE²` RGB8 frames — and the 8-vs-40 difference ranged from
+/// −66,824 B to +129,276 B, failing the `DECODED / 2` check in 22 of them
+/// (CI: `peak moved 129248 B`). Four windows miss the overlap more often than
+/// twenty, so that difference measured scheduling, not residency. One thread
+/// has no overlap to sample: over the same 200 runs the 1-thread difference
+/// stayed within 29,846–30,553 B, the per-entry plan bookkeeping. So the
+/// windowed run checks the ceiling, which holds for every interleaving, and
+/// the 1-thread run checks flatness, which is deterministic there. The kill
+/// test fails both: an unbounded window holds every decoded buffer on any
+/// thread count.
 #[test]
 fn the_cold_encode_pre_pass_is_bounded_by_the_decode_window() {
     let _guard = MEASURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let pool = fixed_pool();
-
-    let small_dir = temp_dataset_sized("prepass-small", 8, SIDE);
-    let big_dir = temp_dataset_sized("prepass-big", 40, SIDE);
-    let small = peak_during_prepare(&pool, &small_dir, 8);
-    let big = peak_during_prepare(&pool, &big_dir, 8);
-    std::fs::remove_dir_all(&small_dir).ok();
-    std::fs::remove_dir_all(&big_dir).ok();
+    let small = cold_peak(&pool, "prepass-small", 8);
+    let big = cold_peak(&pool, "prepass-big", 40);
 
     // Anti-vacuity: the pre-pass really did hold decoded buffers. Without
     // this a `prepare_dataset` that decoded nothing would satisfy everything
@@ -421,10 +446,20 @@ fn the_cold_encode_pre_pass_is_bounded_by_the_decode_window() {
         );
     }
     // …and it is flat in the example count, which is the claim itself.
+    // Measured on one thread, where the peak does not depend on scheduling
+    // (see the doc comment above).
+    let serial = pool_of(1);
+    let small = cold_peak(&serial, "prepass-small-serial", 8);
+    let big = cold_peak(&serial, "prepass-big-serial", 40);
+    assert!(
+        small >= DECODED,
+        "the 1-thread pre-pass should hold at least one {DECODED} B decoded buffer, \
+         saw {small} B"
+    );
     assert!(
         (big - small).abs() <= DECODED / 2,
-        "peak moved {} B between 8 and 40 examples; the pre-pass must be O(window), \
-         not O(dataset)",
+        "peak moved {} B between 8 and 40 examples on one thread; the pre-pass must be \
+         O(window), not O(dataset)",
         big - small
     );
 }

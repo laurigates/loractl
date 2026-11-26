@@ -50,6 +50,20 @@ prints.** A trainer reports progress by emitting `TrainEvent`s through a
 callback; the caller decides how to surface them. That single discipline is
 what makes "someone can build a GUI later" true instead of aspirational.
 
+## Install
+
+Releases from the first one after 0.23.0 ship prebuilt `loractl` binaries for
+Apple Silicon macOS and x86_64 Linux (default features, no GPU backends; see
+[ADR-0014](docs/adrs/0014-binary-releases-with-dist-and-homebrew.md)):
+
+```sh
+brew install laurigates/tap/loractl
+```
+
+The shell installer is attached to each
+[GitHub Release](https://github.com/laurigates/loractl/releases). To build
+from source, including GPU backends, use the Quickstart below.
+
 ## Quickstart
 
 ```sh
