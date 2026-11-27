@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "CronCreate",
@@ -47,7 +48,10 @@
   },
   "extraKnownMarketplaces": {
     "laurigates-claude-plugins": {
-      "source": { "source": "github", "repo": "laurigates/claude-plugins" },
+      "source": {
+        "source": "github",
+        "repo": "laurigates/claude-plugins"
+      },
       "autoUpdate": true
     }
   },
@@ -59,6 +63,12 @@
     "health-plugin@laurigates-claude-plugins": true,
     "hooks-plugin@laurigates-claude-plugins": true,
     "rust-plugin@laurigates-claude-plugins": true,
-    "testing-plugin@laurigates-claude-plugins": true
-  }
+    "testing-plugin@laurigates-claude-plugins": true,
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
+  "enabledMcpjsonServers": [
+    "pal",
+    "context7",
+    "sequential-thinking"
+  ]
 }
