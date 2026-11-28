@@ -34,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
         run_retention = config.run_retention,
         max_concurrent_runs = config.max_concurrent_runs,
         output_base = %config.output_base.display(),
+        input_base = %config.input_base.display(),
         auth = if config.api_token.is_some() { "bearer token" } else { "off (loopback only)" },
         "loractl-api listening on http://{addr}"
     );

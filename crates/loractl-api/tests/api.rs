@@ -48,6 +48,7 @@ fn test_base(tag: &str) -> PathBuf {
 fn config_for(base: &std::path::Path) -> ApiConfig {
     ApiConfig {
         output_base: base.to_path_buf(),
+        input_base: base.to_path_buf(),
         ..ApiConfig::default()
     }
 }
@@ -1123,6 +1124,63 @@ async fn post_config(app: &Router, config: serde_json::Value) -> (StatusCode, St
         .unwrap();
     let status = response.status();
     (status, body_string(response.into_body()).await)
+}
+
+/// #224: `dataset.path`, `model.base` and the `model.*` overrides are reads
+/// the trainer performs and whose errors stream back over SSE, so they are
+/// confined under the input base exactly like `resume.from` is under the
+/// output base. A rejected request registers no run.
+#[tokio::test(flavor = "multi_thread")]
+async fn dataset_and_model_paths_escaping_the_input_base_are_rejected() {
+    let base = test_base("confine-inputs");
+    let app = mock_app(&base);
+
+    let with = |pointer: &str, value: &str| {
+        let mut config = config_json_output("out", "lora");
+        *config.pointer_mut(pointer).expect("field present") = serde_json::json!(value);
+        config
+    };
+    let mut rejected = vec![
+        (with("/dataset/path", "/etc"), "dataset.path".to_string()),
+        (
+            with("/dataset/path", "../outside"),
+            "dataset.path".to_string(),
+        ),
+        (
+            with("/model/base", "/opt/models/krea2"),
+            "model.base".to_string(),
+        ),
+    ];
+    for field in [
+        "denoiser",
+        "vae",
+        "text_encoder",
+        "tokenizer",
+        "training_adapter",
+    ] {
+        let mut config = config_json_output("out", "lora");
+        config["model"][field] = serde_json::json!("/etc/passwd");
+        rejected.push((config, format!("model.{field}")));
+    }
+    for (config, field) in rejected {
+        let (status, body) = post_config(&app, config.clone()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "must reject {config}: {body}"
+        );
+        assert!(body.contains(&field), "the 400 must name {field}: {body}");
+    }
+    let response = app.clone().oneshot(get_events(1)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "no run registered"
+    );
+
+    // Positive control: relative paths are accepted.
+    let (status, body) = post_config(&app, config_json_output("out", "lora")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
 /// #37: a traversal, an absolute path, or an escaping `output.name` is a `400`

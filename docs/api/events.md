@@ -100,6 +100,32 @@ the `checkpoint` / `sample` / `finished` events report — so `"dir": "demo"`
 with the default base surfaces as `.../runs/demo/lora.safetensors`, not
 `demo/lora.safetensors`. Nothing outside the base is ever created.
 
+## Input paths are confined
+
+The paths a run **reads** are confined the same way, under a second base (#224).
+Models and datasets usually live outside the output tree, so they get their
+own directory; point it at the one that holds them.
+
+| | |
+|---|---|
+| Env var | `LORACTL_INPUT_BASE` |
+| Default | `./inputs` (relative to the server's working directory) |
+
+Confined fields: `dataset.path`, `model.base` (unless it is `synthetic` or
+`mnist`), `model.checkpoint`, and the file overrides `model.denoiser`,
+`model.text_encoder`, `model.vae`, `model.tokenizer`, `model.training_adapter`.
+The rules match the output fields: relative only, no `..` components, no symlink
+escapes, otherwise `400` with the offending field named. A relative `model.*`
+override keeps its core meaning (joined onto `model.base`), so
+`{"base": "krea2", "vae": "vae.safetensors"}` reads
+`$LORACTL_INPUT_BASE/krea2/vae.safetensors`. The trainer receives the resolved
+absolute paths. An empty `dataset.path` is left as is.
+
+This closes an existence and parse-error oracle: load errors stream back over
+SSE, so an unconfined read path would report on any file the process can reach.
+`resume.from` is a read too, but it points at a previous run's artifacts, so it
+stays under the output base.
+
 ## Concurrency cap
 
 Each run occupies a thread doing real compute for as long as it trains, so the
@@ -308,7 +334,8 @@ just serve
 
 In another terminal, write a config and start a run. Note `output.dir` is
 **relative** — it resolves under `LORACTL_OUTPUT_BASE` (default `./runs`), and
-an absolute path or a `..` would be rejected with a `400`:
+an absolute path or a `..` would be rejected with a `400`. `dataset.path` is
+relative too, resolving under `LORACTL_INPUT_BASE` (default `./inputs`):
 
 ```sh
 cat > /tmp/run.json <<'JSON'

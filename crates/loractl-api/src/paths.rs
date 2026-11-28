@@ -1,4 +1,6 @@
-//! Confinement of client-supplied output paths to a server-owned base dir (#37).
+//! Confinement of client-supplied paths to server-owned base dirs: output
+//! paths (#37) and `resume.from` (#180) under `LORACTL_OUTPUT_BASE`, dataset
+//! and model paths under `LORACTL_INPUT_BASE` (#224, see [`confine_inputs`]).
 //!
 //! `POST /runs` takes an unauthenticated `TrainConfig` whose `output.dir` /
 //! `output.name` are turned straight into filesystem paths by the trainer
@@ -27,6 +29,7 @@
 //!    cannot do this job — it fails outright on a path that does not exist
 //!    yet, which is the normal case for a fresh run's output dir.
 
+use loractl_core::TrainConfig;
 use std::path::{Component, Path, PathBuf};
 
 /// Resolves a request's `output.dir` / `output.name` to an absolute path
@@ -37,15 +40,25 @@ use std::path::{Component, Path, PathBuf};
 /// explaining the rejection.
 pub fn confine_output(base: &Path, dir: &Path, name: &str) -> Result<PathBuf, String> {
     validate_name(name)?;
-    let relative = relative_components(dir)?;
-    let resolved = base.join(relative);
+    let relative = relative_components(dir, "output.dir")?;
+    contain(base, base.join(relative), dir, "output.dir", "output")
+}
 
+/// (3) + (4): `resolved` must be under `base` component-wise and, once the
+/// deepest existing ancestor's symlinks are resolved, still under it.
+fn contain(
+    base: &Path,
+    resolved: PathBuf,
+    requested: &Path,
+    field: &str,
+    base_name: &str,
+) -> Result<PathBuf, String> {
+    let escape = || format!("{field} must stay within the server's {base_name} base directory");
     // (3) Component-wise containment — `starts_with` compares path components,
     // so it cannot be fooled the way a string prefix can (`/base-evil`).
     if !resolved.starts_with(base) {
-        return Err(escape_message());
+        return Err(escape());
     }
-
     // (4) Symlink escape: canonicalize the deepest ancestor that exists. A
     // symlinked component anywhere along the path resolves here, so a
     // pre-planted `base/link -> /etc` is caught even though `base/link/x`
@@ -53,45 +66,41 @@ pub fn confine_output(base: &Path, dir: &Path, name: &str) -> Result<PathBuf, St
     let anchor = deepest_existing_ancestor(&resolved);
     let canonical_anchor = anchor
         .canonicalize()
-        .map_err(|e| format!("resolving output.dir {}: {e}", dir.display()))?;
+        .map_err(|e| format!("resolving {field} {}: {e}", requested.display()))?;
     if !canonical_anchor.starts_with(base) {
-        return Err(escape_message());
+        return Err(escape());
     }
-
     Ok(resolved)
 }
 
-/// Creates the output base if absent and canonicalizes it, so every later
-/// containment check compares two symlink-free absolute paths.
+/// Creates a base directory (output or input) if absent and canonicalizes it,
+/// so every later containment check compares two symlink-free absolute paths.
 ///
 /// Done once at startup: a base that cannot be created is a misconfigured
 /// server, which should fail loudly on boot rather than 500 per request.
 pub fn canonical_base(base: &Path) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     std::fs::create_dir_all(base)
-        .with_context(|| format!("creating output base {}", base.display()))?;
+        .with_context(|| format!("creating base directory {}", base.display()))?;
     base.canonicalize()
-        .with_context(|| format!("resolving output base {}", base.display()))
-}
-
-fn escape_message() -> String {
-    String::from("output.dir must stay within the server's output base directory")
+        .with_context(|| format!("resolving base directory {}", base.display()))
 }
 
 /// (1) Rejects absolute paths and `..` components, returning the path's
-/// normalized relative form (`.` segments dropped).
-fn relative_components(dir: &Path) -> Result<PathBuf, String> {
+/// normalized relative form (`.` segments dropped). `field` names the request
+/// field in the client-facing message.
+fn relative_components(path: &Path, field: &str) -> Result<PathBuf, String> {
     let mut relative = PathBuf::new();
-    for component in dir.components() {
+    for component in path.components() {
         match component {
             Component::Normal(part) => relative.push(part),
             Component::CurDir => {}
             Component::ParentDir => {
-                return Err(String::from("output.dir must not contain `..` components"));
+                return Err(format!("{field} must not contain `..` components"));
             }
             Component::RootDir | Component::Prefix(_) => {
-                return Err(String::from(
-                    "output.dir must be a relative path, not an absolute one",
+                return Err(format!(
+                    "{field} must be a relative path, not an absolute one"
                 ));
             }
         }
@@ -122,28 +131,70 @@ fn validate_name(name: &str) -> Result<(), String> {
 /// deliberately does NOT apply: resuming `checkpoints/run-3/checkpoint-50.safetensors`
 /// from a sibling run's directory is the recovery workflow this exists for.
 pub fn confine_resume(base: &Path, from: &Path) -> Result<PathBuf, String> {
-    let relative = relative_components(from).map_err(|e| e.replace("output.dir", "resume.from"))?;
-    if relative.as_os_str().is_empty() {
-        return Err(String::from(
-            "resume.from must name a file, not an empty path",
-        ));
-    }
-    let resolved = base.join(relative);
-    if !resolved.starts_with(base) {
-        return Err(resume_escape_message());
-    }
-    let anchor = deepest_existing_ancestor(&resolved);
-    let canonical_anchor = anchor
-        .canonicalize()
-        .map_err(|e| format!("resolving resume.from {}: {e}", from.display()))?;
-    if !canonical_anchor.starts_with(base) {
-        return Err(resume_escape_message());
-    }
-    Ok(resolved)
+    confine_read(base, from, "resume.from", "output")
 }
 
-fn resume_escape_message() -> String {
-    String::from("resume.from must stay within the server's output base directory")
+/// Resolves a client-supplied **read** path under `base`: relative, no `..`,
+/// not empty, and no symlink escape. The shared rule behind `resume.from` and
+/// the input fields of [`confine_inputs`].
+fn confine_read(base: &Path, path: &Path, field: &str, base_name: &str) -> Result<PathBuf, String> {
+    let relative = relative_components(path, field)?;
+    if relative.as_os_str().is_empty() {
+        return Err(format!("{field} must name a path, not an empty one"));
+    }
+    contain(base, base.join(relative), path, field, base_name)
+}
+
+/// Resolves every client-supplied path the trainer **reads** under the input
+/// base (`LORACTL_INPUT_BASE`, #224): `dataset.path`, `model.base` (unless it
+/// is a built-in demo name), and the `model.*` file overrides.
+///
+/// Same rules and same reason as `resume.from`: the endpoint is
+/// unauthenticated by default, and load errors stream back over SSE, so an
+/// unconfined read path is an existence and parse-error oracle over anything
+/// the process can reach. Models and datasets get their own base because they
+/// legitimately live outside the output tree.
+///
+/// Core joins a relative `model.*` override onto `model.base`; that meaning is
+/// kept, so an override is confined as `model.base/override` and handed to the
+/// trainer resolved. `model.checkpoint` is a file name core joins onto the
+/// base, so it is validated the same way and left as given. An empty
+/// `dataset.path` names nothing to read and is left alone.
+///
+/// On success every rewritten field holds an absolute path under `base`.
+pub fn confine_inputs(base: &Path, config: &mut TrainConfig) -> Result<(), String> {
+    const BASE: &str = "input";
+    if !config.dataset.path.as_os_str().is_empty() {
+        config.dataset.path = confine_read(base, &config.dataset.path, "dataset.path", BASE)?;
+    }
+
+    let model = &mut config.model;
+    let root = if loractl_core::is_builtin_demo_base(&model.base) {
+        PathBuf::new()
+    } else {
+        let requested = PathBuf::from(&model.base);
+        let resolved = confine_read(base, &requested, "model.base", BASE)?;
+        model.base = resolved
+            .to_str()
+            .ok_or_else(|| String::from("model.base must resolve to a UTF-8 path"))?
+            .to_owned();
+        requested
+    };
+    if let Some(checkpoint) = &model.checkpoint {
+        confine_read(base, &root.join(checkpoint), "model.checkpoint", BASE)?;
+    }
+    for (field, slot) in [
+        ("model.denoiser", &mut model.denoiser),
+        ("model.text_encoder", &mut model.text_encoder),
+        ("model.vae", &mut model.vae),
+        ("model.tokenizer", &mut model.tokenizer),
+        ("model.training_adapter", &mut model.training_adapter),
+    ] {
+        if let Some(path) = slot.as_deref() {
+            *slot = Some(confine_read(base, &root.join(path), field, BASE)?);
+        }
+    }
+    Ok(())
 }
 
 /// The deepest ancestor of `path` that exists on disk.
@@ -191,6 +242,117 @@ mod tests {
             assert!(error.contains("resume.from"), "{bad}: {error}");
         }
         assert!(confine_resume(&base, Path::new("")).is_err());
+    }
+
+    // ---- #224: dataset and model paths are reads, confined like resume.from --
+
+    fn diffusion_config() -> loractl_core::TrainConfig {
+        let mut config = loractl_core::TrainConfig::default();
+        config.model.base = "models/krea2".into();
+        config.dataset.path = "datasets/fox".into();
+        config
+    }
+
+    #[test]
+    fn dataset_and_model_paths_resolve_under_the_input_base() {
+        let base = base();
+        let mut config = diffusion_config();
+        config.model.denoiser = Some("raw-fp8.safetensors".into());
+        config.model.text_encoder = Some("te/model.safetensors".into());
+        config.model.vae = Some("vae.safetensors".into());
+        config.model.tokenizer = Some("tok/tokenizer.json".into());
+        config.model.training_adapter = Some("assist.safetensors".into());
+        config.model.checkpoint = Some("turbo.safetensors".into());
+        confine_inputs(&base, &mut config).expect("all relative, all inside");
+
+        assert_eq!(config.dataset.path, base.join("datasets/fox"));
+        let root = base.join("models/krea2");
+        assert_eq!(config.model.base, root.to_str().unwrap());
+        // Relative overrides keep core's meaning (joined onto `model.base`),
+        // and are handed to the trainer already resolved.
+        assert_eq!(
+            config.model.denoiser,
+            Some(root.join("raw-fp8.safetensors"))
+        );
+        assert_eq!(
+            config.model.text_encoder,
+            Some(root.join("te/model.safetensors"))
+        );
+        assert_eq!(config.model.vae, Some(root.join("vae.safetensors")));
+        assert_eq!(
+            config.model.tokenizer,
+            Some(root.join("tok/tokenizer.json"))
+        );
+        assert_eq!(
+            config.model.training_adapter,
+            Some(root.join("assist.safetensors"))
+        );
+        assert_eq!(
+            config.model.checkpoint.as_deref(),
+            Some("turbo.safetensors")
+        );
+    }
+
+    #[test]
+    fn every_input_field_rejects_absolute_and_parent_paths() {
+        let base = base();
+        type Set = fn(&mut loractl_core::TrainConfig, &str);
+        let fields: [(&str, Set); 8] = [
+            ("dataset.path", |c, v| c.dataset.path = v.into()),
+            ("model.base", |c, v| c.model.base = v.into()),
+            ("model.denoiser", |c, v| c.model.denoiser = Some(v.into())),
+            ("model.text_encoder", |c, v| {
+                c.model.text_encoder = Some(v.into())
+            }),
+            ("model.vae", |c, v| c.model.vae = Some(v.into())),
+            ("model.tokenizer", |c, v| c.model.tokenizer = Some(v.into())),
+            ("model.training_adapter", |c, v| {
+                c.model.training_adapter = Some(v.into())
+            }),
+            ("model.checkpoint", |c, v| {
+                c.model.checkpoint = Some(v.into())
+            }),
+        ];
+        for (field, set) in fields {
+            for bad in ["/etc/shadow", "../../etc/shadow", "a/../../b"] {
+                let mut config = diffusion_config();
+                set(&mut config, bad);
+                let error = confine_inputs(&base, &mut config)
+                    .expect_err(&format!("{field} = {bad} must be rejected"));
+                assert!(error.contains(field), "{field} = {bad}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_demo_bases_are_not_paths() {
+        let base = base();
+        for demo in ["synthetic", "mnist"] {
+            let mut config = diffusion_config();
+            config.model.base = demo.into();
+            confine_inputs(&base, &mut config).expect("a demo base names no file");
+            assert_eq!(config.model.base, demo);
+        }
+        // An empty dataset path names nothing to read and is left alone.
+        let mut config = diffusion_config();
+        config.model.base = "synthetic".into();
+        config.dataset.path = PathBuf::new();
+        confine_inputs(&base, &mut config).expect("empty dataset path");
+        assert_eq!(config.dataset.path, PathBuf::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_dataset_escaping_the_input_base_is_rejected() {
+        let base = base();
+        let link = base.join("escape-dataset");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink("/etc", &link).unwrap();
+        let mut config = diffusion_config();
+        config.dataset.path = "escape-dataset".into();
+        let error = confine_inputs(&base, &mut config).expect_err("symlink out of the base");
+        assert!(error.contains("dataset.path"), "{error}");
+        let _ = std::fs::remove_file(&link);
     }
 
     #[test]

@@ -97,12 +97,14 @@ fn error_response(status: StatusCode, error: impl Into<String>) -> Response {
 /// unauthenticated **by default** (#37 — the optional bearer gate, #62, is
 /// [`require_bearer_token`] above):
 ///
-/// 1. **Path confinement** — the request's `output.dir`/`output.name` become
-///    real filesystem writes, and its `resume.from` becomes a real file read,
-///    so all three are resolved under the server's output base and rejected
-///    (`400`) if they escape it. The config the trainer runs with carries the
-///    *resolved* paths, never the client's raw strings, so no later code path
-///    can be handed an unvalidated value by mistake.
+/// 1. **Path confinement** — every client-supplied path is resolved under a
+///    server-owned base and rejected (`400`) if it escapes it:
+///    `output.dir`/`output.name` (writes) and `resume.from` (a read) under the
+///    output base; `dataset.path`, `model.base` and the `model.*` file
+///    overrides (reads, #224) under the input base. The config the trainer
+///    runs with carries the *resolved* paths for all of these, never the
+///    client's raw strings (`model.checkpoint` is validated and kept, since
+///    core joins it onto the already-resolved `model.base`).
 /// 2. **Concurrency cap** — each run occupies a blocking thread doing real
 ///    compute; past the cap the request is refused (`429`) rather than queued,
 ///    so a client learns immediately instead of timing out.
@@ -125,6 +127,12 @@ async fn create_run(
             Ok(path) => config.resume.from = Some(path),
             Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
         }
+    }
+
+    // #224: dataset and model paths are reads too, and their load errors
+    // stream back over SSE — confined under the input base.
+    if let Err(error) = crate::paths::confine_inputs(&state.input_base, &mut config) {
+        return error_response(StatusCode::BAD_REQUEST, error);
     }
 
     let Some((id, run)) = state.register_run() else {
