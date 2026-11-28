@@ -133,8 +133,8 @@ impl ScheduleKind {
 /// `..__MIN_LR`, `..__GAMMA`, `..__STEP_SIZE`. No CLI flags (`--lr` keeps
 /// meaning the peak rate).
 ///
-/// Unlike the rest of the (permissive) config schema this block is
-/// `deny_unknown_fields`: a typo such as `warmup:` for `warmup_steps:` would
+/// `deny_unknown_fields`, like every struct in the schema since #246 (this
+/// block was first, #212): a typo such as `warmup:` for `warmup_steps:` would
 /// otherwise be dropped and the run would quietly train with no warmup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
