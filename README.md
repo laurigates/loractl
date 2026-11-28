@@ -255,7 +255,7 @@ SSE:
 The API is **unauthenticated by default**; the localhost bind is what makes
 that safe and it is enforced — a non-loopback bind refuses to start unless
 `LORACTL_API_TOKEN` is set. Output paths are confined under
-`LORACTL_OUTPUT_BASE`, with `LORACTL_MAX_CONCURRENT_RUNS` and
+`LORACTL_OUTPUT_BASE` and dataset/model paths under `LORACTL_INPUT_BASE`, with `LORACTL_MAX_CONCURRENT_RUNS` and
 `LORACTL_RUN_RETENTION` bounding concurrency and memory. The full wire contract
 lives in [docs/api/events.md](docs/api/events.md); the design decisions in
 [ADR-0003](docs/adrs/0003-http-api-event-streaming.md).

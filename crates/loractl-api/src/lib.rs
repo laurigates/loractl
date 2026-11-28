@@ -53,6 +53,9 @@ const DEFAULT_MAX_CONCURRENT_RUNS: usize = 4;
 /// Where client-supplied output paths are confined, by default.
 const DEFAULT_OUTPUT_BASE: &str = "./runs";
 
+/// Where client-supplied dataset and model paths are confined, by default.
+const DEFAULT_INPUT_BASE: &str = "./inputs";
+
 /// Server-level knobs. `main` sources these from the environment
 /// ([`ApiConfig::from_env`]); tests construct them explicitly so no test ever
 /// depends on ambient process state.
@@ -77,6 +80,16 @@ pub struct ApiConfig {
     ///
     /// Env: `LORACTL_OUTPUT_BASE` (default `./runs`).
     pub output_base: PathBuf,
+
+    /// The directory every path a run **reads** is confined under (#224):
+    /// `dataset.path`, `model.base` (unless `synthetic`/`mnist`) and the
+    /// `model.*` file overrides. Same rules as [`output_base`](Self::output_base):
+    /// relative only, no `..`, no symlink escapes, else `400`. Separate from
+    /// the output base because models and datasets usually live elsewhere;
+    /// point it at the directory that holds them.
+    ///
+    /// Env: `LORACTL_INPUT_BASE` (default `./inputs`).
+    pub input_base: PathBuf,
 
     /// Upper bound on simultaneously-training runs; `POST /runs` returns `429`
     /// while saturated. Each run occupies a blocking-pool thread doing real
@@ -106,6 +119,7 @@ impl Default for ApiConfig {
         Self {
             run_retention: DEFAULT_RUN_RETENTION,
             output_base: PathBuf::from(DEFAULT_OUTPUT_BASE),
+            input_base: PathBuf::from(DEFAULT_INPUT_BASE),
             max_concurrent_runs: DEFAULT_MAX_CONCURRENT_RUNS,
             api_token: None,
         }
@@ -121,19 +135,24 @@ impl ApiConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             run_retention: env_usize("LORACTL_RUN_RETENTION", DEFAULT_RUN_RETENTION)?,
-            output_base: match std::env::var("LORACTL_OUTPUT_BASE") {
-                Ok(raw) => PathBuf::from(raw),
-                Err(std::env::VarError::NotPresent) => PathBuf::from(DEFAULT_OUTPUT_BASE),
-                Err(e) => {
-                    return Err(anyhow::Error::new(e).context("reading LORACTL_OUTPUT_BASE"));
-                }
-            },
+            output_base: env_path("LORACTL_OUTPUT_BASE", DEFAULT_OUTPUT_BASE)?,
+            input_base: env_path("LORACTL_INPUT_BASE", DEFAULT_INPUT_BASE)?,
             max_concurrent_runs: env_usize(
                 "LORACTL_MAX_CONCURRENT_RUNS",
                 DEFAULT_MAX_CONCURRENT_RUNS,
             )?,
             api_token: parse_api_token(std::env::var("LORACTL_API_TOKEN"))?,
         })
+    }
+}
+
+/// A path from `var`, or `default` when unset. Non-UTF-8 is a hard error, not
+/// a silent fallback.
+fn env_path(var: &str, default: &str) -> anyhow::Result<PathBuf> {
+    match std::env::var(var) {
+        Ok(raw) => Ok(PathBuf::from(raw)),
+        Err(std::env::VarError::NotPresent) => Ok(PathBuf::from(default)),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("reading {var}"))),
     }
 }
 

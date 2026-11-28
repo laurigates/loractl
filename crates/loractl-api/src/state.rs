@@ -92,17 +92,22 @@ pub struct AppState {
     /// Canonicalized once at startup so containment checks compare two
     /// symlink-free absolute paths.
     pub output_base: PathBuf,
+    /// The canonical directory every run's dataset/model reads are confined
+    /// under (#224). Canonicalized once at startup, like `output_base`.
+    pub input_base: PathBuf,
 }
 
 impl AppState {
     pub fn new(factory: TrainerFactory, config: ApiConfig) -> anyhow::Result<Self> {
         let output_base = crate::paths::canonical_base(&config.output_base)?;
+        let input_base = crate::paths::canonical_base(&config.input_base)?;
         Ok(Self {
             runs: Mutex::new(Registry::default()),
             next_id: AtomicU64::new(1),
             factory,
             config,
             output_base,
+            input_base,
         })
     }
 
