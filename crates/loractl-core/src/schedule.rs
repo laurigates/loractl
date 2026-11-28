@@ -29,7 +29,9 @@
 //! `total` is `steps` from the config — a TOTAL, not a remainder, matching
 //! [`ResumeConfig`](crate::config::ResumeConfig)'s contract. Resuming with a
 //! *different* `steps` therefore stretches the decay over the new total; keep
-//! `steps` fixed across a resume to continue the original curve.
+//! `steps` fixed across a resume to continue the original curve. A resume that
+//! changes it under `linear`/`cosine` emits a warning naming both totals
+//! ([`crate::resume::schedule_horizon_warning`], #247).
 //!
 //! # Shape
 //!
@@ -51,6 +53,15 @@
 //! increment above it; `min_lr` is the asymptote, reached only by a step past
 //! `total`, where `p` clamps at 1. The first post-warmup step is at `p = 0`, so
 //! it repeats the peak: the peak is held for two steps, never skipped.
+//!
+//! # Against diffusers
+//!
+//! `constant` (with warmup), `linear` and `cosine` are pinned against
+//! diffusers' own `get_*_schedule_with_warmup` at a pinned tag
+//! (`tests/lr_schedule_reference.rs`). The decay matches exactly with
+//! `min_lr = 0`. Warmup deliberately runs one step ahead of diffusers, whose
+//! first step is at rate 0: loractl starts at `base / W` and reaches the peak
+//! on step `W`. `exponential` and `step` have no diffusers equivalent.
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};

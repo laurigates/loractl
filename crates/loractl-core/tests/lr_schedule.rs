@@ -304,3 +304,58 @@ fn a_resumed_run_continues_on_the_curve() {
         "the resumed first step must NOT be the warmup's first step"
     );
 }
+
+/// Every `Warning` message a run emits.
+fn warnings_of(config: &TrainConfig) -> Vec<String> {
+    let mut out = Vec::new();
+    DiffusionTrainer
+        .train(config, &mut |event| {
+            if let TrainEvent::Warning { message } = event {
+                out.push(message);
+            }
+        })
+        .expect("the run completes");
+    out
+}
+
+/// #247: the rate is a pure function of `(step, steps)`, so resuming with a
+/// different `steps` silently stretches a `linear`/`cosine` decay. The
+/// original total is already in the artifact (`ss_max_train_steps`); a resume
+/// that changes it must say so, naming both totals. Resuming with the same
+/// total must not, or the warning is noise nobody reads.
+#[test]
+fn a_resume_that_changes_the_decay_horizon_warns_with_both_totals() {
+    let _lock = TRAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let out = TempDir::new("lr-horizon");
+    let dataset = staged_dataset(&out);
+    let schedule = cosine_with_warmup(2);
+    let dir = out.0.join("full");
+    steps_of(
+        &mut DiffusionTrainer,
+        &diffusion(dir.clone(), dataset.clone(), 6, schedule.clone()),
+    );
+
+    let mut stretched = diffusion(
+        out.0.join("stretched"),
+        dataset.clone(),
+        8,
+        schedule.clone(),
+    );
+    stretched.resume.from = Some(dir.join("checkpoint-2.safetensors"));
+    let warnings = warnings_of(&stretched);
+    let horizon: Vec<_> = warnings
+        .iter()
+        .filter(|m| m.contains("decay horizon"))
+        .collect();
+    assert_eq!(horizon.len(), 1, "{warnings:#?}");
+    assert!(horizon[0].contains("steps: 6"), "{}", horizon[0]);
+    assert!(horizon[0].contains("steps: 8"), "{}", horizon[0]);
+
+    let mut same = diffusion(out.0.join("same"), dataset, 6, schedule);
+    same.resume.from = Some(dir.join("checkpoint-2.safetensors"));
+    let warnings = warnings_of(&same);
+    assert!(
+        warnings.iter().all(|m| !m.contains("decay horizon")),
+        "{warnings:#?}"
+    );
+}

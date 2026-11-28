@@ -1660,6 +1660,11 @@ where
         sink(TrainEvent::Warning {
             message: crate::resume::resume_message(plan, resume_deltas, restored.as_ref(), total),
         });
+        if let Some(message) =
+            crate::resume::schedule_horizon_warning(plan, &config.optim.schedule, total)
+        {
+            sink(TrainEvent::Warning { message });
+        }
     }
 
     // #134: the block-checkpointed step runs the frozen denoiser on the
