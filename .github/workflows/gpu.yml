@@ -122,8 +122,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The rust-toolchain.toml pin, with superseded pins pruned (#254).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/rust-pinned
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2.9.3
@@ -153,8 +154,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The rust-toolchain.toml pin, with superseded pins pruned (#254).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/rust-pinned
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2.9.3
@@ -180,8 +182,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The rust-toolchain.toml pin, with superseded pins pruned (#254).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/rust-pinned
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2.9.3
@@ -213,8 +216,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The rust-toolchain.toml pin, with superseded pins pruned (#254).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/rust-pinned
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2.9.3

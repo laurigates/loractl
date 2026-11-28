@@ -448,7 +448,7 @@ hid it.
   `$HF_HOME/token`, else `huggingface/token` under `$XDG_CACHE_HOME` or
   `~/.cache` (the official client's lookup order). The
   header is not forwarded to the CDN host the file redirects to
-  (`RedirectAuthHeaders::Never`, pinned by a two-host loopback test), and the
+  (`RedirectAuthHeaders::SameHost` since #249, pinned by loopback tests for both the cross-host and same-host hop), and the
   token never appears in an error. 401
   and 403 map to distinct, actionable messages (accept the terms / set
   `HF_TOKEN` / set `model.tokenizer`). The pinned length and SHA-256 are
