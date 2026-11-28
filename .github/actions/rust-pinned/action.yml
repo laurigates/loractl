@@ -1,0 +1,41 @@
+name: Rust toolchain (pinned, pruned)
+description: >-
+  Install the toolchain rust-toolchain.toml pins and uninstall versioned
+  toolchains older than it (#254). For the persistent self-hosted GPU runner,
+  whose root disk is ~90% full at rest and shared with a second runner: every
+  Renovate bump of the pin would otherwise leave the previous toolchain behind
+  (several hundred MB each), and a full disk surfaces as
+  `ld terminated with signal 7 [Bus error]`
+  (.claude/rules/gpu-runner-failure-signatures.md).
+
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned toolchain and prune older pins
+      shell: bash
+      run: |
+        set -euo pipefail
+        pin=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
+        if [ -z "$pin" ]; then
+          echo "::error::no channel in rust-toolchain.toml"
+          exit 1
+        fi
+        rustup toolchain install "$pin" --profile minimal --component clippy,rustfmt
+        echo "toolchains before prune:"
+        rustup toolchain list
+        # Only numeric pins strictly OLDER than ours are removed. `stable`,
+        # `nightly` and newer versions are left alone, so a newer pin used by
+        # the other runner sharing this host is never touched. An older pin
+        # that runner still needs is reinstalled by its own next job.
+        rustup toolchain list | awk '{print $1}' \
+          | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?-' \
+          | while read -r tc; do
+              v=${tc%%-*}
+              if [ "$v" != "$pin" ] && [ "$(printf '%s\n%s\n' "$v" "$pin" | sort -V | head -n1)" = "$v" ]; then
+                echo "pruning superseded toolchain $tc (pin is $pin)"
+                rustup toolchain uninstall "$tc"
+              fi
+            done
+        echo "toolchains after prune:"
+        rustup toolchain list
+        rustc --version
