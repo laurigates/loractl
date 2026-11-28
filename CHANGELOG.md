@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.0](https://github.com/laurigates/loractl/compare/v0.24.0...v1.0.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** API requests must give dataset and model paths relative to LORACTL_INPUT_BASE; absolute paths are rejected with 400.
+
+### Features
+
+* **trainer:** report the observed caption-dropout count before the first step ([#276](https://github.com/laurigates/loractl/issues/276)) ([6cdcfc1](https://github.com/laurigates/loractl/commit/6cdcfc1c9b1ee53496e45aea0e766ec8cbfe53b1)), closes [#251](https://github.com/laurigates/loractl/issues/251)
+
+
+### Bug Fixes
+
+* **api:** confine dataset and model paths under LORACTL_INPUT_BASE ([#277](https://github.com/laurigates/loractl/issues/277)) ([83d40c2](https://github.com/laurigates/loractl/commit/83d40c2ea1b2756e13e0230c00fd0f639faacae1)), closes [#224](https://github.com/laurigates/loractl/issues/224)
+* **core:** keep the HF token on same-host redirects; strip a BOM from token files ([#272](https://github.com/laurigates/loractl/issues/272)) ([b269bb6](https://github.com/laurigates/loractl/commit/b269bb69a3e98ffb3a84808346efc7a6c93f6af3)), closes [#249](https://github.com/laurigates/loractl/issues/249)
+* **mcp:** expand GITHUB_PERSONAL_ACCESS_TOKEN with ${VAR} syntax ([#271](https://github.com/laurigates/loractl/issues/271)) ([6118c62](https://github.com/laurigates/loractl/commit/6118c627e6049921b2a7d4bea6548eabfd0790aa)), closes [#261](https://github.com/laurigates/loractl/issues/261)
+
 ## [0.24.0](https://github.com/laurigates/loractl/compare/v0.23.0...v0.24.0) (2026-10-29)
 
 
