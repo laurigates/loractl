@@ -158,7 +158,10 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   Applied per example at batch assembly from a seeded host-side generator keyed
   by `(seed, global step, row)` — so it varies across epochs and a resumed run
   reproduces it — against one shared cached empty-caption conditioning. Off by
-  default; see `config/examples/lora.yaml`. Per-tag dropout is #220.
+  default; see `config/examples/lora.yaml`. Before the first step the run
+  reports how many rows it will train unconditioned (`caption dropout: 37 of
+  400 rows over steps 1..=200 (9.3%)`, #251), exact rather than estimated
+  because the generator is pure. Per-tag dropout is #220.
 - **Numerics proof.** `just test` runs an always-on, offline test that pins the
   LoRA toy's trained factors and per-step losses against a checked-in PyTorch
   golden (`1e-5` tolerance; frozen base bit-exact), plus a black-box

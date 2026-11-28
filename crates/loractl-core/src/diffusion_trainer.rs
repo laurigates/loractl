@@ -74,7 +74,7 @@ use crate::adapters::{LoraAdapters, build_adapters};
 use crate::config::{
     BackendKind, ModelConfig, ModelVariant, Precision, Quant, TaskKind, TrainConfig,
 };
-use crate::dataset::{CaptionDropout, plan_dataset, prepare_dataset};
+use crate::dataset::{CaptionDropout, plan_dataset, plan_for_step, prepare_dataset};
 use crate::event::{PhaseCounters, PhaseName, TrainEvent};
 use crate::export::{ExportFormat, export_adapters, import_adapters};
 use crate::flow::{interpolate, resolve_shift, sample_timesteps, velocity_target};
@@ -1576,6 +1576,25 @@ where
     // the position in the epoch for free.
     let start_step = plan.as_ref().map(|p| p.start_step()).unwrap_or(1);
 
+    // #251: how many rows this run's steps will actually train unconditioned.
+    // The policy is pure in `(seed, step, row)`, so counting it here, before
+    // the first step, is the exact figure the loop below substitutes — and
+    // keeps it a setup `Phase` (phases never interleave with steps) rather
+    // than a new wire event. A resume counts only the steps it runs.
+    if let Some(dropout) = &caption_dropout {
+        let tally = dropout.tally(&plans, start_step..=total);
+        emit_phase(
+            sink,
+            PhaseName::Dataset,
+            format!(
+                "caption dropout: {} of {} rows over steps {start_step}..={total} ({:.1}%)",
+                tally.dropped,
+                tally.rows,
+                100.0 * tally.fraction()
+            ),
+        );
+    }
+
     // The interop metadata (#154) every export below carries: trigger words,
     // the training record, and the dataset's bucket/tag frequencies. Built
     // once from the scan `prepare_dataset` already did — `steps_done` and the
@@ -1659,7 +1678,7 @@ where
         // the seed stream — and every pinned loss trajectory — is untouched.
         // Deliberately before the `FORWARD_START` probe boundary so the
         // retention ledger keeps measuring the forward, not the load.
-        let plan = &plans[((step - 1) as usize) % plans.len()];
+        let plan = plan_for_step(&plans, step);
         let batch = match &caption_dropout {
             // The substitution is chosen per row from the GLOBAL step, so a
             // resumed run (which starts its counter at `start_step`) draws

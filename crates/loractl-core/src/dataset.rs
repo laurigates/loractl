@@ -175,6 +175,7 @@ use anyhow::{Context, Result, bail};
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor, TensorData};
 use rayon::prelude::*;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 /// Every bucket dimension is a multiple of this: Krea 2's
@@ -1015,6 +1016,57 @@ impl CaptionDropout {
         let h = splitmix64(h ^ row as u64);
         (h >> 11) as f64 / (1u64 << 53) as f64
     }
+}
+
+/// How many batch rows a [`CaptionDropout`] substitutes over a step range
+/// (#251): the figure a run reports so the observed rate can be checked
+/// against the configured one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DropoutTally {
+    /// Rows that took the empty-caption conditioning.
+    pub dropped: u64,
+    /// All rows the range trains on.
+    pub rows: u64,
+}
+
+impl DropoutTally {
+    /// `dropped / rows`, or `0.0` for an empty range.
+    pub fn fraction(&self) -> f64 {
+        if self.rows == 0 {
+            0.0
+        } else {
+            self.dropped as f64 / self.rows as f64
+        }
+    }
+}
+
+impl CaptionDropout {
+    /// The rows this policy substitutes over global `steps`, batched as the
+    /// step loop batches them ([`plan_for_step`]). The policy is a pure
+    /// function of `(seed, step, row)`, so this is exactly what
+    /// [`PreparedDataset::load_batch_with`] will swap, not an estimate.
+    pub fn tally(&self, plans: &[BatchPlan], steps: RangeInclusive<u64>) -> DropoutTally {
+        let mut tally = DropoutTally::default();
+        if plans.is_empty() {
+            return tally;
+        }
+        for step in steps {
+            for row in 0..plan_for_step(plans, step).items.len() {
+                tally.rows += 1;
+                if self.choose(step, row) == ConditioningChoice::Empty {
+                    tally.dropped += 1;
+                }
+            }
+        }
+        tally
+    }
+}
+
+/// The plan the step loop trains on at 1-based global `step`: round-robin
+/// over `plans`, so a resumed run lands on the same batch the uninterrupted
+/// run would have. Panics on an empty `plans` (the trainer refuses one first).
+pub fn plan_for_step(plans: &[BatchPlan], step: u64) -> &BatchPlan {
+    &plans[((step.max(1) - 1) as usize) % plans.len()]
 }
 
 impl ConditioningPolicy for CaptionDropout {

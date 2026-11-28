@@ -101,9 +101,11 @@ const PINNED: Pin<'static> = Pin {
     sha256: TOKENIZER_SHA256,
 };
 
-/// A trimmed, non-empty token, or `None`.
+/// A trimmed, non-empty token, or `None`. A leading UTF-8 BOM (U+FEFF, which
+/// `str::trim` keeps) is stripped first, so a token file saved by a Windows
+/// editor is not sent with it.
 fn clean_token(raw: &str) -> Option<String> {
-    let t = raw.trim();
+    let t = raw.trim_start_matches('\u{feff}').trim();
     (!t.is_empty()).then(|| t.to_owned())
 }
 
@@ -261,13 +263,14 @@ fn gate_error(status: u16, had_token: bool) -> String {
 
 /// Blocking GET of `url` into bytes, with an overall timeout and a body-size
 /// limit sized for the ~11 MB tokenizer. `token`, when present, is sent as
-/// `Authorization: Bearer`; it is not forwarded across a redirect to another
-/// host (`RedirectAuthHeaders::Never`, set explicitly below), which matters
+/// `Authorization: Bearer`. It follows a same-host redirect (e.g. a renamed
+/// repo) but is not forwarded across a redirect to another host
+/// (`RedirectAuthHeaders::SameHost`, set explicitly below), which matters
 /// because HF redirects the file to a pre-signed CDN URL.
 fn download(url: &str, token: Option<&str>) -> Result<Vec<u8>> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(120)))
-        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
+        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
         .build()
         .into();
     let mut req = agent.get(url);
@@ -353,22 +356,14 @@ mod tests {
         let url = format!("http://{}/tokenizer.json", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let (mut sock, _) = listener.accept().unwrap();
-            let mut req = Vec::new();
-            let mut buf = [0u8; 1024];
-            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = sock.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-                req.extend_from_slice(&buf[..n]);
-            }
+            let req = read_head(&mut sock);
             let head = format!(
                 "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             sock.write_all(head.as_bytes()).unwrap();
             sock.write_all(&body).unwrap();
-            String::from_utf8_lossy(&req).into_owned()
+            req
         });
         (url, handle)
     }
@@ -679,22 +674,14 @@ mod tests {
         let cdn_port = cdn.local_addr().unwrap().port();
         let cdn_seen = std::thread::spawn(move || {
             let (mut sock, _) = cdn.accept().unwrap();
-            let mut req = Vec::new();
-            let mut buf = [0u8; 1024];
-            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = sock.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-                req.extend_from_slice(&buf[..n]);
-            }
+            let req = read_head(&mut sock);
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 BODY.len()
             );
             sock.write_all(head.as_bytes()).unwrap();
             sock.write_all(BODY).unwrap();
-            String::from_utf8_lossy(&req).into_owned()
+            req
         });
 
         // The "hub": answers 302 to the CDN under a different hostname.
@@ -702,21 +689,13 @@ mod tests {
         let url = format!("http://{}/tokenizer.json", hub.local_addr().unwrap());
         let hub_seen = std::thread::spawn(move || {
             let (mut sock, _) = hub.accept().unwrap();
-            let mut req = Vec::new();
-            let mut buf = [0u8; 1024];
-            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = sock.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-                req.extend_from_slice(&buf[..n]);
-            }
+            let req = read_head(&mut sock);
             let head = format!(
                 "HTTP/1.1 302 Found\r\nLocation: http://localhost:{cdn_port}/signed\r\n\
                  Content-Length: 0\r\nConnection: close\r\n\r\n"
             );
             sock.write_all(head.as_bytes()).unwrap();
-            String::from_utf8_lossy(&req).into_owned()
+            req
         });
 
         fetch_with(
@@ -740,6 +719,80 @@ mod tests {
             !cdn_req.contains("authorization") && !cdn_req.contains("hf_secret123"),
             "the token leaked to the redirect target:\n{cdn_req}"
         );
+    }
+
+    /// Read one request's head (up to the blank line) from `sock`.
+    fn read_head(sock: &mut std::net::TcpStream) -> String {
+        let mut req = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = sock.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&req).into_owned()
+    }
+
+    /// A same-host redirect (e.g. HF 307-ing a renamed repo to a new path on
+    /// huggingface.co) must keep the token; dropping it surfaces as a
+    /// misleading 401 (#249). The cross-host case is pinned by
+    /// `the_token_is_not_forwarded_across_a_redirect_to_another_host`.
+    #[test]
+    fn the_token_survives_a_same_host_redirect() {
+        let s = Scratch::new();
+        let sha = body_pin_sha();
+        let hub = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/old/tokenizer.json", hub.local_addr().unwrap());
+        let seen = std::thread::spawn(move || {
+            let (mut sock, _) = hub.accept().unwrap();
+            let first = read_head(&mut sock);
+            sock.write_all(
+                b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /new/tokenizer.json\r\n\
+                  Content-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+            drop(sock);
+            let (mut sock, _) = hub.accept().unwrap();
+            let second = read_head(&mut sock);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            );
+            sock.write_all(head.as_bytes()).unwrap();
+            sock.write_all(BODY).unwrap();
+            (first, second)
+        });
+
+        fetch_with(
+            &s.0,
+            &url,
+            Some("hf_secret123"),
+            &Pin {
+                len: BODY.len(),
+                sha256: &sha,
+            },
+        )
+        .expect("the same-host redirect is followed with the token");
+
+        let (first, second) = seen.join().unwrap();
+        let second = second.to_ascii_lowercase();
+        assert!(first.starts_with("GET /old/tokenizer.json"), "{first}");
+        assert!(second.starts_with("get /new/tokenizer.json"), "{second}");
+        assert!(
+            second.contains("authorization: bearer hf_secret123"),
+            "the token was dropped on a same-host redirect:\n{second}"
+        );
+    }
+
+    /// A token file written by a Windows editor can start with a UTF-8 BOM,
+    /// which `str::trim` keeps (#249).
+    #[test]
+    fn clean_token_strips_a_leading_bom() {
+        assert_eq!(clean_token("\u{feff}hf_abc\r\n"), Some("hf_abc".to_owned()));
+        assert_eq!(clean_token("\u{feff}  \n"), None);
+        assert_eq!(clean_token("  hf_abc "), Some("hf_abc".to_owned()));
     }
 
     #[test]
