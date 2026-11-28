@@ -27,8 +27,8 @@ use loractl_core::config::{
     TaskKind,
 };
 use loractl_core::dataset::{
-    CaptionDropout, ConditioningChoice, ConditioningPolicy, PreparedDataset, plan_dataset,
-    prepare_dataset,
+    CaptionDropout, ConditioningChoice, ConditioningPolicy, DropoutTally, PreparedDataset,
+    plan_dataset, plan_for_step, prepare_dataset,
 };
 use loractl_core::{
     BurnTrainer, DiffusionTrainer, TrainConfig, TrainEvent, Trainer, read_metadata,
@@ -584,6 +584,90 @@ fn a_resumed_run_reproduces_the_original_drop_pattern() {
 }
 
 // ---------------------------------------------------------------------------
+// The observed-rate report (#251)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_tally_is_every_row_at_rate_one_and_none_at_rate_zero() {
+    let dir = fixture("dropout-tally-bounds");
+    let (prepared, _) = prepare(&config(&dir.0, 0.5));
+    // Batch size 3 over the fixture: plans of unequal size, so a tally that
+    // assumed `batch_size` rows per step would be caught.
+    let plans = prepared.batches(3);
+    let rows: u64 = (1..=10u64)
+        .map(|step| plan_for_step(&plans, step).items.len() as u64)
+        .sum();
+    assert!(plans.iter().any(|p| p.items.len() != 3), "{plans:?}");
+
+    let all = CaptionDropout::new(1.0, 7).unwrap().tally(&plans, 1..=10);
+    assert_eq!(
+        all,
+        DropoutTally {
+            dropped: rows,
+            rows
+        }
+    );
+    assert_eq!(all.fraction(), 1.0);
+
+    let none = CaptionDropout::new(0.0, 7).unwrap().tally(&plans, 1..=10);
+    assert_eq!(none, DropoutTally { dropped: 0, rows });
+    assert_eq!(none.fraction(), 0.0);
+
+    // A resumed range counts only the steps it runs; an empty range is zero.
+    let resumed = CaptionDropout::new(1.0, 7).unwrap().tally(&plans, 7..=10);
+    let resumed_rows: u64 = (7..=10u64)
+        .map(|step| plan_for_step(&plans, step).items.len() as u64)
+        .sum();
+    assert_eq!(resumed.rows, resumed_rows);
+    // `start_step > total` (an already-complete config re-run) yields an
+    // empty range; built at runtime so the shape is the trainer's.
+    let (start, total) = (11u64, 10u64);
+    let done = CaptionDropout::new(1.0, 7)
+        .unwrap()
+        .tally(&plans, start..=total);
+    assert_eq!(done, DropoutTally::default());
+    assert_eq!(done.fraction(), 0.0, "no rows must not be NaN");
+}
+
+#[test]
+fn the_tally_equals_the_rows_batch_assembly_actually_substitutes() {
+    // The report is computed from the same pure policy the step loop uses; pin
+    // that it is the count of rows `load_batch_with` really swapped, over a
+    // resume-shaped range, not an estimate from the configured rate.
+    let dir = fixture("dropout-tally-assembly");
+    let (prepared, _) = prepare(&config(&dir.0, 0.5));
+    let device = Default::default();
+    let policy = CaptionDropout::new(0.5, 42).unwrap();
+    let plans = prepared.batches(3);
+    let empty_fill = row_fills(
+        &prepared
+            .load_batch_with::<B>(&plans[0], 1, &CaptionDropout::new(1.0, 0).unwrap(), &device)
+            .unwrap()
+            .conditioning,
+    )[0];
+
+    let mut dropped = 0u64;
+    let mut rows = 0u64;
+    for step in 5..=40u64 {
+        let plan = plan_for_step(&plans, step);
+        let fills = row_fills(
+            &prepared
+                .load_batch_with::<B>(plan, step, &policy, &device)
+                .unwrap()
+                .conditioning,
+        );
+        rows += fills.len() as u64;
+        dropped += fills.iter().filter(|&&f| f == empty_fill).count() as u64;
+    }
+    let tally = policy.tally(&plans, 5..=40);
+    assert_eq!(tally, DropoutTally { dropped, rows });
+    assert!(
+        0 < dropped && dropped < rows,
+        "a 0.5 rate over 36 steps: {tally:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // End to end on the tiny Krea 2 bundle
 // ---------------------------------------------------------------------------
 
@@ -720,6 +804,45 @@ fn a_positive_rate_changes_the_diffusion_loss_trajectory_and_the_default_does_no
         .filter(|n| n.contains(".empty."))
         .count();
     assert_eq!(empties, 1);
+}
+
+fn dataset_details(config: &TrainConfig) -> Vec<String> {
+    let mut details = Vec::new();
+    DiffusionTrainer
+        .train(config, &mut |event| {
+            if let TrainEvent::Phase {
+                name: loractl_core::PhaseName::Dataset,
+                detail,
+                ..
+            } = event
+            {
+                details.push(detail);
+            }
+        })
+        .expect("the run completes");
+    details
+}
+
+#[test]
+fn a_diffusion_run_reports_the_observed_dropout_count_before_its_first_step() {
+    let _lock = TRAIN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = TempDir::new("dropout-e2e-report");
+    let dataset = staged_dataset(&out);
+    // 4 images at batch 2: two full plans, so 2 rows per step.
+    let rows = 2 * STEPS;
+
+    let all = dataset_details(&train_config(&out, &dataset, 1.0));
+    let expected =
+        format!("caption dropout: {rows} of {rows} rows over steps 1..={STEPS} (100.0%)");
+    assert!(all.contains(&expected), "missing {expected:?} in {all:?}");
+
+    let off = dataset_details(&train_config(&out, &dataset, 0.0));
+    assert!(
+        off.iter().all(|d| !d.contains("caption dropout")),
+        "a rate-0 run must not report dropout: {off:?}"
+    );
 }
 
 #[test]
