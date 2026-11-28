@@ -363,7 +363,7 @@ measured fact rather than a single observation.
   question).
 
 The decision record for the timing mechanism itself is
-[#162](https://github.com/laurigates/loractl/issues/162) (ADR-0009).
+[ADR-0009](adrs/0009-bench-step-timing-mechanism.md) (#162).
 
 Two failure modes had to be fixed before a number existed at all, both of which
 produced a *plausible-looking wrong answer* rather than an error: a contended
