@@ -512,6 +512,11 @@ export-reference:
 krea2-lora-keys-reference:
     uv run reference/krea2_lora_keys_reference.py --out crates/loractl-core/tests/golden
 
+# Regenerate the optim.schedule golden from diffusers' own schedule code at a
+# pinned tag (#247). Pure-Python AST extraction; no torch.
+lr-schedule-reference:
+    uv run reference/lr_schedule_reference.py > crates/loractl-core/tests/golden/lr_schedule.json
+
 # Regenerate the training-adapter merge-at-load golden (#83; numpy only, no
 # torch/network). Pins the `W += (alpha/rank)·B·A` merge math + layout convention.
 training-adapter-merge-reference:

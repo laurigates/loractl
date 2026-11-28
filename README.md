@@ -151,6 +151,9 @@ separate, CPU-only binary: `cargo install --path crates/loractl-api`.
   are unchanged — see `config/examples/lora.yaml`). The rate is a pure function
   of the global step, so a resumed run continues on the curve rather than
   restarting its warmup; each `step` event carries the rate that was applied.
+  `linear` and `cosine` match diffusers' curves (pinned by a golden, #247;
+  warmup reaches the peak one step earlier, by design). Resuming with a
+  different `steps` changes the decay horizon and is reported as a warning.
 - **Caption dropout** (#219). `dataset.caption_dropout_rate` (default `0.0`)
   replaces an example's caption with the empty string for a step with that
   probability, so the adapter also trains the unconditional branch that

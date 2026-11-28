@@ -43,7 +43,7 @@
 //! sink](crate::event::TrainEvent).
 
 use crate::adapters::LoraAdapters;
-use crate::config::{OutputConfig, ResumeConfig};
+use crate::config::{OutputConfig, ResumeConfig, ScheduleConfig, ScheduleKind};
 use crate::export::{OwnedF32Tensor, to_owned_f32};
 use crate::metadata::{LoraMetadata, read_metadata};
 use anyhow::{Context, Result, bail, ensure};
@@ -168,6 +168,10 @@ pub struct ResumePlan {
     pub explicit: bool,
     /// What the source's `__metadata__` says (see [`ResumeProvenance`]).
     pub provenance: ResumeProvenance,
+    /// The source's `ss_max_train_steps`: the `steps` total the run that wrote
+    /// it was configured with, finished or not. Read for
+    /// [`schedule_horizon_warning`] (#247).
+    pub recorded_total: Option<u64>,
     /// The sidecar beside `source`, when one exists **and belongs to it**
     /// (see [`stale_sidecar`]).
     pub optim_state: Option<PathBuf>,
@@ -240,6 +244,9 @@ pub fn plan_resume(resume: &ResumeConfig, output: &OutputConfig) -> Result<Optio
         )
     })?;
     let provenance = provenance_of(&meta);
+    let recorded_total = meta
+        .get("ss_max_train_steps")
+        .and_then(|s| s.parse::<u64>().ok());
 
     if !explicit
         && !resume.allow_unfinished
@@ -275,6 +282,7 @@ pub fn plan_resume(resume: &ResumeConfig, output: &OutputConfig) -> Result<Optio
         source,
         explicit,
         provenance,
+        recorded_total,
         optim_state,
         stale_optim,
     }))
@@ -588,6 +596,41 @@ pub fn load_optimizer_state<AB: AutodiffBackend>(
             clean_streak,
         },
     ))
+}
+
+/// A warning when a resume changes the horizon a `linear`/`cosine` decay is
+/// computed over (#247), or `None`.
+///
+/// [`ScheduleConfig::lr_at`] is a pure function of `(step, steps)`, which is
+/// what makes resume exact *at the same total*. With a different `steps` the
+/// same global step lands elsewhere on the curve: extending a finished cosine
+/// run from 6 to 8 steps lifts the rate back up from near `min_lr`, and
+/// shortening one steepens the remaining decay. That is sometimes the intent
+/// (a deliberate extension), so it warns rather than refuses.
+///
+/// Only `linear` and `cosine` read the total; `constant` (with or without
+/// warmup), `exponential` and `step` depend on the step alone, so a changed
+/// total changes nothing for them and they stay quiet. Nothing to compare when
+/// the source recorded no `ss_max_train_steps`.
+pub fn schedule_horizon_warning(
+    plan: &ResumePlan,
+    schedule: &ScheduleConfig,
+    total: u64,
+) -> Option<String> {
+    let recorded = plan.recorded_total?;
+    let reads_total = matches!(schedule.kind, ScheduleKind::Linear | ScheduleKind::Cosine);
+    (reads_total && recorded != total).then(|| {
+        format!(
+            "decay horizon changed on resume: {} was written by a run configured \
+             with steps: {recorded}, and this run has steps: {total}. The {} \
+             schedule is a function of (step, steps), so from step {} on it \
+             follows the {total}-step curve, not the original {recorded}-step one. \
+             Keep steps: {recorded} to continue the original curve.",
+            plan.source.display(),
+            schedule.kind.as_str(),
+            plan.start_step(),
+        )
+    })
 }
 
 /// The one operator-visible sentence a resumed run emits, naming what **was**
@@ -951,6 +994,7 @@ mod tests {
             source: PathBuf::from("/out/lora.safetensors"),
             explicit: false,
             provenance: ResumeProvenance::Finished { steps_done: 6 },
+            recorded_total: Some(6),
             optim_state: None,
             stale_optim: None,
         };
@@ -989,5 +1033,52 @@ mod tests {
         assert!(note.contains("was NOT restored"), "{note}");
         assert!(!note.contains("the step counter"), "{note}");
         assert!(note.contains("steps 1..=12"), "{note}");
+    }
+
+    #[test]
+    fn the_horizon_warning_fires_only_for_a_total_dependent_curve_that_changed() {
+        use crate::config::{ScheduleConfig, ScheduleKind};
+        let plan = ResumePlan {
+            source: PathBuf::from("/out/checkpoint-2.safetensors"),
+            explicit: true,
+            provenance: ResumeProvenance::Unfinished {
+                steps_done: 2,
+                planned: Some(6),
+            },
+            recorded_total: Some(6),
+            optim_state: None,
+            stale_optim: None,
+        };
+        let of = |kind| ScheduleConfig {
+            kind,
+            ..ScheduleConfig::default()
+        };
+        for kind in [ScheduleKind::Linear, ScheduleKind::Cosine] {
+            let msg = schedule_horizon_warning(&plan, &of(kind), 8).expect("warns");
+            assert!(
+                msg.contains("steps: 6") && msg.contains("steps: 8"),
+                "{msg}"
+            );
+            assert!(schedule_horizon_warning(&plan, &of(kind), 6).is_none());
+        }
+        // These curves never read `steps`, so a changed total changes nothing.
+        let gamma = ScheduleConfig {
+            gamma: Some(0.9),
+            step_size: Some(2),
+            ..of(ScheduleKind::Step)
+        };
+        assert!(schedule_horizon_warning(&plan, &gamma, 8).is_none());
+        let expo = ScheduleConfig {
+            gamma: Some(0.9),
+            ..of(ScheduleKind::Exponential)
+        };
+        assert!(schedule_horizon_warning(&plan, &expo, 8).is_none());
+        assert!(schedule_horizon_warning(&plan, &of(ScheduleKind::Constant), 8).is_none());
+        // Nothing recorded, nothing to compare.
+        let unrecorded = ResumePlan {
+            recorded_total: None,
+            ..plan
+        };
+        assert!(schedule_horizon_warning(&unrecorded, &of(ScheduleKind::Cosine), 8).is_none());
     }
 }
