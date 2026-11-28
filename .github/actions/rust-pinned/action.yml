@@ -20,20 +20,29 @@ runs:
           echo "::error::no channel in rust-toolchain.toml"
           exit 1
         fi
+        # dtolnay/rust-toolchain (replaced here) put cargo's bin dir on PATH;
+        # a runner service started by systemd does not source the shell
+        # profile, so do the same rather than rely on the inherited PATH.
+        cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+        export PATH="$cargo_bin:$PATH"
+        echo "$cargo_bin" >> "$GITHUB_PATH"
         rustup toolchain install "$pin" --profile minimal --component clippy,rustfmt
         echo "toolchains before prune:"
         rustup toolchain list
         # Only numeric pins strictly OLDER than ours are removed. `stable`,
         # `nightly` and newer versions are left alone, so a newer pin used by
         # the other runner sharing this host is never touched. An older pin
-        # that runner still needs is reinstalled by its own next job.
+        # that runner still needs is reinstalled by its own next job. A failed
+        # uninstall (already removed by a concurrent job on the shared host)
+        # only warns: pruning is housekeeping and must never fail a GPU run.
         rustup toolchain list | awk '{print $1}' \
           | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?-' \
           | while read -r tc; do
               v=${tc%%-*}
               if [ "$v" != "$pin" ] && [ "$(printf '%s\n%s\n' "$v" "$pin" | sort -V | head -n1)" = "$v" ]; then
                 echo "pruning superseded toolchain $tc (pin is $pin)"
-                rustup toolchain uninstall "$tc"
+                rustup toolchain uninstall "$tc" \
+                  || echo "::warning::could not uninstall $tc (removed concurrently?)"
               fi
             done
         echo "toolchains after prune:"
