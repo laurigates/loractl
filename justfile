@@ -136,6 +136,11 @@ lint-mmdit-real:
 lint-plot:
     cargo clippy -p loractl-cli --all-targets --features plot -- -D warnings
 
+# Static check of .github/workflows/** (#248; CI parity: actionlint.yml). Needs
+# `actionlint` on PATH (and `shellcheck` to check `run:` blocks).
+lint-actions:
+    actionlint
+
 # Lint the opt-in wgpu GPU-backend path (M7). Compiles the cubecl/wgpu/naga
 # subtree + the gated wgpu smoke test; no GPU is needed to COMPILE and nothing
 # runs. Kept out of the default `just lint` so that stays offline and fast.

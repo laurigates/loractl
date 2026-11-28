@@ -9,9 +9,14 @@ carry it, so it can't drift.
 - **Rust** — edition 2024, MSRV `1.92` (pinned in the workspace `Cargo.toml`).
 - **[`just`](https://github.com/casey/just)** — the task runner; `just` lists
   every recipe. `Cargo.lock` is committed, so a plain `cargo build` also works.
+- **A C toolchain and `cmake`** — `aws-lc-sys` (the rustls crypto backend
+  reqwest uses, via `sentry`) builds C code at compile time. Typical Linux and
+  macOS dev boxes already have both; minimal container images, cross-compiles
+  and Windows need them installed (Windows has further requirements; see the
+  aws-lc-rs build docs).
 - Optional, only for regenerating goldens or the opt-in feature paths:
   [`uv`](https://docs.astral.sh/uv/) (for the PyTorch reference scripts),
-  `cargo-audit`, and `cargo-deny`.
+  `cargo-audit`, `cargo-deny`, and `actionlint` (for `just lint-actions`).
 
 ## The gate before you commit
 
