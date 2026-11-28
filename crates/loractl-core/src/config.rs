@@ -12,6 +12,7 @@ use std::str::FromStr;
 
 /// Everything needed to run one training job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrainConfig {
     /// Number of optimization steps to run.
     ///
@@ -74,6 +75,32 @@ pub struct TrainConfig {
     pub metadata: MetadataConfig,
 }
 
+impl TrainConfig {
+    /// The top-level keys of the schema. Every struct in it is
+    /// `deny_unknown_fields` (#246), so an env layer that forwarded *every*
+    /// `LORACTL_*` variable would reject unrelated operational knobs
+    /// (`LORACTL_API_TOKEN`, `LORACTL_TURBO_FP`, …). Front-ends route only
+    /// variables whose first segment is one of these; inside a section a typo
+    /// is still an error. Pinned to the struct by a test.
+    pub const TOP_LEVEL_KEYS: &[&str] = &[
+        "steps", "seed", "task", "model", "lora", "dataset", "optim", "output", "resume",
+        "compute", "flow", "metadata",
+    ];
+
+    /// Whether a `LORACTL_`-stripped env key (`optim__lr` before figment's
+    /// split, `optim.lr` after it) addresses this schema: its first segment,
+    /// cut at `.` or `__` only, names a top-level key (case-insensitive, like
+    /// figment's own matching). A single `_` is not a boundary, so
+    /// `output_base` (the API's `LORACTL_OUTPUT_BASE`) is *not* `output`.
+    pub fn is_env_key(key: &str) -> bool {
+        let first = key.split('.').next().unwrap_or(key);
+        let first = first.split("__").next().unwrap_or(first);
+        Self::TOP_LEVEL_KEYS
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(first))
+    }
+}
+
 impl Default for TrainConfig {
     /// A runnable synthetic-demo run: the M2 classification task on the CPU
     /// backend, at the same values a YAML that omits those keys would get.
@@ -125,7 +152,7 @@ impl Default for TrainConfig {
 /// no public base model, so it is not an ecosystem artifact. Setting
 /// `metadata:` in `config/examples/lora.yaml` is a no-op.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MetadataConfig {
     /// Write the `__metadata__` header at all. `true` by default — an
     /// adapter with no metadata is the worst-behaved artifact in the
@@ -170,6 +197,7 @@ impl Default for MetadataConfig {
 
 /// The base model being adapted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelConfig {
     /// `"synthetic"` (the M2 demo trainer), `"mnist"` (the demo trainer's
     /// opt-in real-MNIST path, `--features mnist`), or a local path to a
@@ -318,6 +346,7 @@ impl<'de> Deserialize<'de> for ModelVariant {
 
 /// LoRA adapter shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoraConfig {
     /// Rank of the low-rank decomposition (the `r` in A·B).
     #[serde(default = "defaults::rank")]
@@ -363,6 +392,7 @@ impl Default for LoraConfig {
 /// `rank`/`alpha`, when `Some`, override the top-level [`LoraConfig`] values for
 /// the sites this pattern matches; when `None` the global values apply.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TargetSpec {
     /// Regex matched against injectable site paths.
     pub pattern: String,
@@ -442,6 +472,7 @@ impl<'de> Deserialize<'de> for BucketMode {
 
 /// Where and how to read training data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatasetConfig {
     /// Folder of images alongside same-named `.txt` caption files.
     pub path: PathBuf,
@@ -489,9 +520,10 @@ pub struct DatasetConfig {
     /// (`h ≥ min ⟹ w ≤ resolution²/min`).
     ///
     /// Rejected with an error when [`Self::bucketing`] is
-    /// [`BucketMode::Aspects`]: `config.rs` carries no
-    /// `#[serde(deny_unknown_fields)]`, so a knob that is merely *ignored* is
-    /// this schema's worst failure shape — refuse it out loud instead.
+    /// [`BucketMode::Aspects`]. `deny_unknown_fields` (#246) only catches a
+    /// key the schema does not know; this one is known but would be
+    /// *ignored* in that mode, which is the same silent failure one level
+    /// up — so refuse it out loud instead.
     ///
     /// Env override: `LORACTL_DATASET__MIN_BUCKET_RESOLUTION` (no CLI flag).
     #[serde(default)]
@@ -567,7 +599,7 @@ impl Default for DatasetConfig {
 
 /// Optimizer configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OptimConfig {
     /// Learning rate. With a non-default [`schedule`](Self::schedule) this is
     /// the **peak** rate the schedule is relative to (and what `--lr` sets).
@@ -608,7 +640,7 @@ impl OptimConfig {
 
 /// Output directory, adapter name, and checkpoint cadence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OutputConfig {
     /// Directory to write checkpoints, samples, and the final adapter into.
     pub dir: PathBuf,
@@ -644,7 +676,7 @@ impl Default for OutputConfig {
 /// could not report a remainder without changing what an SSE consumer sees
 /// mid-stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ResumeConfig {
     /// An explicit artifact to resume from — a previous final export or any
     /// `checkpoint-N.safetensors`. When set, `auto` is not consulted.
@@ -889,7 +921,7 @@ pub const DEFAULT_DEQUANT_CHUNK_MIB: u32 = 512;
 /// `Self::default()`, so a derived all-zeros default would silently disable
 /// chunking.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ComputeConfig {
     /// The compute backend to run on.
     pub backend: BackendKind,
@@ -1065,7 +1097,7 @@ impl<'de> Deserialize<'de> for ShiftMode {
 /// deserializes exactly as before, onto the SD3 Eq. 19 sampler defaults and
 /// the kohya/SD3-scheduler production shift.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FlowConfig {
     /// Mean of the logit-normal timestep distribution (`u ~ N(mean, std)`,
     /// `t = sigmoid(u)`). SD3 Eq. 19 default: `0.0`.
@@ -1239,5 +1271,57 @@ mod tests {
                 "omitting `{missing}` should be a deserialization error, not a default"
             );
         }
+    }
+
+    /// #246: a typo at any level of the schema is an error that names the
+    /// key, never a silent default. One probe per struct, each carrying the
+    /// same misspelling so the assertion can't pass on some other error.
+    #[test]
+    fn an_unknown_key_at_any_level_is_rejected_by_name() {
+        const BASE: &str = r#""model": {"base": "synthetic"}, "lora": {}, "dataset": {"path": ""}"#;
+        let probes = [
+            ("top level", format!(r#"{{{BASE}, "zz_typo": 1}}"#)),
+            ("model", r#"{"model": {"base": "synthetic", "zz_typo": 1}, "lora": {}, "dataset": {"path": ""}}"#.to_string()),
+            ("lora", r#"{"model": {"base": "synthetic"}, "lora": {"zz_typo": 1}, "dataset": {"path": ""}}"#.to_string()),
+            ("lora.targets[]", r#"{"model": {"base": "synthetic"}, "lora": {"targets": [{"pattern": "x", "zz_typo": 1}]}, "dataset": {"path": ""}}"#.to_string()),
+            ("dataset", r#"{"model": {"base": "synthetic"}, "lora": {}, "dataset": {"path": "", "zz_typo": 1}}"#.to_string()),
+            ("optim", format!(r#"{{{BASE}, "optim": {{"zz_typo": 1}}}}"#)),
+            ("optim.schedule", format!(r#"{{{BASE}, "optim": {{"schedule": {{"zz_typo": 1}}}}}}"#)),
+            ("output", format!(r#"{{{BASE}, "output": {{"zz_typo": 1}}}}"#)),
+            ("resume", format!(r#"{{{BASE}, "resume": {{"zz_typo": 1}}}}"#)),
+            ("compute", format!(r#"{{{BASE}, "compute": {{"zz_typo": 1}}}}"#)),
+            ("flow", format!(r#"{{{BASE}, "flow": {{"zz_typo": 1}}}}"#)),
+            ("metadata", format!(r#"{{{BASE}, "metadata": {{"zz_typo": 1}}}}"#)),
+        ];
+        // Teeth: the base document itself must parse, or every probe below
+        // would "pass" on the missing-required-key error instead.
+        serde_json::from_str::<TrainConfig>(&format!("{{{BASE}}}")).expect("base parses");
+        for (level, doc) in probes {
+            let err = serde_json::from_str::<TrainConfig>(&doc)
+                .err()
+                .unwrap_or_else(|| panic!("an unknown key under {level} was silently accepted"));
+            assert!(
+                err.to_string().contains("unknown field `zz_typo`"),
+                "{level}: {err}"
+            );
+        }
+    }
+
+    /// The env filter in the CLI routes only these sections into the config;
+    /// pin the list to the struct so a new top-level field can't be
+    /// unreachable from `LORACTL_*`.
+    #[test]
+    fn top_level_keys_match_the_struct() {
+        let value = serde_json::to_value(TrainConfig::default()).unwrap();
+        let mut fields: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        let mut listed = TrainConfig::TOP_LEVEL_KEYS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(listed, fields);
     }
 }

@@ -81,6 +81,9 @@ cargo run -p loractl-cli -- train config/examples/lora.yaml --lr 5e-5 --steps 20
 
 # ...or from the environment
 LORACTL_OPTIM__LR=5e-5 cargo run -p loractl-cli -- train config/examples/lora.yaml
+# Unknown keys fail the load, in the file and under a LORACTL_<SECTION>__ env
+# var alike. Other LORACTL_* variables (API_TOKEN, OUTPUT_BASE, …) are not
+# config and are left alone.
 
 # Say more (or less): -v info, -vv debug, -vvv trace; -q errors only.
 # Warnings print by default; RUST_LOG, when set, overrides these flags.
@@ -317,9 +320,9 @@ dataset:
 Two opt-in knobs change *which* box an image is fitted to. Both are
 YAML + env only (`LORACTL_DATASET__NO_UPSCALE`, `LORACTL_DATASET__BUCKETING`,
 `LORACTL_DATASET__MIN_BUCKET_RESOLUTION`) — there is no CLI flag, because
-these are properties of a dataset, not of an invocation. **The knob names are
-exact**: an unknown `dataset:` key is ignored silently, so a typo'd
-`no_upscaled:` leaves the default in place with nothing to read.
+these are properties of a dataset, not of an invocation. A typo'd
+`no_upscaled:` fails the load with the offending key named, like any unknown
+key in the config (#246).
 
 `no_upscale: true` stops a small image being enlarged to fill its bucket.
 Instead of Lanczos-inventing detail, it gets a smaller 16-px-aligned box of
