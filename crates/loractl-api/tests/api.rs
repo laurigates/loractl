@@ -1619,3 +1619,24 @@ fn unauthenticated_server_requires_loopback_bind() {
         assert!(enforce_loopback_or_token(ip, true).is_ok());
     }
 }
+
+/// #246: an unknown key anywhere in a posted config is a 422 naming the key
+/// and its path (axum's `Json` rejection carries serde's path), and no run is
+/// registered — a typo must not start a run at the default.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_config_key_is_422_naming_its_path() {
+    let base = test_base("unknown-key");
+    let app = mock_app(&base);
+
+    let mut config = config_json("run", 1, 0);
+    config["optim"] = serde_json::json!({ "lrr": 0.5 });
+    let (status, body) = post_config(&app, config).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.contains("optim"), "{body}");
+    assert!(body.contains("unknown field `lrr`"), "{body}");
+
+    let response = app.oneshot(get_events(1)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&base);
+}

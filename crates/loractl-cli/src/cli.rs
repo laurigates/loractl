@@ -450,10 +450,18 @@ pub fn run(cli: Cli) -> Result<()> {
 /// the YAML file, then `LORACTL_`-prefixed environment variables. CLI flag
 /// overrides are applied by the caller after extraction (they're the last
 /// word).
+///
+/// Every schema struct rejects unknown keys (#246), so the env layer only
+/// forwards variables addressing a [`TrainConfig::TOP_LEVEL_KEYS`] section:
+/// `LORACTL_API_TOKEN` and friends share the prefix without being config.
 fn load_config(path: &Path) -> Result<TrainConfig> {
     Figment::new()
         .merge(Yaml::file(path))
-        .merge(Env::prefixed("LORACTL_").split("__"))
+        .merge(
+            Env::prefixed("LORACTL_")
+                .filter(|k| TrainConfig::is_env_key(k.as_str()))
+                .split("__"),
+        )
         .extract()
         .with_context(|| format!("loading config from {}", path.display()))
 }
@@ -1071,6 +1079,55 @@ mod tests {
             )?;
             let err = resolve_config(&cmd_for("config.yaml")).unwrap_err();
             assert!(format!("{err:#}").contains("warmup"), "{err:#}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn an_unknown_key_in_the_file_names_its_path() {
+        // #246: `optim.lrr` must not train at the default lr.
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", &format!("{YAML}  lrr: 0.5\n"))?;
+            let err = format!("{:#}", resolve_config(&cmd_for("config.yaml")).unwrap_err());
+            assert!(err.contains("unknown field: found `lrr`"), "{err}");
+            assert!(err.contains("optim"), "error must name the section: {err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn an_unknown_env_key_inside_a_section_is_an_error() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            jail.set_env("LORACTL_DATASET__CAPTION_DROPOUT", "0.1");
+            let err = format!("{:#}", resolve_config(&cmd_for("config.yaml")).unwrap_err());
+            assert!(
+                err.contains("unknown field: found `caption_dropout`"),
+                "{err}"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn operational_loractl_env_vars_do_not_reach_the_schema() {
+        // Knobs read elsewhere share the prefix but are not config keys; with
+        // `deny_unknown_fields` they must be filtered, not rejected. Includes
+        // `LORACTL_OUTPUT_BASE`, whose first `_`-segment *is* a section.
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", YAML)?;
+            for var in [
+                "LORACTL_API_TOKEN",
+                "LORACTL_TURBO_FP",
+                "LORACTL_SKIP_GRAD_CHECK",
+                "LORACTL_OUTPUT_BASE",
+                "LORACTL_INPUT_BASE",
+            ] {
+                jail.set_env(var, "1");
+            }
+            jail.set_env("LORACTL_OPTIM__LR", "0.25");
+            let config = resolve_config(&cmd_for("config.yaml")).expect("resolve");
+            assert_eq!(config.optim.lr, 0.25, "section keys still route");
             Ok(())
         });
     }

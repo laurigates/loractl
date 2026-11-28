@@ -29,6 +29,13 @@ deserialization failure, e.g.:
 Failed to deserialize the JSON body into the target type: missing field `model` at line 1 column 2
 ```
 
+**Unknown keys are rejected (#246).** Every struct in the schema is
+`deny_unknown_fields`, so a misspelled or stale key anywhere in the body
+(`optim.lrr`, `dataset.caption_droput_rate`) is a `422` naming the key and its
+path, e.g. ``optim: unknown field `lrr`, expected one of `lr`, …``, instead of
+a run that silently trains at the default. A client that adds its own fields
+to the body must strip them before posting.
+
 Do not parse `422` bodies as JSON — surface them as a human-readable
 diagnostic. A syntactically malformed body — not even valid JSON — is also a
 **plain-text** `400` from the extractor, so a client that wants to distinguish

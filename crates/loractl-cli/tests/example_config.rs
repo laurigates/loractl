@@ -66,3 +66,27 @@ fn the_example_config_runs_the_synthetic_demo() {
         .expect("the default example config must run the synthetic demo");
     assert_eq!(steps, config.steps, "one Step per step through the demo");
 }
+
+/// #246: every schema struct is `deny_unknown_fields`, so a shipped config
+/// carrying a stale key would now fail to load. Parse every YAML under
+/// `config/` (examples and probes). The `.yaml.in` template is excluded: it
+/// carries `@PLACEHOLDER@` substitutions, not a loadable document.
+#[test]
+fn every_shipped_config_parses_under_strict_keys() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config");
+    let mut parsed = 0;
+    for dir in ["examples", "probes"] {
+        for entry in std::fs::read_dir(format!("{root}/{dir}")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "yaml") {
+                Figment::new()
+                    .merge(Yaml::file(&path))
+                    .extract::<TrainConfig>()
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                parsed += 1;
+            }
+        }
+    }
+    // Teeth: an empty glob must not pass.
+    assert!(parsed >= 9, "parsed only {parsed} configs");
+}
